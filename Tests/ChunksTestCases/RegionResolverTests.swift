@@ -138,50 +138,5 @@ public enum RegionResolverTests {
             expectEqual(r.width, 1440)
             expectEqual(r.height, 932)
         }
-
-        // MARK: Pixel conversion — the Retina trap
-
-        test("a logical region converts to device pixels at 2x") {
-            let region = LogicalRect(x: 100, y: 200, width: 300, height: 150)
-            let rect = RegionResolver.cropPixelRect(for: region, in: space2x)
-            expectEqual(rect, CGRect(x: 200, y: 400, width: 600, height: 300))
-        }
-
-        // The specific failure this guards: using the logical rect directly against a
-        // device-pixel buffer crops the top-left quadrant of the intended area.
-        test("cropping at 1x would have been wrong at 2x") {
-            let region = LogicalRect(x: 100, y: 200, width: 300, height: 150)
-            let naive = CGRect(x: 100, y: 200, width: 300, height: 150)
-            let correct = RegionResolver.cropPixelRect(for: region, in: space2x)
-            expect(naive != correct, "conversion should change the rect on a Retina display")
-            expectEqual(correct.origin.x, 200)
-            expectEqual(correct.origin.y, 400)
-        }
-
-        test("a safe crop rect is integral and inside the image") {
-            let region = LogicalRect(x: 100.4, y: 200.7, width: 300.2, height: 150.9)
-            let imageSize = DeviceSize(width: 2880, height: 1864)
-            let rect = RegionResolver.safeCropRect(for: region, in: space2x, imageSize: imageSize)
-            expect(rect.origin.x == rect.origin.x.rounded(), "origin must be integral")
-            expect(rect.width == rect.width.rounded(), "width must be integral")
-            expect(rect.maxX <= CGFloat(imageSize.width), "crop exceeds image width")
-            expect(rect.maxY <= CGFloat(imageSize.height), "crop exceeds image height")
-        }
-
-        test("a safe crop rect clamps a region that overhangs the image") {
-            let region = LogicalRect(x: 1300, y: 800, width: 400, height: 400)
-            let imageSize = DeviceSize(width: 2880, height: 1864)
-            let rect = RegionResolver.safeCropRect(for: region, in: space2x, imageSize: imageSize)
-            expect(rect.maxX <= 2880, "x overhang not clamped: \(rect)")
-            expect(rect.maxY <= 1864, "y overhang not clamped: \(rect)")
-            expect(rect.width >= 1 && rect.height >= 1, "degenerate crop: \(rect)")
-        }
-
-        test("a safe crop rect never returns zero area") {
-            let imageSize = DeviceSize(width: 2880, height: 1864)
-            let rect = RegionResolver.safeCropRect(for: LogicalRect(x: 0, y: 0, width: 0.1, height: 0.1),
-                                                    in: space2x, imageSize: imageSize)
-            expect(rect.width >= 1 && rect.height >= 1, "CGImage.cropping rejects zero-area rects: \(rect)")
-        }
     }
 }

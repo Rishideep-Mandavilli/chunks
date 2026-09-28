@@ -13,16 +13,22 @@ public struct TurnRequest: Sendable {
     public var scope: Scope
     /// PNG data for the scope. For `.region` this is the padded crop.
     public var imageData: Data?
+    /// Pixel dimensions of `imageData`. Stated to the model so its `[POINT]` answers can
+    /// be expressed in the image's own pixel space.
+    public var imagePixelSize: DeviceSize?
     /// The user's own annotations over the image, if any.
     public var annotationNote: String?
     /// Curated memory block, injected verbatim.
     public var memoryBlock: String
 
     public init(question: String, scope: Scope, imageData: Data?,
-                annotationNote: String? = nil, memoryBlock: String = "") {
+                imagePixelSize: DeviceSize? = nil,
+                annotationNote: String? = nil,
+                memoryBlock: String = "") {
         self.question = question
         self.scope = scope
         self.imageData = imageData
+        self.imagePixelSize = imagePixelSize
         self.annotationNote = annotationNote
         self.memoryBlock = memoryBlock
     }
@@ -61,37 +67,60 @@ public enum GeminiRequestBuilder {
 
     /// The system instruction. Kept short and concrete — this is a screen tutor, not a
     /// general assistant, and long prompts dilute the tagging contract.
-    public static let systemInstruction = """
-    You are Chunks, a Mac companion that explains what is on the user's screen.
+    ///
+    /// `imageSize` is interpolated because the `[POINT]` contract depends on it. Chunks
+    /// asks for coordinates in **the image's own pixel space**, not the display's logical
+    /// space, even though the original Clicky used the latter. The reason is arithmetic the
+    /// model would otherwise have to do: after a circle-to-explain crop it is looking at a
+    /// 400x300 region, and asked for "display coordinates" it has to infer the crop's offset
+    /// from the screen. In image-local pixels it can only be right.
+    public static func systemInstruction(imageSize: DeviceSize? = nil) -> String {
+        let coordinateRule: String
+        if let size = imageSize {
+            coordinateRule = """
+            - To point at a control, emit [POINT:x,y,label] where x and y are PIXELS \
+            within the image you were just shown. That image is \(size.width)x\(size.height) \
+            pixels, with (0,0) at its top-left corner. Keep the label short and name the \
+            control ("Save", "Run button", "Deploy").
+            """
+        } else {
+            coordinateRule = """
+            - To point at a control, emit [POINT:x,y,label] where x and y are pixels \
+            within the image you were just shown, with (0,0) at its top-left corner.
+            """
+        }
 
-    HOW YOU REPLY
-    - Put the words you want SPOKEN inside <SAY>...</SAY>. Keep it to one or two
-      sentences; it is read aloud.
-    - Anything outside <SAY> is shown on screen only. Use it for detail: bullet lists,
-      steps, code.
-    - To point at a control, emit [POINT:x,y:label:screenN] where x,y are LOGICAL POINTS
-      on that display (not pixels) and screenN is the 1-based display index.
-    - Be concrete and brief. The user is looking at this screen while you talk.
-    - If you cannot see an image, say so plainly. Never guess at screen contents.
+        return """
+        You are Chunks, a Mac companion that explains what is on the user's screen.
 
-    MEMORY
-    - You may propose a durable fact about the user with:
-      <MEMORY>{"add":[{"section":"You|Corrections|Standing preferences|Notes","fact":"one line"}],"prune":[]}</MEMORY>
-    - Only propose what is genuinely durable (their tools, projects, preferences, or a
-      correction they made). Never propose anything that looks like a credential.
-    - Sections: "You" (facts about them), "Corrections" (things they got you wrong),
-      "Standing preferences" (how they like answers), "Notes" (ongoing work).
-    - Emit at most one MEMORY block, and only when you actually learned something.
+        HOW YOU REPLY
+        - Put the words you want SPOKEN inside <SAY>...</SAY>. Keep it to one or two
+          sentences; it is read aloud.
+        - Anything outside <SAY> is shown on screen only. Use it for detail: bullet lists,
+          steps, code.
+        \(coordinateRule)
+        - Be concrete and brief. The user is looking at this screen while you talk.
+        - If you cannot see an image, say so plainly. Never guess at screen contents.
 
-    NOTEBOOK
-    - If you explained a concept the user may want later, offer to save it:
-      <NOTE>short title</NOTE>
+        MEMORY
+        - You may propose a durable fact about the user with:
+          <MEMORY>{"add":[{"section":"You|Corrections|Standing preferences|Notes","fact":"one line"}],"prune":[]}</MEMORY>
+        - Only propose what is genuinely durable (their tools, projects, preferences, or a
+          correction they made). Never propose anything that looks like a credential.
+        - Sections: "You" (facts about them), "Corrections" (things they got you wrong),
+          "Standing preferences" (how they like answers), "Notes" (ongoing work).
+        - Emit at most one MEMORY block, and only when you actually learned something.
 
-    WHAT YOU DO NOT DO
-    - You do not write code, build projects, or create files.
-    - You do not click or type anything unless Chunks explicitly asks you to propose an
-      action, and Chunks always asks the user first.
-    """
+        NOTEBOOK
+        - If you explained a concept the user may want later, offer to save it:
+          <NOTE>short title</NOTE>
+
+        WHAT YOU DO NOT DO
+        - You do not write code, build projects, or create files.
+        - You do not click or type anything unless Chunks explicitly asks you to propose an
+          action, and Chunks always asks the user first.
+        """
+    }
 
     /// Assemble the parts for a turn, in order.
     public static func parts(for request: TurnRequest) -> [ContentPart] {
@@ -108,10 +137,12 @@ public enum GeminiRequestBuilder {
             question = "Here is the user's whole screen.\n\n\(question)"
         case .region(let rect):
             // Tell the model the crop is a crop, so it does not describe the whole screen
-            // as if it were the region — a common and very visible failure.
+            // as if it were the region — a common and very visible failure. Stating the
+            // pixel size also anchors the `[POINT]` contract.
+            let sizeNote = request.imagePixelSize.map { " (\($0.width)x\($0.height) pixels)" } ?? ""
             question = """
             This is a crop of the user's screen — the region they selected \
-            (\(Int(rect.width))x\(Int(rect.height)) points). \
+            (\(Int(rect.width))x\(Int(rect.height)) points)\(sizeNote). \
             Only what is inside this crop is visible. Everything outside it is cut off.
             \(question)
             """
@@ -137,7 +168,7 @@ public enum GeminiRequestBuilder {
                 "type": "user_input",
                 "content": parts(for: request).map { $0.json },
             ]],
-            "system_instruction": ["text": systemInstruction],
+            "system_instruction": ["text": systemInstruction(imageSize: request.imagePixelSize)],
         ]
         if stream { body["stream"] = true }
         return body

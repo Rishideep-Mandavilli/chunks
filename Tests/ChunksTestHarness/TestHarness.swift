@@ -129,3 +129,18 @@ public func suite(_ name: String) {
 public func test(_ name: String, _ body: @escaping () -> Void) {
     TestRunner.add(suite: TestRunner.currentSuite, name: name, body)
 }
+
+/// Declare an async case within the current suite.
+///
+/// The runner drains each case through a semaphore at run time rather than making the whole
+/// runner `async`, so `runAllChunksTests()` stays callable from a synchronous `main`.
+public func asyncTest(_ name: String, _ body: @escaping () async -> Void) {
+    TestRunner.add(suite: TestRunner.currentSuite, name: name) {
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            await body()
+            semaphore.signal()
+        }
+        semaphore.wait()
+    }
+}

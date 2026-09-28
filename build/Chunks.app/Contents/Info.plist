@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>                  <string>Chunks</string>
+    <key>CFBundleDisplayName</key>           <string>Chunks</string>
+    <key>CFBundleExecutable</key>            <string>Chunks</string>
+    <key>CFBundleIdentifier</key>            <string>app.chunks.mac</string>
+    <key>CFBundleShortVersionString</key>    <string>0.1.0</string>
+    <key>CFBundleVersion</key>               <string>1</string>
+    <key>CFBundlePackageType</key>           <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>        <string>14.2</string>
+
+    <!-- Menu-bar only: no Dock tile, no app switcher entry. -->
+    <key>LSUIElement</key>                   <true/>
+
+    <!-- Screen Recording. macOS requires the app to be relaunched after the user
+         grants this, which the UI states rather than pretending otherwise. -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Chunks reads your screen only when you ask, so it can explain what you are looking at.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Chunks listens only while you hold the talk hotkey, so you can ask about your screen by voice.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Chunks transcribes your voice locally so you can ask about your screen by voice.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Chunks reads a document you point it at, so it can explain the open file.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Chunks reads a document you point it at, so it can explain the open file.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Chunks reads a document you point it at, so it can explain the open file.</string>
+
+    <!-- Needed to read the Accessibility tree for computer-use actions (Phase 5). -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Chunks controls apps on your behalf, only after you confirm each action.</string>
+</dict>
+</plist>

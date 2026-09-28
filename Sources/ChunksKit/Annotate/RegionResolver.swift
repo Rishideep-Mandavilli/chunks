@@ -49,6 +49,15 @@ public enum AnnotationShape: Equatable, Sendable {
     /// Visual weight of the pen. Not a hairline: a thin line disappears in the crop and
     /// leaves the model looking at an unmarked screenshot.
     public static let strokeWidth: Double = 3
+
+    /// Colour the marks are burned into the screenshot with.
+    ///
+    /// A saturated warm red rather than a UI accent: it is the colour the user's cursor and
+    /// selection are *not*, it survives PNG compression without fringing, and it is the one
+    /// colour virtually no application chrome uses for its own controls — so a highlight
+    /// cannot be mistaken for part of the interface being explained.
+    public static let overlayStrokeColor: CGColor = CGColor(
+        srgbRed: 1.0, green: 0.24, blue: 0.32, alpha: 1.0)
 }
 
 /// The marks of one annotation session.
@@ -147,36 +156,5 @@ public enum RegionResolver {
     /// Convenience for a whole-screen turn.
     public static func wholeScreen(displaySize: LogicalSize) -> LogicalRect {
         LogicalRect(x: 0, y: 0, width: displaySize.width, height: displaySize.height)
-    }
-
-    /// Convert a resolved region into the pixel rect for cropping a screenshot buffer.
-    ///
-    /// The **only** place logical region coordinates become device pixels for a crop. The
-    /// screenshot buffer is in device pixels; the region came from an overlay laid out in
-    /// logical points. Getting this wrong silently crops the wrong area on Retina.
-    public static func cropPixelRect(for region: LogicalRect, in space: CoordinateSpace) -> CGRect {
-        let deviceOrigin = space.devicePoint(for: LogicalPoint(x: region.minX, y: region.minY))
-        let deviceSize = space.deviceSize(for: region.size)
-        return CGRect(x: CGFloat(deviceOrigin.x),
-                      y: CGFloat(deviceOrigin.y),
-                      width: CGFloat(deviceSize.width),
-                      height: CGFloat(deviceSize.height))
-    }
-
-    /// The crop rect as a `CGImage`-safe rect: integer origin and size, inside bounds.
-    ///
-    /// `CGImage.cropping(to:)` requires integer bounds and throws if the rect escapes the
-    /// image, so this clamps rather than trusting the caller.
-    public static func safeCropRect(for region: LogicalRect,
-                                    in space: CoordinateSpace,
-                                    imageSize: DeviceSize) -> CGRect {
-        let raw = cropPixelRect(for: region, in: space)
-        let x = max(0, min(Int(raw.origin.x), imageSize.width))
-        let y = max(0, min(Int(raw.origin.y), imageSize.height))
-        let maxWidth = imageSize.width - x
-        let maxHeight = imageSize.height - y
-        let width = max(1, min(Int(raw.width), maxWidth))
-        let height = max(1, min(Int(raw.height), maxHeight))
-        return CGRect(x: x, y: y, width: width, height: height)
     }
 }

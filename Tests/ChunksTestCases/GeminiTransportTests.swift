@@ -94,18 +94,42 @@ public enum GeminiTransportTests {
         }
 
         test("the system instruction pins the reply contract") {
-            let sys = GeminiRequestBuilder.systemInstruction
+            let sys = GeminiRequestBuilder.systemInstruction()
             expect(sys.contains("<SAY>"), "must define the speech tag")
             expect(sys.contains("[POINT:"), "must define the point tag")
             expect(sys.contains("<MEMORY>"), "must define the memory tag")
             expect(sys.contains("<NOTE>"), "must define the notebook tag")
-            expect(sys.contains("LOGICAL POINTS"), "must warn about pixels vs points")
+            expect(sys.contains("top-left"), "must define the point origin")
             expect(sys.lowercased().contains("never guess at screen contents"),
                    "must forbid hallucinating screen contents")
         }
 
+        // The image size has to be stated: "give me pixel coordinates" is unactionable
+        // without knowing how large the image the model is looking at actually is.
+        test("the system instruction states the image's real pixel size") {
+            let sys = GeminiRequestBuilder.systemInstruction(imageSize: DeviceSize(width: 2880, height: 1864))
+            expect(sys.contains("2880x1864"), "should state the image size")
+            expect(sys.contains("PIXELS"), "should say the unit is pixels")
+        }
+
+        test("the system instruction degrades gracefully with no known image size") {
+            let sys = GeminiRequestBuilder.systemInstruction(imageSize: nil)
+            expect(sys.contains("[POINT:"), "the contract must still be stated")
+            expect(!sys.contains("0x0"), "must not invent a size")
+        }
+
+        test("a region request carries the image pixel size to the model") {
+            let rect = LogicalRect(x: 100, y: 200, width: 400, height: 300)
+            var req = makeRequest(scope: .region(rect))
+            req.imagePixelSize = DeviceSize(width: 800, height: 600)
+            let parts = GeminiRequestBuilder.parts(for: req)
+            guard case .text(let text) = parts[0] else { return expect(false, "expected a text part") }
+            expect(text.contains("800x600"), "the crop's pixel size should be stated: \(text)")
+            expect(text.contains("400x300 points"), "and its point size: \(text)")
+        }
+
         test("the system instruction forbids the out-of-scope capabilities") {
-            let sys = GeminiRequestBuilder.systemInstruction.lowercased()
+            let sys = GeminiRequestBuilder.systemInstruction().lowercased()
             expect(sys.contains("do not write code"), "must forbid code generation")
             expect(sys.contains("create files"), "must forbid file artifacts")
             expect(sys.contains("always asks the user first"), "must require consent before acting")

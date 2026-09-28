@@ -20,7 +20,15 @@ import PackageDescription
 
 let package = Package(
     name: "Chunks",
-    platforms: [.macOS(.v14)],   // ScreenCaptureKit floor. Apple Speech 26+ APIs gate at runtime.
+    // 15.2 is the floor for `SCScreenshotManager.captureImage(in:)`, the one-shot
+    // display-agnostic capture Chunks is built on. Going lower would mean reintroducing
+    // `SCShareableContent` (deprecated in 26) plus a hand-rolled pixel-buffer-to-CGImage
+    // path — strictly more code for a narrower audience. The Phase 4 voice features need
+    // macOS 26 anyway and gate at runtime.
+    //
+    // `.custom` rather than `.v15` because SwiftPM's `.v15` means 15.0, which is below
+    // the floor.
+    platforms: [.macOS("15.2")],
     products: [
         .library(name: "ChunksKit", targets: ["ChunksKit"]),
         .library(name: "ChunksTestHarness", targets: ["ChunksTestHarness"]),

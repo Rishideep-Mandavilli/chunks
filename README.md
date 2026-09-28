@@ -100,11 +100,12 @@ AGENTS.md              conventions and invariants for AI coding agents
 
 ## Status
 
-**Phase 1, core logic complete — 120 tests passing.**
+**The app runs. 142 tests passing.**
 
 | | |
 |---|---|
 | Coordinate authority | ✅ tested at 1x/2x/3x, incl. negative-origin displays |
+| Screen capture | ✅ `SCScreenshotManager`, backing scale measured not assumed |
 | Secret rejection | ✅ 12 provider prefixes + entropy heuristic |
 | Memory store | ✅ plain markdown, 2 KB cap, never truncated |
 | Reply protocol parser | ✅ streaming, fail-open, split-tag safe |
@@ -112,9 +113,32 @@ AGENTS.md              conventions and invariants for AI coding agents
 | Retry + rate limiting | ✅ jittered backoff, 5 req/min token bucket |
 | Gemini request/SSE | ✅ `store:false` enforced by test |
 | Region resolver | ✅ marks → padded, clamped crop |
-| Screen capture | ⏳ needs a running app |
-| AppKit shell & overlay | ⏳ needs a running app |
+| Menu bar + hotkey | ✅ running |
+| Circle-to-explain | ✅ overlay draws, marks burn into the screenshot |
+| Point resolution | ✅ image-local pixels → global points, round-trip tested |
+| Answer panel | ⏳ replies land in the menu, nothing to read on screen |
 | Voice in/out | ⏳ Phase 4 |
+| Computer use | ⏳ Phase 5 |
+
+### Build and run
+
+```bash
+swift build                       # everything
+swift run chunks-test             # 142 tests (NOT `swift test`)
+
+swift build -c release            # then assemble the bundle
+./scripts/make-app.sh release
+open build/Chunks.app
+```
+
+Requires Xcode. Then grant Screen Recording when prompted, and **quit and reopen Chunks**
+— macOS only applies a newly granted capture permission after relaunch.
+
+Put a Gemini API key in via the menu (stored in the login Keychain, never in a plist), or:
+
+```bash
+CHUNKS_GEMINI_KEY=... open build/Chunks.app
+```
 
 See `CHUNKS-BUILD-PLAN.md` §6 for the full phase breakdown.
 

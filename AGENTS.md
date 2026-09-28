@@ -62,8 +62,15 @@ map almost 1:1 onto `#expect(...)`.
 
 1. **All coordinates are `LogicalPoint`.** Screenshots are device pixels (2x); AX reports
    logical points; `NSPanel` frames are logical. Conversion happens exactly once, inside
-   `CoordinateSpace`. Feeding an AX `frame` into a pixel-based call lands at double the
-   intended offset on Retina, and it fails *silently*. See the comment on `CoordinateSpace`.
+   `CoordinateSpace` or `ScreenCapture`. Feeding an AX `frame` into a pixel-based call
+   lands at double the intended offset on Retina, and it fails *silently*. See the comment
+   on `CoordinateSpace`.
+
+   Two traps this codebase has already fallen into, both of which produce a plausible
+   number rather than an error:
+   - `CGDisplayPixelsWide` returns **points**, not pixels. Use
+     `NSScreen.backingScaleFactor`.
+   - `CGDisplayBounds` is **top-left** origin. `NSScreen.frame` is bottom-left. Never mix.
 
 2. **The model never writes the memory file.** It emits a proposed block; `MemoryWriter`
    validates and merges. This is structural, not advisory — it is why credentials cannot
@@ -105,13 +112,14 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-**Phase 1, core logic complete. 120 tests green across 7 suites.**
+**The app runs. 142 tests green across 10 suites.**
 
 Done and tested:
 
 | Component | File | Notes |
 |---|---|---|
 | Coordinate authority | `Capture/CoordinateSpace.swift` | The only type allowed to convert coords |
+| Screen capture | `Capture/CaptureEngine.swift` | `SCScreenshotManager.captureImage(in:)`; scale measured |
 | Secret rejection | `Memory/SecretSweeper.swift` | 12 provider prefixes + entropy heuristic |
 | Memory store | `Memory/MemoryStore.swift` | Plain markdown, 2 KB cap, never truncated |
 | Reply protocol | `Brain/ResponseParser.swift` | Streaming `[POINT]` / `<SAY>` / `<MEMORY>` / `<NOTE>` |
@@ -120,17 +128,27 @@ Done and tested:
 | Request/SSE | `Brain/GeminiTransport.swift` | Pure builders; `store:false` enforced by test |
 | Region resolution | `Annotate/RegionResolver.swift` | Marks → padded, clamped crop rect |
 
-**Not yet built** — and note these are the parts that cannot be unit-tested here:
+Running: menu bar item, ⌃⌥ hotkey, whole-screen and circle-to-explain turns, cursor
+move to a pointed-at control, Keychain-backed API key, annotation overlay with pen /
+circle / box / arrow.
 
-- `CaptureEngine` — ScreenCaptureKit. Needs a running app and Screen Recording permission.
-- `BrainClient` — the async orchestrator wiring the fallback chain, retry policy and rate
-  limiter into one call. The pieces are tested; the wiring is not.
-- AppKit shell — status item, control panel, annotation overlay, cursor animation.
-- Voice input — `SpeechTranscriber` (macOS 26+), push-to-talk `CGEvent` tap.
-- `scripts/make-app.sh` — assembles `Chunks.app` from the SwiftPM executable.
+**Not yet built** — the parts that need a human looking at them:
+
+- Voice in/out — `SpeechTranscriber` (macOS 26+). ⌃⌥ currently runs the turn with the
+  default question rather than dictating one.
+- The on-screen answer panel. Replies currently land in `transcript` and the menu; there
+  is nothing to read while the model is talking.
+- Computer use — `AXTDriver`, `PolicyGate`, `ConsentGate`. Not started.
+- Automations — `launchd`, read-only by default.
 
 **Adding a test suite:** write the cases in `Tests/ChunksTestCases/`, then add
 `YourTests.register()` to `AllTests.swift`. `runAllChunksTests()` returns whether the
 suite passed.
+
+**Test style:** `test("a sentence describing the behaviour") { ... }`, with `expect`
+carrying a message that explains *why* it matters. A failing assertion should tell the
+next person what user-visible bug they are looking at, not what condition was false.
+Tests that touch the real machine (screen capture, display enumeration) assert against
+real hardware deliberately — a mock would have agreed with the `CGDisplayPixelsWide` bug.
 
 See `CHUNKS-BUILD-PLAN.md` for the full phased plan and `docs/ARCHITECTURE.md` for detail.

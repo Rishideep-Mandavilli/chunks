@@ -1,0 +1,85 @@
+
+
+/// Feeds streaming deltas through `ResponseParser` and reports what is safe to show so far.
+///
+/// The reason this exists separately from `BrainGateway.interpret` is that showing text
+/// *while the model is still writing it* requires incremental parsing, and `interpret`
+/// only runs once at the end. Reusing the same parser rather than a second, simpler
+/// one matters: a second implementation of the tag grammar would drift, and the drift
+/// would show up as markup flashing on screen mid-stream — the exact bug the streaming
+/// hold-back in `ResponseParser` exists to prevent.
+///
+/// A class, not a struct, so it can be mutated from inside the streaming callback without
+/// the caller needing a `var` captured by an escaping closure. That is a language rule, not
+/// a style preference: `AnswerStreamer` is fed from a closure that escapes into the
+/// networking layer, and a `struct` cannot be mutated through one.
+public final class AnswerStreamer {
+
+    private var parser = ResponseParser()
+    public private(set) var speech: String = ""
+    public private(set) var detail: String = ""
+    public private(set) var points: [PointTarget] = []
+    public private(set) var proposal: MemoryProposal?
+
+    /// The `<SAY>` body from the most recent `.speech`, when the next `.text` is expected
+    /// to be the "also shown" copy of it.
+    ///
+    /// `ResponseParser` emits `<SAY>` content as **both** `.speech` and `.text`, because
+    /// what is spoken is also written to the transcript. Without this, every sentence the
+    /// user hears would also appear in the detail pane, duplicated underneath the speech.
+    private var pendingSpeechEcho: String?
+
+    public init() {}
+
+    /// Feed one raw delta. Returns the text that is safe to display right now.
+    ///
+    /// The parser holds back the ambiguous tail of a split tag, so the returned strings
+    /// only ever grow by text that is already decided. They can still *change kind* — a
+    /// partial tag may resolve into speech rather than detail — which is why the panel
+    /// assigns rather than appends.
+    @discardableResult
+    public func push(_ delta: String) -> (speech: String, detail: String) {
+        consume(parser.feed(delta))
+        return (speech, detail)
+    }
+
+    /// Flush at the end of the stream. Any unterminated tag is released as text.
+    @discardableResult
+    public func finish() -> (speech: String, detail: String) {
+        consume(parser.finish())
+        return (speech, detail)
+    }
+
+    private func consume(_ events: [ReplyEvent]) {
+        for event in events {
+            switch event {
+            case .speech(let text):
+                speech += text
+                pendingSpeechEcho = text
+
+            case .text(let text):
+                // The echo of the `<SAY>` just emitted, not new detail.
+                if let echo = pendingSpeechEcho, echo == text {
+                    pendingSpeechEcho = nil
+                    break
+                }
+                pendingSpeechEcho = nil
+                detail += text
+
+            case .point(let target):
+                points.append(target)
+
+            case .memory(let proposed):
+                proposal = proposed
+
+            case .noteOffer:
+                // A notebook offer is a UI affordance, not text. The panel does not render
+                // it yet; dropping it here is why the tag never leaks into the transcript
+                // as a literal "<NOTE>".
+                break
+            }
+        }
+    }
+
+    public var hasAnything: Bool { !speech.isEmpty || !detail.isEmpty }
+}

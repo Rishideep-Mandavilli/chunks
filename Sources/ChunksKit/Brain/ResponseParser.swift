@@ -172,16 +172,30 @@ public final class ResponseParser {
                 }
             }
 
-            buffer.removeSubrange(hit.range)
+            // Consume the leading text **and** the construct. Removing only `hit.range`
+            // leaves the leading text in the buffer, where the next iteration — or
+            // `finish()` — emits it a second time.
+            //
+            // The bug is invisible when deltas arrive one character at a time, because the
+            // leading text has already been drained between deltas. It only appears when a
+            // whole reply, or a large chunk of one, arrives at once — which is what a fast
+            // model does — and it silently doubled the visible text.
+            buffer.removeSubrange(buffer.startIndex..<hit.range.upperBound)
         }
 
         // Hold back a possible partial construct, unless we're finishing.
         if final {
             if !buffer.isEmpty { events.append(.text(buffer)); buffer = "" }
         } else if let startOffset = partialConstructStartOffset(), startOffset < buffer.count {
-            let split = buffer.index(buffer.startIndex, offsetBy: startOffset)
-            events.append(.text(String(buffer[..<split])))
-            buffer = String(buffer[split...])
+            // Only emit when there is something to emit. While the parser waits on a tag
+            // that may still arrive, `startOffset` is 0 for every character of it, so
+            // emitting unconditionally produced one empty `.text` per character — hundreds
+            // of no-op events per turn, each of which made the panel relayout.
+            if startOffset > 0 {
+                let split = buffer.index(buffer.startIndex, offsetBy: startOffset)
+                events.append(.text(String(buffer[..<split])))
+            }
+            buffer = String(buffer.dropFirst(startOffset))
         }
         return events
     }

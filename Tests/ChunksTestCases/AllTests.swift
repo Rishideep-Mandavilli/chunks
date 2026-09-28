@@ -14,5 +14,6 @@ public func runAllChunksTests() -> Bool {
     RegionResolverTests.register()
     ScreenCaptureTests.register()
     DisplayEnumerationTests.register()
+    AnswerPanelTests.register()
     return TestRunner.run()
 }

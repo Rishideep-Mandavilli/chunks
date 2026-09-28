@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import ChunksKit
 import Combine
 import Security
@@ -66,6 +67,7 @@ final class AppShell: NSObject, ObservableObject {
     private var statusMenu: NSMenu?
     private let capture = CaptureEngine()
     private let memory: MemoryStore
+    private let panel = AnswerPanel()
 
     private override init() {
         memory = MemoryStore(fileURL: MemoryStore.defaultURL())
@@ -120,6 +122,8 @@ final class AppShell: NSObject, ObservableObject {
 
         menu.addItem(withTitle: "Ask about my screen", action: #selector(askNow), keyEquivalent: "")
         menu.addItem(withTitle: "Ask about a region…", action: #selector(annotateAndAsk), keyEquivalent: "")
+        menu.addItem(withTitle: Settings.voiceOutput ? "Stop speaking" : "Speak answers",
+                     action: #selector(toggleVoice), keyEquivalent: "")
 
         if !statusNote.isEmpty {
             let item = NSMenuItem(title: statusNote, action: nil, keyEquivalent: "")
@@ -178,7 +182,9 @@ final class AppShell: NSObject, ObservableObject {
     /// understood the screen rather than having to take its word for it.
     @objc private func revealPoint(_ sender: NSMenuItem) {
         guard let resolved = sender.representedObject as? ResolvedPoint else { return }
-        CursorMover.move(to: resolved.point)
+        // Fly, not teleport: a jump reads as a glitch, a movement reads as pointing.
+        CursorAnimator.fly(to: resolved.point)
+        panel.update { $0.points = $0.points }   // redraw for the highlight
     }
 
     @objc private func configureKey() {
@@ -198,6 +204,12 @@ final class AppShell: NSObject, ObservableObject {
         } else {
             statusNote = "Couldn't save the API key to the Keychain."
         }
+    }
+
+    @objc private func toggleVoice() {
+        Settings.voiceOutput.toggle()
+        if !Settings.voiceOutput { SpeechOutput.shared.stop() }
+        statusNote = Settings.voiceOutput ? "Answers will be spoken." : "Answers will be silent."
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
@@ -277,8 +289,12 @@ final class AppShell: NSObject, ObservableObject {
             return
         }
 
-        setPhase(.capturing)
         let ask = question?.trimmingCharacters(in: .whitespacesAndNewlines)
+        panel.show(on: display) { [weak self] point in
+            CursorAnimator.move(to: point)
+            self?.statusNote = "Pointing at \(Int(point.x)), \(Int(point.y))."
+        }
+        panel.update { $0 = AnswerPanelContent(status: .working("Reading your screen…")) }
 
         do {
             // Marks come from the annotation overlay when the user drew something; with
@@ -286,6 +302,7 @@ final class AppShell: NSObject, ObservableObject {
             // press useful.
             let shapes = pendingAnnotations
             pendingAnnotations = []
+            setPhase(.capturing)
 
             let captured = try await capture.capture(display: display, shapes: shapes)
             let image = captured.composited(with: shapes, display: display)
@@ -295,7 +312,9 @@ final class AppShell: NSObject, ObservableObject {
             }
 
             setPhase(.thinking)
+            panel.update { $0.status = .working("Thinking…") }
 
+            let streamer = AnswerStreamer()
             let localRegion = display.space.localRect(fromGlobal: captured.globalRect)
             let request = TurnRequest(
                 question: ask?.isEmpty == false ? ask! : "What am I looking at, and what should I do next?",
@@ -305,27 +324,64 @@ final class AppShell: NSObject, ObservableObject {
                 annotationNote: shapes.isEmpty ? nil : AnnotationSession(shapes: shapes).descriptionForModel,
                 memoryBlock: memory.injectedBlock())
 
-            let answer = try await BrainGateway.shared.ask(request)
+            // Stream through the parser as deltas arrive so the panel fills in as the
+            // model talks, instead of appearing all at once at the end. The parser is
+            // incremental by design, so the same type does the work either way.
+            let answer = try await BrainGateway.shared.ask(request) { delta in
+                let partial = streamer.push(delta)
+                Task { @MainActor in
+                    self.panel.update {
+                        $0.status = .working("Answering…")
+                        $0.speech = partial.speech
+                        $0.detail = partial.detail
+                        $0.isStreaming = true
+                    }
+                }
+            }
+            streamer.finish()
+            let final = Answer(
+                spokenText: answer.spokenText,
+                detailText: answer.detailText,
+                points: answer.points,
+                proposal: answer.proposal)
 
             // Resolve the model's pixel coordinates against the crop it actually saw.
-            let resolved = answer.points.map {
+            let resolved = final.points.map { target in
                 ResolvedPoint(
-                    point: captured.globalPoint(forImagePixelX: $0.x, $0.y),
-                    label: $0.label)
+                    point: captured.globalPoint(forImagePixelX: target.x, target.y),
+                    label: target.label,
+                    imagePixel: LogicalPoint(x: target.x, y: target.y))
             }
 
             setPhase(.speaking)
-            transcript = answer.spokenText
+            transcript = final.spokenText
             points = resolved
-            applyMemory(answer.proposal)
-
-            // Phase 4 reads this back out for dictation; for now it is the record of what
-            // the model pointed at, which is the whole feature.
+            applyMemory(final.proposal)
             lastCapture = captured
+
+            panel.update {
+                $0.status = .ready
+                $0.speech = final.spokenText
+                $0.detail = final.detailText
+                $0.points = resolved.map {
+                    PanelPoint(label: $0.label, point: $0.point, imagePixel: $0.imagePixel)
+                }
+                $0.isStreaming = false
+            }
+            speak(final.spokenText)
             setPhase(.idle)
         } catch {
             fail(error.localizedDescription)
         }
+    }
+
+    /// Read the answer aloud, if voice output is on.
+    private func speak(_ text: String) {
+        guard Settings.voiceOutput, !text.isEmpty else { return }
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 1.05
+        SpeechOutput.shared.speak(utterance)
     }
 
     private func applyMemory(_ proposal: MemoryProposal?) {
@@ -343,6 +399,12 @@ final class AppShell: NSObject, ObservableObject {
     private func fail(_ message: String) {
         transcript = message
         statusNote = ""
+        // The panel stays up on failure. A turn that dies silently, with the card
+        // disappearing, is indistinguishable from the app not working at all.
+        panel.update { content in
+            content.status = .failed(message)
+            content.isStreaming = false
+        }
         setPhase(.idle)
     }
 
@@ -399,27 +461,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: - Bridge
 
-/// Bridges a finished turn to the rest of the app. Separate from AppShell so the parsing
-/// and memory-merge logic is testable without AppKit.
-struct Answer {
-    var spokenText: String
-    var points: [PointTarget]
-    var proposal: MemoryProposal?
-}
-
-/// A point the model identified, resolved onto the real screen.
-struct ResolvedPoint: Equatable {
-    /// Global logical coordinates — directly usable for a cursor move or a click.
-    let point: LogicalPoint
-    let label: String
-}
-
 /// Calls the configured brain, walking the model fallback chain on contention.
 final class BrainGateway {
     static let shared = BrainGateway()
     private init() {}
 
-    func ask(_ request: TurnRequest) async throws -> Answer {
+    func ask(_ request: TurnRequest,
+             onDelta: @escaping (String) -> Void = { _ in }) async throws -> Answer {
         let key = try KeychainStore.geminiKey()
         let registry = ProviderRegistry()
         let (chain, warning) = registry.resolve(provider: ProviderRegistry.gemini,
@@ -444,7 +492,8 @@ final class BrainGateway {
                 limiter.consume()
 
                 do {
-                    let text = try await Self.perform(session: session, key: key, model: model, request: request)
+                    let text = try await Self.perform(session: session, key: key, model: model,
+                                                     request: request, onDelta: onDelta)
                     return Self.interpret(text)
                 } catch {
                     lastError = error
@@ -463,7 +512,8 @@ final class BrainGateway {
     }
 
     private static func perform(session: URLSession, key: String,
-                                model: BrainModel, request: TurnRequest) async throws -> String {
+                                model: BrainModel, request: TurnRequest,
+                                onDelta: @escaping (String) -> Void) async throws -> String {
         var url = ProviderRegistry.geminiBase.appendingPathComponent("interactions")
         url = URL(string: "\(url.absoluteString)?alt=sse")!
         var req = URLRequest(url: url)
@@ -482,7 +532,10 @@ final class BrainGateway {
         var text = ""
         for try await line in bytes.lines {
             for event in GeminiStreamParser.parse(line: String(line)) {
-                if case .textDelta(let delta) = event { text += delta }
+                if case .textDelta(let delta) = event {
+                    text += delta
+                    onDelta(delta)
+                }
             }
         }
         return text
@@ -496,27 +549,46 @@ final class BrainGateway {
     }
 
     /// Run the raw reply through `ResponseParser`.
+    ///
+    /// Delegates to `AnswerStreamer` rather than walking the events a second time. This
+    /// used to have its own loop with its own opinion about which events are speech, and
+    /// the two paths disagreed: `ResponseParser` emits `<SAY>` content as **both**
+    /// `.speech` and `.text` (spoken and also written to the transcript), so this version
+    /// put every spoken sentence into the detail pane a second time. One implementation,
+    /// one answer.
     static func interpret(_ raw: String) -> Answer {
-        let parser = ResponseParser()
-        var events = parser.feed(raw)
-        events += parser.finish()
+        let streamer = AnswerStreamer()
+        streamer.push(raw)
+        let result = streamer.finish()
 
-        var spoken: [String] = []
-        var points: [PointTarget] = []
-        var proposal: MemoryProposal?
-        for event in events {
-            switch event {
-            case .speech(let s): spoken.append(s)
-            case .point(let p): points.append(p)
-            case .memory(let m): proposal = m
-            default: break
-            }
-        }
-        let text = spoken.isEmpty
-            ? events.compactMap { if case .text(let t) = $0 { return t }; return nil }.joined(separator: "\n")
-            : spoken.joined(separator: " ")
-        return Answer(spokenText: text, points: points, proposal: proposal)
+        return Answer(
+            spokenText: result.speech.isEmpty ? result.detail : result.speech,
+            detailText: result.speech.isEmpty ? "" : result.detail,
+            points: streamer.points,
+            proposal: streamer.proposal)
     }
+}
+
+/// A reply, split into the part to speak and the part to show alongside it.
+struct Answer: Equatable {
+    var spokenText: String
+    var detailText: String
+    var points: [PointTarget]
+    var proposal: MemoryProposal?
+
+    /// A reply with no `<SAY>` at all: show the text, speak nothing.
+    var hasSpeech: Bool { !spokenText.isEmpty }
+    var isEmpty: Bool { spokenText.isEmpty && detailText.isEmpty }
+}
+
+/// A point the model identified, resolved onto the real screen.
+struct ResolvedPoint: Equatable {
+    /// Global logical coordinates — directly usable for a cursor move.
+    let point: LogicalPoint
+    let label: String
+    /// Pixel within the image the model was shown, kept for the panel so the mapping
+    /// stays checkable by eye.
+    let imagePixel: LogicalPoint
 }
 
 enum ChunksError: Error, CustomStringConvertible {
@@ -548,6 +620,18 @@ final class Settings {
         set { UserDefaults.standard.set(newValue, forKey: "preferredModel") }
     }
 
+    /// Whether answers are spoken. Off is a legitimate choice: a user who already has a
+    /// screen reader, or who shares a room, needs the answer without audio.
+    static var voiceOutput: Bool {
+        get {
+            // Default on, because a companion you have to read is a companion you cannot
+            // glance at. `object(forKey:)` rather than `bool(forKey:)` so a first run is
+            // distinguishable from an explicit "off".
+            UserDefaults.standard.object(forKey: "voiceOutput") as? Bool ?? true
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "voiceOutput") }
+    }
+
     /// Set the key non-interactively, for first-run setup scripts.
     static func setKeyFromEnvironment() {
         guard let key = ProcessInfo.processInfo.environment["CHUNKS_GEMINI_KEY"],
@@ -555,25 +639,6 @@ final class Settings {
         if KeychainStore.setGeminiKey(key) {
             NSLog("[Chunks] API key loaded from the CHUNKS_GEMINI_KEY environment variable")
         }
-    }
-}
-
-/// Moves the pointer without clicking.
-///
-/// Uses a private CGEvent source rather than `NSCursor` because `NSCursor` only moves the
-/// image and the system still applies click-through behaviour, whereas a posted event
-/// actually relocates the pointer — which is what makes "the cursor flies to the button"
-/// legible to the user. `move` rather than `.leftMouseDown/.leftMouseUp`, because
-/// pointing is not consent: Chunks never clicks on its own initiative.
-enum CursorMover {
-    static func move(to point: LogicalPoint) {
-        let source = CGEventSource(stateID: .hidSystemState)
-        guard let event = CGEvent(mouseEventSource: source,
-                                  mouseType: .mouseMoved,
-                                  mouseCursorPosition: CGPoint(x: point.x, y: point.y),
-                                  mouseButton: .left)
-        else { return }
-        event.post(tap: .cghidEventTap)
     }
 }
 

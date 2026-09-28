@@ -224,6 +224,41 @@ public enum ResponseParserTests {
             expectEqual(mem.count, 1)
             expectEqual(mem.first?.add.first?.fact, "Working on a SwiftUI menu bar app")        }
 
+        // Regression. The drain loop emitted the text preceding a construct but removed
+        // only the construct's own range, so that text stayed in the buffer and was
+        // emitted a second time. It is invisible when deltas arrive one character at a
+        // time — the existing tests all fed the reply that way — and only shows up when a
+        // whole reply arrives at once, which is what a fast model does.
+        test("text before a construct is shown once, not twice, in a single delta") {
+            let p = ResponseParser()
+            var events = p.feed("Some explanation here.\n[POINT:10,20,Save]\nAnd more text.")
+            events += p.finish()
+
+            let shown = events.compactMap { if case .text(let t) = $0 { return t }; return nil }.joined()
+            expectEqual(shown, "Some explanation here.\n\nAnd more text.")
+        }
+
+        test("a whole reply fed at once equals the same reply fed a character at a time") {
+            let reply = "<SAY>That is the debug navigator.</SAY>\n"
+                + "The left pane is the call stack.\n"
+                + "[POINT:412,180,Run button]\n"
+                + "Press the run button at the top left.\n"
+
+            let whole = ResponseParser()
+            var wholeEvents = whole.feed(reply)
+            wholeEvents += whole.finish()
+
+            let perCharacter = ResponseParser()
+            var characterEvents: [ReplyEvent] = []
+            for character in reply {
+                characterEvents += perCharacter.feed(String(character))
+            }
+            characterEvents += perCharacter.finish()
+
+            expectEqual(wholeEvents, characterEvents,
+                        "delta framing must not change the parse — SSE chunks are not character-aligned")
+        }
+
         test("text arriving in many small chunks reassembles exactly") {
             let p = ResponseParser()
             let original = "The quick brown fox jumps over the lazy dog."

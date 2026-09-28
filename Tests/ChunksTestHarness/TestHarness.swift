@@ -20,21 +20,25 @@ public struct TestFailure: Error, CustomStringConvertible {
     public var description: String { "\(file):\(line) — \(message)" }
 }
 
-@discardableResult
+/// Assert a condition.
+///
+/// Returns `Void` on purpose. Returning `Bool` tempts `return expect(...)` inside a
+/// `guard ... else`, which does not compile in a `Void` closure — and that pattern
+/// recurred enough to be worth removing at the source rather than working around.
 public func expect(_ condition: Bool,
                    _ message: @autoclosure () -> String = "condition was false",
                    file: StaticString = #filePath,
-                   line: UInt = #line) -> Bool {
-    if !condition { TestRunner.record(.failure(TestFailure(message: message(), file: "\(file)", line: Int(line)))) }
-    return condition
+                   line: UInt = #line) {
+    if !condition {
+        TestRunner.record(.failure(TestFailure(message: message(), file: "\(file)", line: Int(line))))
+    }
 }
 
-@discardableResult
 public func expectEqual<T: Equatable>(_ actual: T,
                                       _ expected: T,
                                       _ message: @autoclosure () -> String = "",
                                       file: StaticString = #filePath,
-                                      line: UInt = #line) -> Bool {
+                                      line: UInt = #line) {
     if actual != expected {
         let detail = message()
         TestRunner.record(.failure(TestFailure(
@@ -42,9 +46,7 @@ public func expectEqual<T: Equatable>(_ actual: T,
                 ? "expected \(expected) but got \(actual)"
                 : "\(detail) — expected \(expected), got \(actual)",
             file: "\(file)", line: Int(line))))
-        return false
     }
-    return true
 }
 
 @discardableResult

@@ -168,7 +168,12 @@ public enum GeminiRequestBuilder {
                 "type": "user_input",
                 "content": parts(for: request).map { $0.json },
             ]],
-            "system_instruction": ["text": systemInstruction(imageSize: request.imagePixelSize)],
+            // A plain string. The Interactions API takes `{"text": ...}` for some fields and
+            // a bare string for this one, and the mismatch is visible only in the server's
+            // reply: "The value is invalid for 'system_instruction'. Expected string,
+            // unexpected character: '{'". The unit tests could not catch this because the
+            // body was valid JSON either way — `--self-test` caught it against the real API.
+            "system_instruction": systemInstruction(imageSize: request.imagePixelSize),
         ]
         if stream { body["stream"] = true }
         return body

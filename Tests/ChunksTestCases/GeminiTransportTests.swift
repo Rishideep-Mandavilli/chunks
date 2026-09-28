@@ -93,6 +93,23 @@ public enum GeminiTransportTests {
             expect(!makeRequest(image: false).needsVision)
         }
 
+        // Regression, found only by `--self-test` against the real API. The Interactions API
+        // takes a bare string for this field while several sibling fields take
+        // `{"text": ...}`, so the mistake is invisible in a unit test: the body is valid
+        // JSON either way, and it encodes without error. The live server replied
+        //   "The value is invalid for 'system_instruction'. Expected string,
+        //    unexpected character: '{'"
+        test("system_instruction is a bare string, not a text object") {
+            let body = GeminiRequestBuilder.body(model: "m", request: makeRequest(), stream: false)
+            guard let instruction = body["system_instruction"] else {
+                return expect(false, "system_instruction is missing entirely")
+            }
+            expect(instruction is String,
+                   "system_instruction must be a String, got \(type(of: instruction))")
+            expect((instruction as? String ?? "").contains("<SAY>"),
+                   "the instruction text should be in there")
+        }
+
         test("the system instruction pins the reply contract") {
             let sys = GeminiRequestBuilder.systemInstruction()
             expect(sys.contains("<SAY>"), "must define the speech tag")

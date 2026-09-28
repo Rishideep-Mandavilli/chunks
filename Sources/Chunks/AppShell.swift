@@ -12,7 +12,115 @@ import SwiftUI
 @main
 struct ChunksMain {
     @MainActor static func main() {
+        if CommandLine.arguments.contains("--self-test") {
+            SelfTest.run()
+            return
+        }
         AppShell.shared.start()
+    }
+}
+
+/// Runs one real turn end to end and prints what happened, then exits.
+///
+/// Exists because the interesting failures in this app are all invisible from the outside:
+/// a card that never appears, a reply that parses to nothing, a model that is silently
+/// unusable. "Press the hotkey and tell me what you see" is a fine manual check, but it
+/// needs a human, it cannot run in CI, and it does not show the raw reply or the token
+/// counts. This does all three.
+///
+///     swift run chunks --self-test
+///     swift run chunks --self-test --question "what am I looking at?"
+@MainActor
+enum SelfTest {
+
+    static func run() {
+        func say(_ message: String) { print(message) }
+        func flag(_ name: String) -> String? {
+            let arguments = CommandLine.arguments
+            guard let index = arguments.firstIndex(of: name),
+                  index + 1 < arguments.count else { return nil }
+            return arguments[index + 1]
+        }
+
+        say("Chunks self-test")
+        say("  screen recording: \(CaptureEngine.hasScreenRecordingPermission() ? "granted" : "NOT granted")")
+        say("  api key: \(KeychainStore.hasKey ? "present" : "MISSING")")
+        for display in CaptureEngine.displays() {
+            say("  display \(display.displayID) \(Int(display.frame.width))x\(Int(display.frame.height))pt "
+                + "@\(display.backingScale)x\(display.isMain ? " main" : "")")
+        }
+
+        guard let display = CaptureEngine.mainDisplay() else {
+            say("FAIL: no display")
+            exit(1)
+        }
+
+        Task { @MainActor in
+            do {
+                let started = Date()
+                let captured = try await CaptureEngine().capture(display: display, shapes: [])
+                let image = captured.composited(with: [], display: display)
+                say("  captured \(image.width)x\(image.height)px in "
+                    + String(format: "%.0fms", Date().timeIntervalSince(started) * 1000))
+
+                guard let png = ScreenCapture(image: image, globalRect: captured.globalRect).png() else {
+                    say("FAIL: could not encode PNG")
+                    exit(1)
+                }
+                say("  png: \(png.count / 1024) KB")
+
+                let request = TurnRequest(
+                    question: flag("--question") ?? "What am I looking at? Answer in one sentence.",
+                    scope: .wholeScreen,
+                    imageData: png,
+                    imagePixelSize: captured.pixelSize,
+                    memoryBlock: "")
+
+                let replied = Date()
+                var raw = ""
+                let answer = try await BrainGateway.shared.ask(request) { raw += $0 }
+                let elapsed = Date().timeIntervalSince(replied)
+
+                say("  --- raw reply (\(raw.count) chars, \(String(format: "%.1f", elapsed))s) ---")
+                for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+                    say("  | \(line)")
+                }
+                say("  --- parsed ---")
+                say("  speech: \(answer.spokenText.isEmpty ? "(none)" : answer.spokenText)")
+                let detail = answer.detailText.isEmpty ? "(none)"
+                    : answer.detailText.replacingOccurrences(of: "\n", with: " / ")
+                say("  detail: \(detail)")
+                for target in answer.points {
+                    let resolved = captured.globalPoint(forImagePixelX: target.x, target.y)
+                    say("  point: image (\(Int(target.x)), \(Int(target.y))) -> screen "
+                        + "(\(Int(resolved.x)), \(Int(resolved.y)))  [\(target.label)]")
+                }
+                if let proposal = answer.proposal, !proposal.isEmpty {
+                    for addition in proposal.add {
+                        say("  memory proposal: [\(addition.section.rawValue)] \(addition.fact)")
+                    }
+                }
+
+                if answer.spokenText.isEmpty && answer.detailText.isEmpty {
+                    say("FAIL: the reply parsed to nothing")
+                    exit(1)
+                }
+                say("OK")
+                exit(0)
+            } catch {
+                say("FAIL: \(error)")
+                if let chunksError = error as? ChunksError {
+                    say("  detail: \(chunksError.description)")
+                }
+                exit(1)
+            }
+        }
+
+        // The turn's completion handlers — screen capture, the SSE stream — are delivered on
+        // the main run loop. `app.run()` normally supplies it; in self-test there is no
+        // app, so without this the task is scheduled and then nothing ever services it. The
+        // loop never returns: the task above always calls `exit`.
+        RunLoop.main.run()
     }
 }
 
@@ -43,6 +151,20 @@ enum ChunksPhase: Equatable {
         case .capturing: return "camera.viewfinder"
         case .thinking: return "ellipsis.bubble"
         case .speaking: return "speaker.wave.2.fill"
+        }
+    }
+
+    /// Whether a turn may begin from this phase.
+    ///
+    /// `.listening` is included deliberately. The hotkey sets the phase to `.listening` on
+    /// the way *in* and calls `runTurn` on the way *out*, so a guard of `phase == .idle`
+    /// rejected every turn: the app sat on the microphone icon forever and never showed a
+    /// card. Spelled out here, and tested, rather than left as an inline comparison that
+    /// looks fine until the hotkey is wired to it.
+    var canStartTurn: Bool {
+        switch self {
+        case .idle, .listening: return true
+        case .capturing, .thinking, .speaking: return false
         }
     }
 }
@@ -115,15 +237,26 @@ final class AppShell: NSObject, ObservableObject {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
+        // Every actionable item gets `target = self` explicitly.
+        //
+        // A menu item with `target == nil` is resolved through the responder chain. Chunks
+        // is a menu-bar app: `AppShell` is not the app delegate, not a window controller,
+        // and never first responder, so nothing in the chain can handle these actions and
+        // they are silently dropped. The menu looked perfect and did nothing.
+        func add(_ title: String, _ action: Selector) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+
         let status = NSMenuItem(title: phase.label, action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
         menu.addItem(.separator())
 
-        menu.addItem(withTitle: "Ask about my screen", action: #selector(askNow), keyEquivalent: "")
-        menu.addItem(withTitle: "Ask about a region…", action: #selector(annotateAndAsk), keyEquivalent: "")
-        menu.addItem(withTitle: Settings.voiceOutput ? "Stop speaking" : "Speak answers",
-                     action: #selector(toggleVoice), keyEquivalent: "")
+        add("Ask about my screen", #selector(askNow))
+        add("Ask about a region…", #selector(annotateAndAsk))
+        add(Settings.voiceOutput ? "Stop speaking" : "Speak answers", #selector(toggleVoice))
 
         if !statusNote.isEmpty {
             let item = NSMenuItem(title: statusNote, action: nil, keyEquivalent: "")
@@ -132,11 +265,10 @@ final class AppShell: NSObject, ObservableObject {
             menu.addItem(.separator())
         }
 
-        menu.addItem(withTitle: hasPermission ? "Screen Recording: on" : "Grant Screen Recording…",
-                     action: hasPermission ? nil : #selector(requestPermission), keyEquivalent: "")
-        menu.addItem(withTitle: "Gemini key: \(KeychainStore.hasKey ? "set" : "not set")…",
-                     action: #selector(configureKey), keyEquivalent: "")
-        menu.addItem(withTitle: "Memory (\(memory.facts.count) facts)…", action: #selector(showMemory), keyEquivalent: "")
+        add(hasPermission ? "Screen Recording: on" : "Grant Screen Recording…",
+            #selector(requestPermission))
+        add("Gemini key: \(KeychainStore.hasKey ? "set" : "not set")…", #selector(configureKey))
+        add("Memory (\(memory.facts.count) facts)…", #selector(showMemory))
 
         if !points.isEmpty {
             menu.addItem(.separator())
@@ -154,7 +286,7 @@ final class AppShell: NSObject, ObservableObject {
         }
 
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Chunks", action: #selector(quit), keyEquivalent: "q")
+        add("Quit Chunks", #selector(quit))
         return menu
     }
 
@@ -163,10 +295,13 @@ final class AppShell: NSObject, ObservableObject {
         button.image = NSImage(systemSymbolName: phase.symbol,
                                accessibilityDescription: phase.label)
         button.toolTip = "Chunks — \(phase.label)"
-        // The menu's first row is the status line, so it has to track the phase.
-        if let first = statusMenu?.items.first, first.action == nil {
-            first.title = phase.label
-        }
+
+        // Rebuilt rather than patched. The menu's contents depend on the phase, the status
+        // note, the point count and the permission state, and keeping those in sync by hand
+        // is how the status line ends up claiming something the app is no longer doing.
+        let rebuilt = buildMenu()
+        statusMenu = rebuilt
+        statusItem?.menu = rebuilt
     }
 
     @objc private func statusItemClicked(_ sender: Any?) {
@@ -245,39 +380,59 @@ final class AppShell: NSObject, ObservableObject {
     /// press that triggers a turn, the global monitor is simpler and less risky — it
     /// cannot swallow anything.
     private var flagsMonitor: Any?
+    private var localFlagsMonitor: Any?
     private var controlAndOptionDown = false
 
+    /// Install both a global and a local `flagsChanged` monitor.
+    ///
+    /// A *global* monitor only sees events destined for other applications, so it goes
+    /// deaf the moment Chunks becomes frontmost — which happens every time the status menu
+    /// closes. The *local* monitor covers that gap.
     func installHotkey() {
-        flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged]) { [weak self] _ in
-            Task { @MainActor in self?.evaluateHotkey() }
+        flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
+            Task { @MainActor in self?.evaluateHotkey(flags: event.modifierFlags) }
+        }
+        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
+            Task { @MainActor in self?.evaluateHotkey(flags: event.modifierFlags) }
+            return event
         }
     }
 
-    private func evaluateHotkey() {
-        let flags = NSEvent.modifierFlags
+    /// Decide from the **event's own** flags, not `NSEvent.modifierFlags`.
+    ///
+    /// The global property is a query of current system state, read after an async hop to
+    /// the main actor — by then the user may have released a key already, and the value no
+    /// longer describes the transition that fired this callback. The event carries the flags
+    /// as they were when it happened, which is the only race-free source.
+    private func evaluateHotkey(flags: NSEvent.ModifierFlags) {
         let held = flags.contains(.control) && flags.contains(.option)
         guard held != controlAndOptionDown else { return }
         controlAndOptionDown = held
 
         if held {
-            setPhase(.listening)
+            // Do not clobber a turn that is already running. Pressing ⌃⌥ mid-turn would
+            // otherwise overwrite `.capturing`/`.thinking` with `.listening`, and the turn
+            // would end up in the wrong state with the icon stuck on the microphone.
+            if phase.canStartTurn { setPhase(.listening) }
         } else {
-            // Release = send. Question text arrives in Phase 4 with dictation; for now the
-            // turn runs with the default "what am I looking at?" prompt.
+            // Release = send. The phase is `.listening` at this point, and `runTurn` accepts
+            // a turn starting from there.
             Task { await runTurn(question: nil) }
         }
     }
 
     func uninstallHotkey() {
         if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
+        if let localFlagsMonitor { NSEvent.removeMonitor(localFlagsMonitor) }
         flagsMonitor = nil
+        localFlagsMonitor = nil
     }
 
     // MARK: Turn
 
     /// The whole "explain my screen" turn, start to finish.
     func runTurn(question: String?) async {
-        guard phase == .idle else { return }
+        guard phase.canStartTurn else { return }
 
         guard CaptureEngine.hasScreenRecordingPermission() else {
             fail(CaptureEngine.CaptureError.notAuthorised.description)
@@ -328,7 +483,7 @@ final class AppShell: NSObject, ObservableObject {
             // model talks, instead of appearing all at once at the end. The parser is
             // incremental by design, so the same type does the work either way.
             let answer = try await BrainGateway.shared.ask(request) { delta in
-                let partial = streamer.push(delta)
+                let partial = streamer.displayable
                 Task { @MainActor in
                     self.panel.update {
                         $0.status = .working("Answering…")
@@ -433,8 +588,12 @@ final class AppShell: NSObject, ObservableObject {
 
     private func setPhase(_ newPhase: ChunksPhase) {
         phase = newPhase
+        // Returning to idle also clears the hotkey's latched state. If a `flagsChanged`
+        // event is ever missed — the app launching while ⌃⌥ is already held, or a monitor
+        // tearing down — the latch would stay set and the next real press would be read as a
+        // release, starting a turn nobody asked for.
+        if newPhase == .idle { controlAndOptionDown = false }
         refreshIcon()
-        statusItem?.button?.toolTip = "Chunks — \(newPhase.label)"
     }
 
     func checkPermission() {
@@ -525,8 +684,21 @@ final class BrainGateway {
         req.timeoutInterval = 90
 
         let (bytes, response) = try await session.bytes(for: req)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw ChunksError.http((response as? HTTPURLResponse)?.statusCode ?? -1)
+        guard let http = response as? HTTPURLResponse else {
+            throw ChunksError.transport("No HTTP response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            // Read the body even on failure. Without it a 400 arrives as "The request was
+            // rejected: " with nothing after the colon, which is the least useful error
+            // message there is — the server usually names the exact field it disliked, and
+            // that is the only way to find out what was wrong.
+            var body = ""
+            do {
+                for try await line in bytes.lines { body += line + "\n" }
+            } catch {
+                body = "<body unreadable: \(error.localizedDescription)>"
+            }
+            throw ChunksError.http(statusCode: http.statusCode, body: body)
         }
 
         var text = ""
@@ -542,8 +714,13 @@ final class BrainGateway {
     }
 
     private static func classify(_ error: Error) -> RetryPolicy.Failure {
-        if let chunksError = error as? ChunksError, case .http(let code) = chunksError {
-            return RetryPolicy.classify(statusCode: code)
+        if let chunksError = error as? ChunksError {
+            switch chunksError {
+            case .http(let code, let body):
+                return RetryPolicy.classify(statusCode: code, body: body)
+            default:
+                return .unknown(statusCode: nil, detail: chunksError.description)
+            }
         }
         return RetryPolicy.classify(error: error)
     }
@@ -559,7 +736,7 @@ final class BrainGateway {
     static func interpret(_ raw: String) -> Answer {
         let streamer = AnswerStreamer()
         streamer.push(raw)
-        let result = streamer.finish()
+        let result = streamer.displayable
 
         return Answer(
             spokenText: result.speech.isEmpty ? result.detail : result.speech,
@@ -593,15 +770,25 @@ struct ResolvedPoint: Equatable {
 
 enum ChunksError: Error, CustomStringConvertible {
     case noCapableModel(String)
-    case http(Int)
+    /// An HTTP failure, with the server's explanation attached.
+    ///
+    /// The body is part of the error, not decoration. Gemini's 400s name the offending
+    /// field, and a bare status code sends you guessing.
+    case http(statusCode: Int, body: String)
+    case transport(String)
     case missingKey
     case keychain(OSStatus)
 
     var description: String {
         switch self {
-        case .noCapableModel(let m): return m
-        case .http(let code):
-            return RetryPolicy.userFacingMessage(for: RetryPolicy.classify(statusCode: code))
+        case .noCapableModel(let message): return message
+        case .http(let code, let body):
+            let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary = RetryPolicy.userFacingMessage(
+                for: RetryPolicy.classify(statusCode: code, body: detail))
+            return detail.isEmpty ? summary : "\(summary) — server said: \(detail.prefix(400))"
+        case .transport(let detail):
+            return "Couldn't reach the model: \(detail)"
         case .missingKey:
             return "No Gemini API key set. Add one in Settings."
         case .keychain(let status):

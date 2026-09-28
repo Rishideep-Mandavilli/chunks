@@ -50,6 +50,17 @@ public final class AnswerStreamer {
         return (speech, detail)
     }
 
+    /// What to render right now.
+    ///
+    /// Both parts are trimmed. A typical reply is `<SAY>…</SAY>`, a blank line, then a
+    /// `[POINT]`, and the raw buffer collects those newlines — so the panel would otherwise
+    /// show a couple of empty lines of secondary text under the answer. Trimming the ends
+    /// removes formatting noise without touching content.
+    public var displayable: (speech: String, detail: String) {
+        (speech.trimmingCharacters(in: .whitespacesAndNewlines),
+         detail.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     private func consume(_ events: [ReplyEvent]) {
         for event in events {
             switch event {

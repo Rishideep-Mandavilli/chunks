@@ -114,6 +114,27 @@ public enum AnswerPanelTests {
             expect(!streamer.hasAnything)
         }
 
+        // A real reply is `<SAY>…</SAY>`, a blank line, then a `[POINT]`. The raw buffer
+        // picks up those newlines, and the panel rendered them as empty lines of secondary
+        // text under the answer.
+        test("whitespace around the answer is trimmed for display") {
+            let streamer = AnswerStreamer()
+            streamer.push("\n<SAY>That's the back button.</SAY>\n\n")
+            streamer.finish()
+            let displayable = streamer.displayable
+            expectEqual(displayable.speech, "That's the back button.")
+            expectEqual(displayable.detail, "", "whitespace-only detail should render as nothing")
+        }
+
+        test("interior formatting in the detail is preserved") {
+            let streamer = AnswerStreamer()
+            streamer.push("\nFirst line.\nSecond line.\n")
+            streamer.finish()
+            let displayable = streamer.displayable
+            expectEqual(displayable.detail, "First line.\nSecond line.",
+                        "trimming the ends must not flatten interior structure")
+        }
+
         // MARK: Card sizing
 
         TestRunner.currentSuite = "Answer panel sizing"

@@ -296,6 +296,18 @@ public actor CaptureEngine {
         displays().first { $0.isMain } ?? displays().first
     }
 
+    /// A synthetic display used to place the answer panel when enumeration has failed.
+    ///
+    /// The panel has to have somewhere to appear even when the app cannot work, because
+    /// that is exactly when the user most needs to be told what is wrong. Sized to a
+    /// typical built-in display so the card lands in the middle of the screen rather than
+    /// at some absurd coordinate.
+    public static let fallbackDisplay = DisplayInfo(
+        displayID: 0,
+        frame: LogicalRect(x: 0, y: 0, width: 1440, height: 900),
+        backingScale: 2,
+        isMain: true)
+
     /// Resolve the model's 1-based `screenN` to a real display.
     public static func display(index oneBased: Int) -> DisplayInfo? {
         let all = displays()

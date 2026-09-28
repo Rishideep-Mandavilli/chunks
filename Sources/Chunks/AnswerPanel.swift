@@ -85,6 +85,9 @@ final class AnswerPanel {
                             backing: .buffered,
                             defer: false)
         panel.level = .floating
+        // Near-opaque, not `clear`. The card sits over whatever the user is working in,
+        // and at 0.92 the app behind showed through strongly enough to make the text hard
+        // to read — a companion that is hard to read is worse than no card at all.
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
@@ -126,8 +129,11 @@ final class AnswerPanel {
 
         // Single source of truth for the card's height, in ChunksKit so it is testable
         // without a window.
+        // Measured on the same text that gets drawn. Sizing on unbounded detail while
+        // drawing a bounded version is how a card ends up taller than it needs and the
+        // chips slide toward the bottom edge.
         let height = AnswerPanelLayout.measure(speech: content.speech,
-                                               detail: content.detail,
+                                               detail: AnswerPanelLayout.boundedDetail(content.detail),
                                                pointCount: content.points.count,
                                                width: width,
                                                inset: innerInset)
@@ -205,6 +211,11 @@ final class AnswerPanelView: NSView {
 
     // MARK: Layout
 
+    /// Detail as it should be rendered, bounded so the card cannot be swamped.
+    private var renderedDetail: String {
+        AnswerPanelLayout.boundedDetail(content.detail)
+    }
+
     /// Fonts and metrics. The values themselves live in `AnswerPanelLayout` so the panel
     /// and the tests agree on what "one line" costs.
     static let speechFont = AnswerPanelLayout.speechFont
@@ -225,23 +236,27 @@ final class AnswerPanelView: NSView {
         // Background via the layer rather than a drawn path. `masksToBounds` is what clips
         // overflow: a reply taller than the card's maximum would otherwise draw its text and
         // point chips straight past the rounded corners and onto the desktop.
-        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.6).cgColor
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.985).cgColor
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
         layer?.borderWidth = 1
 
+        // Uses the same constants and the same order as `AnswerPanelLayout.measure`. Keeping
+        // the two in step is the point: when the drawn layout and the card's height are
+        // computed independently they drift, and the drift only ever shows up as text
+        // sitting on top of a point chip on a real screen.
         var y: CGFloat = inset
         let width = rect.width - inset * 2
 
         y = drawStatus(at: NSPoint(x: inset, y: y), width: width)
-        y += 8
 
         if !content.speech.isEmpty {
             y = drawSpeech(at: NSPoint(x: inset, y: y), width: width)
-            y += 8
+            y += AnswerPanelLayout.sectionGap
         }
-        if !content.detail.isEmpty {
-            y = drawDetail(at: NSPoint(x: inset, y: y), width: width)
-            y += 8
+        let detail = renderedDetail
+        if !detail.isEmpty {
+            y = drawDetail(detail, at: NSPoint(x: inset, y: y), width: width)
+            y += AnswerPanelLayout.chipGap
         }
         if !content.points.isEmpty {
             drawPoints(at: NSPoint(x: inset, y: y), width: width)
@@ -274,7 +289,7 @@ final class AnswerPanelView: NSView {
                                    .foregroundColor: colour,
                                    .paragraphStyle: paragraph,
                                ])
-        return 16
+        return AnswerPanelLayout.statusRowHeight
     }
 
     private func drawSpeech(at origin: NSPoint, width: CGFloat) -> CGFloat {
@@ -291,24 +306,31 @@ final class AnswerPanelView: NSView {
             with: CGRect(x: origin.x, y: origin.y, width: width, height: height),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: attributes, context: nil)
-        return ceil(height)
+
+        // Rounded **up to a whole line**, not merely to the next pixel.
+        //
+        // `measure` reserves `lines * speechLineHeight`, which is never less than the
+        // measured height, so advancing by the raw pixel height keeps the two in step. A
+        // pixel-rounding slip here is what let a point chip land on the headline's last
+        // line — invisible in the maths, obvious on screen.
+        return ceil(height / Self.speechLineHeight) * Self.speechLineHeight
     }
 
-    private func drawDetail(at origin: NSPoint, width: CGFloat) -> CGFloat {
+    private func drawDetail(_ detail: String, at origin: NSPoint, width: CGFloat) -> CGFloat {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: Self.detailFont,
             .foregroundColor: NSColor.secondaryLabelColor,
         ]
-        let height = (content.detail as NSString).boundingRect(
+        let height = (detail as NSString).boundingRect(
             with: CGSize(width: width, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: attributes, context: nil).height
 
-        (content.detail as NSString).draw(
+        (detail as NSString).draw(
             with: CGRect(x: origin.x, y: origin.y, width: width, height: height),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: attributes, context: nil)
-        return ceil(height)
+        return ceil(height / Self.detailLineHeight) * Self.detailLineHeight
     }
 
     private func drawPoints(at origin: NSPoint, width: CGFloat) {

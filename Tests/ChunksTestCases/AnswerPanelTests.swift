@@ -185,5 +185,40 @@ public enum AnswerPanelTests {
             let height = AnswerPanelLayout.measure(speech: "", detail: "", pointCount: 0)
             expect(height >= 96, "a working card must have room for its status line: \(height)")
         }
+
+        TestRunner.currentSuite = "Answer panel detail bounding"
+
+        // A live run produced a 195pt wall of small bulleted type that pushed the point
+        // chips to the very bottom of the card and made the whole thing hard to read. The
+        // spoken answer already carried the headline, so a bounded summary beats a
+        // half-readable list.
+        test("a very long detail is bounded and marked as truncated") {
+            let long = String(repeating: "- A bullet point with some detail in it. ", count: 30)
+            let bounded = AnswerPanelLayout.boundedDetail(long)
+            expect(bounded.count < long.count, "detail was not bounded: \(bounded.count) chars")
+            expect(bounded.hasSuffix("…"), "truncation must be visible, not silent: \(bounded.suffix(20))")
+        }
+
+        test("short detail is left alone") {
+            let short = "Just one line."
+            expectEqual(AnswerPanelLayout.boundedDetail(short), short)
+        }
+
+        test("bounding detail keeps the card inside its maximum") {
+            let long = String(repeating: "Detail text that goes on. ", count: 200)
+            let bounded = AnswerPanelLayout.boundedDetail(long)
+            let height = AnswerPanelLayout.measure(
+                speech: "A headline.", detail: bounded, pointCount: 2)
+            expect(height <= AnswerPanelLayout.maximumHeight,
+                   "a bounded card must still fit: \(height)")
+        }
+
+        test("truncation prefers a line boundary over a mid-sentence cut") {
+            let line = String(repeating: "A line of detail. ", count: 12)   // ~204 chars
+            let bounded = AnswerPanelLayout.boundedDetail(line + "\n" + String(repeating: "x", count: 400))
+            expect(bounded.hasSuffix("…"))
+            expect(!bounded.contains("xx"),
+                   "a whole-line cut was expected, got a slice: \(bounded.suffix(40))")
+        }
     }
 }

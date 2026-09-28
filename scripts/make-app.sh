@@ -79,4 +79,20 @@ codesign --force --deep --sign - "$APP" 2>/dev/null || {
 }
 
 echo "==> Built $APP"
-echo "    open $APP   # then grant Screen Recording + Accessibility when prompted"
+echo
+echo "    open $APP"
+echo
+echo "  IMPORTANT - Screen Recording"
+echo "    macOS keys the Screen Recording grant to the app's CODE SIGNATURE."
+echo "    Every ad-hoc rebuild here produces a new signature, so a grant made"
+echo "    against a previous build stops applying. After each rebuild, re-grant in"
+echo "    System Settings > Privacy & Security > Screen Recording, then QUIT AND"
+echo "    REOPEN Chunks."
+echo
+echo "    If Chunks is listed but still cannot see your screen, remove it from"
+echo "    that list and add it again with +."
+echo
+echo "    Chunks now shows an orange triangle in the menu bar and an on-screen"
+echo "    card explaining this when the grant is missing."
+echo
+echo "    To check without the UI:  $APP/Contents/MacOS/Chunks --self-test"

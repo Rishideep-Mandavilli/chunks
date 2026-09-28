@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import ChunksKit
 import Combine
+import LocalAuthentication
 import Security
 import SwiftUI
 
@@ -12,11 +13,26 @@ import SwiftUI
 @main
 struct ChunksMain {
     @MainActor static func main() {
+        if CommandLine.arguments.contains("--log") { Log.clear() }
+        Log.write("launch: \(CommandLine.arguments.dropFirst().joined(separator: " "))")
+
         if CommandLine.arguments.contains("--self-test") {
             SelfTest.run()
             return
         }
-        AppShell.shared.start()
+
+        // `--ask` runs one real turn in the real GUI, so the panel can be observed on
+        // screen. The symptom being chased was "nothing appears", and nothing appears
+        // differently in a terminal than on a display — only a display can show a panel
+        // that is off-screen, transparent, or behind a window.
+        let questionIndex = CommandLine.arguments.firstIndex(of: "--ask")
+        let question = questionIndex.flatMap { index -> String? in
+            let next = index + 1
+            guard next < CommandLine.arguments.count else { return nil }
+            return CommandLine.arguments[next].hasPrefix("--") ? nil : CommandLine.arguments[next]
+        }
+
+        AppShell.shared.start(questionToRun: question)
     }
 }
 
@@ -44,7 +60,9 @@ enum SelfTest {
 
         say("Chunks self-test")
         say("  screen recording: \(CaptureEngine.hasScreenRecordingPermission() ? "granted" : "NOT granted")")
-        say("  api key: \(KeychainStore.hasKey ? "present" : "MISSING")")
+        let keyPresent = KeychainStore.hasKey
+        say("  api key: \(keyPresent ? "present" : "MISSING")")
+        Log.write("self-test: key present=\(keyPresent)")
         for display in CaptureEngine.displays() {
             say("  display \(display.displayID) \(Int(display.frame.width))x\(Int(display.frame.height))pt "
                 + "@\(display.backingScale)x\(display.isMain ? " main" : "")")
@@ -196,7 +214,7 @@ final class AppShell: NSObject, ObservableObject {
         super.init()
     }
 
-    func start() {
+    func start(questionToRun: String? = nil) {
         app = NSApplication.shared
         // Accessory, not regular: no Dock tile, no app menu. Chunks lives in the menu bar.
         app.setActivationPolicy(.accessory)
@@ -204,6 +222,16 @@ final class AppShell: NSObject, ObservableObject {
         let delegate = AppDelegate()
         app.delegate = delegate
         Settings.setKeyFromEnvironment()
+        Log.write("start: activationPolicy=accessory, questionToRun=\(questionToRun ?? "none")")
+
+        if let questionToRun {
+            // Deferred until the app has finished launching, otherwise the panel has no
+            // window server to draw into and the turn is wasted.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                Task { @MainActor in await self?.runTurn(question: questionToRun) }
+            }
+        }
+
         app.run()
     }
 
@@ -230,6 +258,20 @@ final class AppShell: NSObject, ObservableObject {
         statusItem = item
         statusMenu = buildMenu()
         item.menu = statusMenu
+    }
+
+    /// Whether the status item actually produced a button. A status item with no button is
+    /// silently invisible, and it is the one failure that looks identical to "the app is
+    /// not running".
+    var hasStatusButton: Bool { statusItem?.button != nil }
+
+    /// What the status menu currently contains, for diagnostics.
+    var menuSummary: [String] {
+        (statusMenu?.items ?? []).map { item in
+            let state = item.isEnabled ? "on" : "off"
+            let action = item.action.map { String(describing: $0) } ?? "none"
+            return "\(item.isSeparatorItem ? "---" : item.title) [\(state), target=\(item.target == nil ? "nil" : "self"), \(action)]"
+        }
     }
 
     /// Rebuild the menu. Called on click so it reflects the current phase and answer.
@@ -267,7 +309,9 @@ final class AppShell: NSObject, ObservableObject {
 
         add(hasPermission ? "Screen Recording: on" : "Grant Screen Recording…",
             #selector(requestPermission))
-        add("Gemini key: \(KeychainStore.hasKey ? "set" : "not set")…", #selector(configureKey))
+        // Cached, never a live Keychain read — see `KeychainStore.isKeyConfigured`.
+        add("Gemini key: \(KeychainStore.isKeyConfigured ? "set" : "not set")…",
+            #selector(configureKey))
         add("Memory (\(memory.facts.count) facts)…", #selector(showMemory))
 
         if !points.isEmpty {
@@ -290,11 +334,23 @@ final class AppShell: NSObject, ObservableObject {
         return menu
     }
 
-    private func refreshIcon() {
+    func refreshIcon() {
         guard let button = statusItem?.button else { return }
-        button.image = NSImage(systemSymbolName: phase.symbol,
-                               accessibilityDescription: phase.label)
-        button.toolTip = "Chunks — \(phase.label)"
+
+        // A warning glyph when Chunks cannot do its job. Without it the only sign of a
+        // missing Screen Recording grant is that asking questions produces nothing, which
+        // is indistinguishable from the app being broken.
+        let symbol: String
+        if !hasPermission {
+            symbol = "exclamationmark.triangle.fill"
+        } else {
+            symbol = phase.symbol
+        }
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: phase.label)
+        button.contentTintColor = hasPermission ? nil : .systemOrange
+        button.toolTip = hasPermission
+            ? "Chunks — \(phase.label)"
+            : "Chunks — Screen Recording not granted. Click for how to fix it."
 
         // Rebuilt rather than patched. The menu's contents depend on the phase, the status
         // note, the point count and the permission state, and keeping those in sync by hand
@@ -406,6 +462,7 @@ final class AppShell: NSObject, ObservableObject {
     /// as they were when it happened, which is the only race-free source.
     private func evaluateHotkey(flags: NSEvent.ModifierFlags) {
         let held = flags.contains(.control) && flags.contains(.option)
+        Log.write("flagsChanged: control=\(flags.contains(.control)) option=\(flags.contains(.option)) held=\(held) latched=\(controlAndOptionDown) phase=\(phase)")
         guard held != controlAndOptionDown else { return }
         controlAndOptionDown = held
 
@@ -432,17 +489,46 @@ final class AppShell: NSObject, ObservableObject {
 
     /// The whole "explain my screen" turn, start to finish.
     func runTurn(question: String?) async {
-        guard phase.canStartTurn else { return }
+        Log.write("runTurn: called, phase=\(phase), question=\(question ?? "(default)")")
 
-        guard CaptureEngine.hasScreenRecordingPermission() else {
-            fail(CaptureEngine.CaptureError.notAuthorised.description)
+        guard phase.canStartTurn else {
+            // A silent early return is how the app came to look alive and do nothing.
+            Log.write("runTurn: REFUSED, phase \(phase) cannot start a turn")
             return
         }
 
-        guard let display = CaptureEngine.mainDisplay() else {
+        // The panel is shown **before** any check that can fail.
+        //
+        // It used to be shown after the permission and display checks, so a turn refused by
+        // either produced no window at all: the icon moved and nothing else happened
+        // anywhere on screen. A failure the user cannot see is indistinguishable from the
+        // app being broken, which is exactly how it read.
+        let display = CaptureEngine.mainDisplay()
+        panel.show(on: display ?? CaptureEngine.fallbackDisplay) { [weak self] point in
+            CursorAnimator.move(to: point)
+            self?.statusNote = ""
+        }
+        panel.update { content in
+            content.status = .working("Reading your screen…")
+            content.speech = ""
+            content.detail = ""
+            content.points = []
+            content.isStreaming = false
+        }
+
+        guard CaptureEngine.hasScreenRecordingPermission() else {
+            Log.write("runTurn: no screen recording permission")
+            reportMissingPermission()
+            return
+        }
+
+        guard let display else {
+            Log.write("runTurn: no display")
             fail(CaptureEngine.CaptureError.noDisplays.description)
             return
         }
+
+        Log.write("runTurn: display \(display.displayID) \(Int(display.frame.width))x\(Int(display.frame.height))pt @\(display.backingScale)x")
 
         let ask = question?.trimmingCharacters(in: .whitespacesAndNewlines)
         panel.show(on: display) { [weak self] point in
@@ -462,9 +548,11 @@ final class AppShell: NSObject, ObservableObject {
             let captured = try await capture.capture(display: display, shapes: shapes)
             let image = captured.composited(with: shapes, display: display)
             guard let png = ScreenCapture(image: image, globalRect: captured.globalRect).png() else {
+                Log.write("runTurn: PNG encode failed")
                 fail(CaptureEngine.CaptureError.emptyImage.description)
                 return
             }
+            Log.write("runTurn: captured \(image.width)x\(image.height)px, png \(png.count / 1024) KB, shapes=\(shapes.count)")
 
             setPhase(.thinking)
             panel.update { $0.status = .working("Thinking…") }
@@ -494,6 +582,7 @@ final class AppShell: NSObject, ObservableObject {
                 }
             }
             streamer.finish()
+            Log.write("runTurn: reply received, \(answer.spokenText.count + answer.detailText.count) chars, \(answer.points.count) points")
             let final = Answer(
                 spokenText: answer.spokenText,
                 detailText: answer.detailText,
@@ -525,7 +614,9 @@ final class AppShell: NSObject, ObservableObject {
             }
             speak(final.spokenText)
             setPhase(.idle)
+            Log.write("runTurn: done")
         } catch {
+            Log.write("runTurn: FAILED — \(error)")
             fail(error.localizedDescription)
         }
     }
@@ -537,6 +628,45 @@ final class AppShell: NSObject, ObservableObject {
         utterance.voice = AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 1.05
         SpeechOutput.shared.speak(utterance)
+    }
+
+    /// Say clearly, on screen, that Screen Recording is missing.
+    ///
+    /// The subtlety here is that the permission is keyed to the app's **code signature**.
+    /// Every ad-hoc rebuild produces a new signature, so a grant made against yesterday's
+    /// binary does not apply to today's — which makes this failure look random during
+    /// development and is why the text has to say what to do rather than just that it
+    /// failed.
+    private func reportMissingPermission() {
+        hasPermission = false
+        statusNote = "Screen Recording is not granted to this build."
+        setPhase(.idle)
+        panel.update { content in
+            content.status = .failed("Chunks can't see your screen yet.")
+            content.detail = """
+            macOS is denying Screen Recording to this copy of Chunks.
+
+            1. System Settings → Privacy & Security → Screen Recording
+            2. Turn on Chunks — if it isn't listed, click + and choose
+               \(bundlePath)
+            3. **Quit and reopen Chunks.** macOS only applies a new grant after a relaunch.
+
+            If Chunks was already listed, rebuilds change the app's signature and the old
+            grant stops applying. Remove it and add this build again.
+            """
+            content.isStreaming = false
+        }
+    }
+
+    private var bundlePath: String {
+        Bundle.main.bundleURL.path
+    }
+
+    /// Show the permission instructions without running a turn. Used at launch.
+    func showPermissionProblem() {
+        let display = CaptureEngine.mainDisplay() ?? CaptureEngine.fallbackDisplay
+        panel.show(on: display) { point in CursorAnimator.move(to: point) }
+        reportMissingPermission()
     }
 
     private func applyMemory(_ proposal: MemoryProposal?) {
@@ -603,17 +733,31 @@ final class AppShell: NSObject, ObservableObject {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Log.write("didFinishLaunching")
         let shell = AppShell.shared
         shell.installStatusItem()
+        Log.write("status item installed, button=\(shell.hasStatusButton)")
         shell.installHotkey()
+        Log.write("hotkey installed")
         shell.checkPermission()
-        NSLog("[Chunks] launched. Screen recording: %@. Displays: %d.",
-              CaptureEngine.hasScreenRecordingPermission() ? "granted" : "NOT granted",
-              CaptureEngine.displays().count)
+        // The Keychain is read in the background, after the UI is already usable. Doing it
+        // inline froze the menu bar for nine seconds on the first launch of a new build.
+        KeychainStore.refreshInBackground {
+            Log.write("keychain refresh complete, configured=\(KeychainStore.isKeyConfigured)")
+            shell.refreshIcon()
+        }
+        Log.write("screen recording: \(CaptureEngine.hasScreenRecordingPermission() ? "granted" : "NOT granted")")
         for display in CaptureEngine.displays() {
-            NSLog("[Chunks]   display %u main=%@ bounds=%.0fx%.0f scale=%.1fx",
-                  display.displayID, display.isMain ? "yes" : "no",
-                  display.frame.width, display.frame.height, display.backingScale)
+            Log.write("  display \(display.displayID) main=\(display.isMain) "
+                + "\(Int(display.frame.width))x\(Int(display.frame.height))pt @\(display.backingScale)x")
+        }
+        Log.write("menu:\n  " + shell.menuSummary.joined(separator: "\n  "))
+
+        // Say so at launch rather than waiting for the user to press a hotkey and wonder.
+        // A menu-bar app that is alive but cannot work must look like it, not like it works.
+        if !CaptureEngine.hasScreenRecordingPermission() {
+            Log.write("no permission at launch — showing instructions")
+            shell.showPermissionProblem()
         }
     }
 }
@@ -1143,16 +1287,59 @@ enum KeychainStore {
         // that wrote it, and an empty key would otherwise become a 401 the user cannot
         // explain.
         guard let key = try read(), !key.isEmpty else { throw ChunksError.missingKey }
+        cacheKey.set(key)
         return key
     }
 
-    static var hasKey: Bool {
-        // `read()` already maps `errSecItemNotFound` to nil, so a successful call means
-        // the key is present and a thrown one means the Keychain itself is unreachable.
-        // The latter must not be reported as "no key set" — that sends the user to add a
-        // key they already added, while the real problem is an entitlement or lock state.
-        (try? read()) != nil
+    /// Whether a key is configured, from a **cached** value.
+    ///
+    /// Never call the Keychain from here. This is read while building the menu, which runs
+    /// on the main thread on launch and on every phase change, and `SecItemCopyMatching`
+    /// can block for seconds waiting on `securityd` — or indefinitely, waiting on a consent
+    /// dialog that a menu-bar app has no way to show. The symptom was a frozen menu-bar
+    /// icon for nine seconds at launch and an apparent hang on every hotkey press, with
+    /// nothing on screen to explain it.
+    private static let cacheKey = Cache()
+
+    final class Cache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: String?
+        private var loaded = false
+
+        var isConfigured: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return !(stored ?? "").isEmpty
+        }
+
+        func set(_ key: String?) {
+            lock.lock(); defer { lock.unlock() }
+            stored = key
+            loaded = true
+        }
+
+        var hasLoaded: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return loaded
+        }
     }
+
+    /// Read the Keychain off the main thread and publish the answer.
+    ///
+    /// Called once at launch and after any change. The UI renders whatever the cache says
+    /// and does not wait for it, so the menu is always instant.
+    static func refreshInBackground(onChange: @escaping @MainActor () -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let key = try? read()
+            cacheKey.set(key)
+            Task { @MainActor in onChange() }
+        }
+    }
+
+    /// Whether a key is configured. Reads only the cache — see `refreshInBackground`.
+    static var isKeyConfigured: Bool { cacheKey.isConfigured }
+
+    /// Blocking check, for the self-test and other places already off the main thread.
+    static var hasKey: Bool { (try? read()) != nil }
 
     @discardableResult
     static func setGeminiKey(_ key: String) -> Bool {
@@ -1170,19 +1357,39 @@ enum KeychainStore {
         ]
 
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let result: Bool
         if status == errSecItemNotFound {
-            return SecItemAdd(query.merging(attributes) { $1 } as CFDictionary, nil) == errSecSuccess
+            result = SecItemAdd(query.merging(attributes) { $1 } as CFDictionary, nil) == errSecSuccess
+        } else {
+            result = status == errSecSuccess
         }
-        return status == errSecSuccess
+        // Publish immediately so the menu never has to ask the Keychain again.
+        if result { cacheKey.set(trimmed) }
+        return result
     }
 
     private static func read() throws -> String? {
+        // Fail rather than prompt.
+        //
+        // Without this, a Keychain item created by another process — `security
+        // add-generic-password` from a shell, say — can make the app block on a consent
+        // dialog it has no way to display. A background app must get an answer
+        // immediately: treating "could not ask" as "no key" is recoverable, hanging the
+        // main thread is not.
+        //
+        // `LAContext.interactionNotAllowed` rather than the deprecated
+        // `kSecUseAuthenticationUIFail`, which macOS 11 deprecated and which only
+        // partially covers this case.
+        let context = LAContext()
+        context.interactionNotAllowed = true
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationContext as String: context,
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
@@ -1190,7 +1397,8 @@ enum KeychainStore {
         case errSecSuccess:
             guard let data = item as? Data else { return nil }
             return String(data: data, encoding: .utf8)
-        case errSecItemNotFound:
+        case errSecItemNotFound, errSecInteractionNotAllowed:
+            // Absent, or would have needed to prompt. Both mean "cannot use a key now".
             return nil
         default:
             throw ChunksError.keychain(status)

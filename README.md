@@ -100,8 +100,23 @@ AGENTS.md              conventions and invariants for AI coding agents
 
 ## Status
 
-Phase 1 in progress. Complete and tested: coordinate authority, secret rejection, memory
-store. See `CHUNKS-BUILD-PLAN.md` §6 for the phase breakdown.
+**Phase 1, core logic complete — 120 tests passing.**
+
+| | |
+|---|---|
+| Coordinate authority | ✅ tested at 1x/2x/3x, incl. negative-origin displays |
+| Secret rejection | ✅ 12 provider prefixes + entropy heuristic |
+| Memory store | ✅ plain markdown, 2 KB cap, never truncated |
+| Reply protocol parser | ✅ streaming, fail-open, split-tag safe |
+| Provider registry | ✅ capability profiles, `$0` fallback chain |
+| Retry + rate limiting | ✅ jittered backoff, 5 req/min token bucket |
+| Gemini request/SSE | ✅ `store:false` enforced by test |
+| Region resolver | ✅ marks → padded, clamped crop |
+| Screen capture | ⏳ needs a running app |
+| AppKit shell & overlay | ⏳ needs a running app |
+| Voice in/out | ⏳ Phase 4 |
+
+See `CHUNKS-BUILD-PLAN.md` §6 for the full phase breakdown.
 
 ## Licence
 

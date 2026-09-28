@@ -105,8 +105,32 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-Phase 1 in progress. Done: `CoordinateSpace`, `SecretSweeper`, `MemoryStore` — 36 tests
-green. Next: `CaptureEngine` (ScreenCaptureKit), `ProviderRegistry` + Gemini Interactions
-transport, `ResponseParser`, then the menu-bar shell.
+**Phase 1, core logic complete. 120 tests green across 7 suites.**
+
+Done and tested:
+
+| Component | File | Notes |
+|---|---|---|
+| Coordinate authority | `Capture/CoordinateSpace.swift` | The only type allowed to convert coords |
+| Secret rejection | `Memory/SecretSweeper.swift` | 12 provider prefixes + entropy heuristic |
+| Memory store | `Memory/MemoryStore.swift` | Plain markdown, 2 KB cap, never truncated |
+| Reply protocol | `Brain/ResponseParser.swift` | Streaming `[POINT]` / `<SAY>` / `<MEMORY>` / `<NOTE>` |
+| Provider registry | `Brain/ProviderRegistry.swift` | Capability profiles, `visionCapable: Bool?` |
+| Retry + rate limit | `Brain/RetryPolicy.swift` | Backoff with jitter, token bucket |
+| Request/SSE | `Brain/GeminiTransport.swift` | Pure builders; `store:false` enforced by test |
+| Region resolution | `Annotate/RegionResolver.swift` | Marks → padded, clamped crop rect |
+
+**Not yet built** — and note these are the parts that cannot be unit-tested here:
+
+- `CaptureEngine` — ScreenCaptureKit. Needs a running app and Screen Recording permission.
+- `BrainClient` — the async orchestrator wiring the fallback chain, retry policy and rate
+  limiter into one call. The pieces are tested; the wiring is not.
+- AppKit shell — status item, control panel, annotation overlay, cursor animation.
+- Voice input — `SpeechTranscriber` (macOS 26+), push-to-talk `CGEvent` tap.
+- `scripts/make-app.sh` — assembles `Chunks.app` from the SwiftPM executable.
+
+**Adding a test suite:** write the cases in `Tests/ChunksTestCases/`, then add
+`YourTests.register()` to `AllTests.swift`. `runAllChunksTests()` returns whether the
+suite passed.
 
 See `CHUNKS-BUILD-PLAN.md` for the full phased plan and `docs/ARCHITECTURE.md` for detail.

@@ -1,0 +1,12 @@
+.build/
+.swiftpm/
+*.xcodeproj
+*.xcworkspace
+
+# Never commit credentials. Chunks reads the API key from the Keychain at runtime;
+# if you ever add a local override file, it is ignored here by name.
+.env
+*.key
+secrets.plist
+
+.DS_Store

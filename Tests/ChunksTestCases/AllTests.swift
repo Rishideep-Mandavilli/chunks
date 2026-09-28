@@ -7,5 +7,6 @@ public func runAllChunksTests() -> Bool {
     CoordinateSpaceTests.register()
     SecretSweeperTests.register()
     MemoryStoreTests.register()
+    ResponseParserTests.register()
     return TestRunner.run()
 }

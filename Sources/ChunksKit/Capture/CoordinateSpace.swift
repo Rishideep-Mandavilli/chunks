@@ -39,6 +39,16 @@ public struct LogicalRect: Hashable, Sendable {
     }
     public var width: Double { size.width }
     public var height: Double { size.height }
+
+    /// The smallest rect containing both operands. Used to merge annotation bounding boxes
+    /// and to union crop regions.
+    public func union(_ other: LogicalRect) -> LogicalRect {
+        let x = min(minX, other.minX)
+        let y = min(minY, other.minY)
+        let maxX = max(maxX, other.maxX)
+        let maxY = max(maxY, other.maxY)
+        return LogicalRect(x: x, y: y, width: maxX - x, height: maxY - y)
+    }
     public var minX: Double { origin.x }
     public var minY: Double { origin.y }
     public var maxX: Double { origin.x + size.width }

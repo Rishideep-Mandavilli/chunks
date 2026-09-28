@@ -11,5 +11,6 @@ public func runAllChunksTests() -> Bool {
     ProviderRegistryTests.register()
     RetryPolicyTests.register()
     GeminiTransportTests.register()
+    RegionResolverTests.register()
     return TestRunner.run()
 }

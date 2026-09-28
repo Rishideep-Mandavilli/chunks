@@ -8,5 +8,7 @@ public func runAllChunksTests() -> Bool {
     SecretSweeperTests.register()
     MemoryStoreTests.register()
     ResponseParserTests.register()
+    ProviderRegistryTests.register()
+    RetryPolicyTests.register()
     return TestRunner.run()
 }

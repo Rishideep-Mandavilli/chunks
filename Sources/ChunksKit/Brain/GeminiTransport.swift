@@ -55,7 +55,7 @@ public enum GeminiRequestBuilder {
         case text(String)
         case image(base64: String, mimeType: String)
 
-        var json: [String: Any] {
+        public var json: [String: Any] {
             switch self {
             case .text(let t):
                 return ["type": "text", "text": t]

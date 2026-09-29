@@ -50,20 +50,20 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <!-- Menu-bar only: no Dock tile, no app switcher entry. -->
     <key>LSUIElement</key>                   <true/>
 
-    <!-- Screen Recording. macOS requires the app to be relaunched after the user
+    <!-- Push-to-talk. macOS requires the app to be relaunched after the user
          grants this, which the UI states rather than pretending otherwise. -->
     <key>NSScreenCaptureUsageDescription</key>
     <string>Chunks reads your screen only when you ask, so it can explain what you are looking at.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Chunks listens only while you hold the talk hotkey, so you can ask about your screen by voice.</string>
+    <string>Chunks listens only while you hold the talk hotkey, so you can ask about your screen by voice. Transcription happens on your Mac.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Chunks transcribes your voice locally so you can ask about your screen by voice.</string>
-    <key>NSDesktopFolderUsageDescription</key>
-    <string>Chunks reads a document you point it at, so it can explain the open file.</string>
-    <key>NSDocumentsFolderUsageDescription</key>
-    <string>Chunks reads a document you point it at, so it can explain the open file.</string>
-    <key>NSDownloadsFolderUsageDescription</key>
-    <string>Chunks reads a document you point it at, so it can explain the open file.</string>
+    <string>Chunks transcribes your voice locally so you can ask about your screen by voice. Audio is not sent anywhere.</string>
+
+    <!-- The push-to-talk shortcut is a system-wide event tap. Chunks installs a
+         listen-only tap, so this is for seeing the key, never for altering what other
+         apps receive. -->
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>Chunks listens for the hold-to-talk shortcut while you work in other apps. It reads only that key and never records what you type.</string>
 
     <!-- Needed to read the Accessibility tree for computer-use actions (Phase 5). -->
     <key>NSAppleEventsUsageDescription</key>

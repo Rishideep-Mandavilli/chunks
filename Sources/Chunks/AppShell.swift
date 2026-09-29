@@ -209,6 +209,24 @@ final class AppShell: NSObject, ObservableObject {
     private let memory: MemoryStore
     private let panel = AnswerPanel()
 
+    /// Push-to-talk. Replaces the earlier `NSEvent` monitor: a listen-only `CGEvent` tap
+    /// cannot swallow keystrokes, and it does not go deaf when Chunks becomes frontmost.
+    private let dictation = Dictation()
+    private var pushToTalk = PushToTalkMonitor()
+
+    /// Words worth biasing recognition toward. "Rishi_Projects" and a window title are
+    /// exactly what a general recogniser mangles, and asking about a screen full of
+    /// identifiers is the entire use case.
+    private func contextualKeyterms() -> [String] {
+        var terms: [String] = ["Chunks", "Raycast", "Xcode", "Swift"]
+        terms.append(contentsOf: memory.facts.map { $0.text })
+        if let frontmost = NSWorkspace.shared.frontmostApplication {
+            terms.append(frontmost.localizedName ?? "")
+            terms.append(frontmost.bundleIdentifier ?? "")
+        }
+        return terms.filter { !$0.isEmpty }
+    }
+
     private override init() {
         memory = MemoryStore(fileURL: MemoryStore.defaultURL())
         super.init()
@@ -223,6 +241,9 @@ final class AppShell: NSObject, ObservableObject {
         app.delegate = delegate
         Settings.setKeyFromEnvironment()
         Log.write("start: activationPolicy=accessory, questionToRun=\(questionToRun ?? "none")")
+        dictation.onFinalTranscript = { [weak self] transcript in
+            self?.beginTurn(withTranscript: transcript)
+        }
 
         if let questionToRun {
             // Deferred until the app has finished launching, otherwise the panel has no
@@ -309,7 +330,8 @@ final class AppShell: NSObject, ObservableObject {
 
         add(hasPermission ? "Screen Recording: on" : "Grant Screen Recording…",
             #selector(requestPermission))
-        // Cached, never a live Keychain read — see `KeychainStore.isKeyConfigured`.
+        add(dictation.hasPermissions ? "Microphone: on" : "Grant Microphone…",
+            #selector(requestMicrophone))
         add("Gemini key: \(KeychainStore.isKeyConfigured ? "set" : "not set")…",
             #selector(configureKey))
         add("Memory (\(memory.facts.count) facts)…", #selector(showMemory))
@@ -425,64 +447,50 @@ final class AppShell: NSObject, ObservableObject {
         NSLog("[Chunks] screen recording requested — restart the app after granting")
     }
 
+    @objc private func requestMicrophone() {
+        Task { await dictation.requestPermissions() }
+    }
+
     // MARK: Hotkey
 
     /// Hold ⌃⌥ to ask, release to send.
-    ///
-    /// ⌃⌥ is two modifiers, so the signal is `flagsChanged`, not `keyDown`. An
-    /// `NSEvent` global monitor is used rather than a `CGEvent` tap here: the tap is the
-    /// right tool for a *listen-only* tap that must not consume events, and for a full
-    /// push-to-talk pipeline with a microphone in the middle (Phase 4). For the button
-    /// press that triggers a turn, the global monitor is simpler and less risky — it
-    /// cannot swallow anything.
-    private var flagsMonitor: Any?
-    private var localFlagsMonitor: Any?
-    private var controlAndOptionDown = false
-
-    /// Install both a global and a local `flagsChanged` monitor.
-    ///
-    /// A *global* monitor only sees events destined for other applications, so it goes
-    /// deaf the moment Chunks becomes frontmost — which happens every time the status menu
-    /// closes. The *local* monitor covers that gap.
     func installHotkey() {
-        flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
-            Task { @MainActor in self?.evaluateHotkey(flags: event.modifierFlags) }
+        pushToTalk.onTransition = { [weak self] transition in
+            guard let self else { return }
+            switch transition {
+            case .pressed:
+                self.setPhase(.listening)
+                Task { await self.dictation.start(keyterms: self.contextualKeyterms()) }
+            case .released:
+                self.dictation.stop()
+            }
         }
-        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
-            Task { @MainActor in self?.evaluateHotkey(flags: event.modifierFlags) }
-            return event
-        }
+        pushToTalk.start()
     }
 
-    /// Decide from the **event's own** flags, not `NSEvent.modifierFlags`.
-    ///
-    /// The global property is a query of current system state, read after an async hop to
-    /// the main actor — by then the user may have released a key already, and the value no
-    /// longer describes the transition that fired this callback. The event carries the flags
-    /// as they were when it happened, which is the only race-free source.
-    private func evaluateHotkey(flags: NSEvent.ModifierFlags) {
-        let held = flags.contains(.control) && flags.contains(.option)
-        Log.write("flagsChanged: control=\(flags.contains(.control)) option=\(flags.contains(.option)) held=\(held) latched=\(controlAndOptionDown) phase=\(phase)")
-        guard held != controlAndOptionDown else { return }
-        controlAndOptionDown = held
-
-        if held {
-            // Do not clobber a turn that is already running. Pressing ⌃⌥ mid-turn would
-            // otherwise overwrite `.capturing`/`.thinking` with `.listening`, and the turn
-            // would end up in the wrong state with the icon stuck on the microphone.
-            if phase.canStartTurn { setPhase(.listening) }
-        } else {
-            // Release = send. The phase is `.listening` at this point, and `runTurn` accepts
-            // a turn starting from there.
-            Task { await runTurn(question: nil) }
+    /// Called when dictation produces the final transcript. This is where the held key
+    /// becomes an actual question — the part that was a stub before.
+    private func beginTurn(withTranscript transcript: String) {
+        Log.write("dictation: transcript \"\(transcript)\"")
+        guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            // An empty transcript means the key was tapped, not held, or the recogniser
+            // heard nothing. Running a turn with the default question would answer a
+            // question the user did not ask, so say so instead.
+            setPhase(.idle)
+            panel.show(on: CaptureEngine.mainDisplay() ?? CaptureEngine.fallbackDisplay) { _ in }
+            panel.update { content in
+                content.status = .failed("Didn't catch that.")
+                content.detail = "Hold \u{2308}\u{2325} while you speak, then let go."
+                content.isStreaming = false
+            }
+            return
         }
+        Task { await runTurn(question: transcript) }
     }
 
     func uninstallHotkey() {
-        if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
-        if let localFlagsMonitor { NSEvent.removeMonitor(localFlagsMonitor) }
-        flagsMonitor = nil
-        localFlagsMonitor = nil
+        pushToTalk.stop()
+        dictation.cancel()
     }
 
     // MARK: Turn
@@ -718,11 +726,6 @@ final class AppShell: NSObject, ObservableObject {
 
     private func setPhase(_ newPhase: ChunksPhase) {
         phase = newPhase
-        // Returning to idle also clears the hotkey's latched state. If a `flagsChanged`
-        // event is ever missed — the app launching while ⌃⌥ is already held, or a monitor
-        // tearing down — the latch would stay set and the next real press would be read as a
-        // release, starting a turn nobody asked for.
-        if newPhase == .idle { controlAndOptionDown = false }
         refreshIcon()
     }
 

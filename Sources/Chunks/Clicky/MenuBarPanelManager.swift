@@ -12,6 +12,8 @@
 //
 
 import AppKit
+import Combine
+import ChunksKit
 import SwiftUI
 
 extension Notification.Name {
@@ -32,6 +34,7 @@ final class MenuBarPanelManager: NSObject {
     private var dismissPanelObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
+    private var panelToggleCancellable: AnyCancellable?
     private let panelWidth: CGFloat = 320
     private let panelHeight: CGFloat = 380
 
@@ -47,6 +50,16 @@ final class MenuBarPanelManager: NSObject {
         ) { [weak self] _ in
             self?.hidePanel()
         }
+
+        // ⌃⌥⌘C, from the same listen-only tap that carries push-to-talk. It lives here
+        // rather than in the manager because opening the panel is this type's job; the tap
+        // only knows the chord fired.
+        panelToggleCancellable = companionManager.globalPushToTalkShortcutMonitor
+            .panelTogglePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.toggle()
+            }
     }
 
     deinit {
@@ -69,6 +82,10 @@ final class MenuBarPanelManager: NSObject {
         button.image?.isTemplate = true
         button.action = #selector(statusItemClicked)
         button.target = self
+        // The shortcut the user cannot find is on the icon itself, where hovering is the
+        // only way to ask without opening the thing being hidden.
+        button.toolTip = "Chunks — hold \(BuddyPushToTalkShortcut.pushToTalkDisplayText) to talk, "
+            + "\(PanelShortcut.displayText) for this menu"
     }
 
     /// Draws the clicky triangle as a menu bar icon. Uses the same shape
@@ -117,6 +134,13 @@ final class MenuBarPanelManager: NSObject {
     }
 
     @objc private func statusItemClicked() {
+        toggle()
+    }
+
+    /// Show the panel if it is hidden, hide it if it is showing — from the click, the
+    /// keyboard chord, and the notch chip, which must not drift into three definitions of
+    /// "open".
+    func toggle() {
         if let panel, panel.isVisible {
             hidePanel()
         } else {

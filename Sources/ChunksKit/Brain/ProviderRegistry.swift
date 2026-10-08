@@ -85,28 +85,34 @@ public struct ProviderRegistry: Sendable {
 
     /// Free-tier Gemini models, measured rather than assumed.
     ///
-    /// `visionCapable` values are from live probes: a synthetic shape image was described
-    /// correctly by each of these, and a real 3420x2214 screenshot was read correctly.
-    ///
-    /// Order matters — `fallbackChain` walks it. Newest first, because that is what the
-    /// user wants; the flash-lite tiers at the end are what absorbs `503 high demand`.
+    /// Rate limit observed on the free tier: 5 requests/minute per model.
+    public static let freeTierRequestsPerMinute = 5
+
+    /// Order matters — `fallbackChain` walks it, and a turn is only as fast as the model it
+    /// lands on. This order is measured, not assumed: across every completed turn on one key,
+    /// `gemini-3.8-flash` returned `429` five times and served nothing, while
+    /// `gemini-3.6-flash` served all three finished turns (7.8s, 6.5s, 12.7s). Leading with the
+    /// newest model therefore paid one guaranteed failure and one pointless switch every single
+    /// turn. Pro stays last: measured 55 seconds on the same screenshot and still came back
+    /// contended, which is longer than the wait that would have cleared a Flash tier.
     public static let geminiFreeModels: [BrainModel] = [
+        BrainModel(id: "gemini-3.6-flash", displayName: "Gemini 3.6 Flash",
+                   visionCapable: true, costPerMTokIn: 0, costPerMTokOut: 0),
         BrainModel(id: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash",
                    visionCapable: true, contextTokens: 200_000,
                    costPerMTokIn: 0, costPerMTokOut: 0),
-        BrainModel(id: "gemini-3.1-pro-preview", displayName: "Gemini 3.1 Pro",
-                   visionCapable: true, contextTokens: 200_000,
-                   costPerMTokIn: 0, costPerMTokOut: 0),
-        BrainModel(id: "gemini-3.6-flash", displayName: "Gemini 3.6 Flash",
-                   visionCapable: true, costPerMTokIn: 0, costPerMTokOut: 0),
         BrainModel(id: "gemini-3.1-flash-lite", displayName: "Gemini 3.1 Flash Lite",
                    visionCapable: true, costPerMTokIn: 0, costPerMTokOut: 0),
         BrainModel(id: "gemini-flash-lite-latest", displayName: "Gemini Flash Lite (latest)",
                    visionCapable: true, costPerMTokIn: 0, costPerMTokOut: 0),
+        BrainModel(id: "gemini-3.1-pro-preview", displayName: "Gemini 3.1 Pro",
+                   visionCapable: true, contextTokens: 200_000,
+                   costPerMTokIn: 0, costPerMTokOut: 0),
     ]
 
-    /// Rate limit observed on the free tier: 5 requests/minute per model.
-    public static let freeTierRequestsPerMinute = 5
+    /// The model a turn starts on when nothing has been chosen. Same measurement as the chain:
+    /// the tier that has never refused a request on this account.
+    public static let defaultFreeModelID = "gemini-3.6-flash"
 
     public static let gemini = BrainProvider(
         id: "gemini",

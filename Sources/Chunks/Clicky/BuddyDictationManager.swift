@@ -345,6 +345,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         activeTranscriptionSession?.cancel()
+        activeTranscriptionSession = nil
 
         resetSessionState()
     }
@@ -511,11 +512,22 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         )
     }
 
+    /// Warm the recogniser at launch, and leave the microphone alone.
+    ///
+    /// The measured three-second gap was the `SFSpeechRecognizer` handshake sitting inside the
+    /// press path, not the audio engine coming up — that is a couple of hundred milliseconds. So
+    /// this pays the expensive cost once, early, and the mic still only opens when a key is held.
+    /// An always-on input is a thing a companion app has to answer for, and the user asking "why is
+    /// it listening all the time" is the correct question to face.
+    func warmUpTranscriber() {
+        transcriptionProvider.warmUp()
+    }
+
     private func startRecognitionSession() async throws {
         activeTranscriptionSession?.cancel()
         activeTranscriptionSession = nil
 
-        print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
+        Log.write("dictation: opening the provider \(transcriptionProvider.displayName)")
 
         let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
             keyterms: buildTranscriptionKeyterms(),
@@ -544,7 +556,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         )
 
         self.activeTranscriptionSession = activeTranscriptionSession
-        print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
 
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -556,7 +567,13 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         }
 
         audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            try audioEngine.start()
+            Log.write("dictation: microphone live at \(Int(inputFormat.sampleRate)) Hz")
+        } catch {
+            Log.write("dictation: engine refused to start — \(error)")
+            throw error
+        }
     }
 
     private func handleRecognitionError(_ error: Error) {
@@ -596,6 +613,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         activeTranscriptionSession?.cancel()
+        activeTranscriptionSession = nil
 
         resetSessionState()
 
@@ -650,18 +668,14 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func buildTranscriptionKeyterms() -> [String] {
+        // The words this product actually hears. The list inherited from upstream named a
+        // different product entirely ("Learning Buddy", "makesomething", "Vercel") and, until
+        // `contextualStrings` was wired up, was thrown away unread — so it was wrong twice over.
         let baseKeyterms = [
-            "makesomething",
-            "Learning Buddy",
-            "Codex",
-            "Claude",
-            "Anthropic",
-            "OpenAI",
-            "SwiftUI",
-            "Xcode",
-            "Vercel",
-            "Next.js",
-            "localhost"
+            "Chunks", "WhatsApp", "Chrome", "Safari", "YouTube", "Gmail", "Notes", "Music",
+            "Slack", "VS Code", "Xcode", "Terminal", "Finder", "Spotlight", "Gemini", "OpenAI",
+            "Anthropic", "Claude", "Swift", "Keychain", "Accessibility", "screenshot",
+            "message", "scroll", "search", "volume", "click", "type", "open",
         ]
 
         let combinedKeyterms = baseKeyterms + contextualKeyterms

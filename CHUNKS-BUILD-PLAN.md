@@ -1,37 +1,43 @@
-# Chunks — Build Plan
+# Chunks — Build Plan v2
 
-A native macOS menu-bar companion that **sees your screen, explains it, and helps you act on it** — by voice.
+A native macOS **notch-resident** companion that **sees your screen, explains it, and helps you act on it** — by voice. Single assistant. You are its main preference.
 
-**Status:** planning complete, awaiting Phase 0 spike approval.
+**Status:** v3 scope correction 2026-10-03 — see **§11**. v2 stands for everything §11 doesn't override.
+**Phase 0:** complete — Chunks can see your screen for $0 (ground-truth tested, see §6).
 
 ---
 
-## 0. Locked decisions
+## 0. Locked decisions v2
 
-| Area | Decision |
+| Area | Decision (v2 = current) |
 |---|---|
-| Brain | **Pluggable provider registry.** Gemini (Google Pro OAuth → free API tier), OpenCode Zen, Anthropic, OpenAI, Ollama. Switchable in one click. |
-| Voice in | `SpeechTranscriber` (macOS 26+, on-device, free) primary → whisper.cpp fallback |
-| Voice out | **Kokoro** default → `AVSpeechSynthesizer` toggle in settings |
-| Computer use | **Click + type, every action behind an Allow / Not now confirmation gate, plus a no-focus-steal policy layer I write.** Scope fixed — no additions here. |
-| **Memory** | **First-class, the highest-priority feature.** Designed in Phase 1 and threaded through every later phase — not deferred to the end. See §4. |
-| Platform | Native Swift/SwiftUI, `LSUIElement`, no dock icon |
-| Base | Fork `farzaa/clicky` (MIT) — reuse its NSPanel overlay, CGEvent tap, ScreenCaptureKit, SSE plumbing |
-| Explicitly out | No agents, no sub-clickys, no code generation, no artifact files, no skills marketplace, no agent memory workspaces |
+| Shell | **Notch-anchored.** `NotchRootView`-style NSPanel bulging out from the notch + HUD chips + full window. MenuBar `NSStatusItem` is fallback on non-notch Macs. No dock icon (`LSUIElement`). |
+| Brain | **Pluggable provider registry.** Gemini (Google Pro OAuth → free API tier, default), OpenCode Zen, Anthropic, OpenAI, Ollama. One-click switch. Learned from Utsuwa: true BYOK + fully-offline path, no proxy lock-in. |
+| Scope | **HeyClicky parity minus parallel builders.** Screen annotate+explain, region + full-screen modes, `[POINT]` cursor search, voice reply, permissioned computer-use, routines, skills-as-context. **Out:** parallel sub-agents, multi-agent website/app builders, skills marketplace economy, proactive background surveillance. Single assistant does one task at a time, declares its own `<ARTIFACTS>`. |
+| Voice in | `SpeechTranscriber` (macOS 26+, on-device, free) primary → whisper.cpp fallback. Desktop push-to-talk `Ctrl+Shift+Space` (Utsuwa/Clawster convention). |
+| Voice out | **Kokoro** default → `AVSpeechSynthesizer` toggle. Utsuwa confirms local Kokoro-FastAPI pattern works. |
+| Computer use | **Permissioned control of Mac + all apps (Clawster-style).** `AXTDriver` + tool layer (open app, timer, volume, Focus block) + per-turn **Allow / Not now** consent card + per-app toggles. `Always allow` off by default. Background-only delivery + no-focus-steal `PolicyGate` I write. |
+| Memory + assistant | **First-class, highest priority.** Memory (facts/preferences/corrections, 2 KB cap) + Notebook (saved explanations) + **ReminderStore + Scheduler (launchd) + Planner (day brief)**. You are the main preference; everything resolves to you. See §4. |
+| Presence | **Moods + small physical body, in-app only, late phase.** ~10 moods in notch window/HUD bubbles (not 14 to start). No always-on desktop pet. `IDENTITY.md`/`SOUL.md`-style personality files, local. Learned from Utsuwa/Clawster, scoped to Chunks window per req §5–6. |
+| Pointer | **Cursor-trailer underneath cursor** (not behind it). Small badge/dot at +14–20px y-offset, follows cursor, easily identifiable, auto-retracts. Replaces HeyClicky's foreground cursor that caused black Loom captures. |
+| Platform | Native Swift/SwiftUI. No Electron/Tauri. |
+| Base | Fork `farzaa/clicky` (MIT) — reuse NSPanel overlay, CGEvent tap, ScreenCaptureKit, SSE plumbing. |
+| Hotkeys | `Cmd+Shift+Space` chat · `Cmd+Shift+/` snap+ask · `Cmd+Shift+A` full panel (Clawster convention, proven). `Cmd+M` memory viewer. |
+| Explicitly out | Parallel sub-agents/builders, skills marketplace, desktop pet on screen, proactive surveillance, code-gen agent teams, Docker schedulers, OAuth broker business. |
 
-**Target machine:** MacBook Air M5 · 10 cores · 16 GB · arm64 · macOS 27.0 · single 2880×1864 Retina display.
+**Target machine:** MacBook Air M5 · 10 cores · 16 GB · arm64 · macOS 27.0 · single 2880×1864 Retina display (notch).
 
 ---
 
 ## 1. The provider registry — the core abstraction
 
-Everything hinges on this, because you asked for easy switching between paid and free models. Each provider declares a **capability profile**, and Chunks degrades gracefully when a provider can't do something.
+Unchanged from v1. Everything hinges on this for paid↔free switching. Each provider declares a **capability profile**; Chunks degrades gracefully.
 
 ```swift
 struct BrainProvider: Identifiable {
     let id: String
     let displayName: String
-    let transport: Transport      // .openAICompatible | .anthropicMessages | .geminiGenerateContent | .ollama
+    let transport: Transport      // .openAICompatible | .anthropicMessages | .geminiInteractions | .ollama
     let baseURL: URL
     let auth: AuthKind           // .none | .bearerKey | .oauthGoogle | .headerKey(name:)
     let supportsVision: Bool
@@ -52,28 +58,15 @@ struct BrainModel {
 
 ### Why `visionCapable: Bool?` and not `Bool`
 
-Because I genuinely don't know yet. `nil` means *unknown*, and the app **probes at runtime**: send a 1×1 test image, record whether it errored. Settings shows a live capability matrix:
-
-```
-Provider              Vision   Streaming   Free
-──────────────────────────────────────────────────
-Gemini 3.1 Pro        ✅       ✅          —
-Gemini (API key)      ✅       ✅          ✅
-OpenCode Zen          ?        ✅          ✅ muse-spark-1.3-contributor-free
-Anthropic Sonnet 5    ✅       ✅          —
-OpenAI GPT-5.5        ✅       ✅          —
-Ollama (local)        ✅       ❌          ✅
-```
+`nil` = unknown; app **probes at runtime** with a 1×1 test image. Settings shows a live matrix. Utsuwa validates this approach: vision-gating by provider flag + model-name check, never silently send a text-only model a screenshot.
 
 ### Graceful degradation
 
-The prompt builder asks each turn what it needs, then picks a brain:
+1. Annotated region / "explain this" → **needs vision**.
+2. If selected provider lacks vision → auto-route to last vision-capable provider or say plainly: *"Muse Spark can't see images — switching to Gemini."*
+3. Never silently send text-only model a screenshot.
 
-1. User drew/annotated a region, or said "explain this" → **needs vision**
-2. If the selected provider lacks vision, Chunks either auto-routes to the last vision-capable provider or says so plainly: *"Muse Spark can't see images — switching to Gemini."*
-3. Never silently send a text-only model a screenshot and act like it worked.
-
-**Anti-pattern I'm explicitly avoiding:** HeyClicky's instructions tell the agent to *"say the blocker instead of pretending it ran."* Same rule here, enforced in code not prose.
+**Anti-pattern avoided:** HeyClicky instructs *"say the blocker instead of pretending it ran."* Same rule here, enforced in code not prose.
 
 ---
 
@@ -101,27 +94,26 @@ The prompt builder asks each turn what it needs, then picks a brain:
 | `opencode/gemini-3.5-flash-lite` | 0.30 / 2.50 | |
 | `opencode/muse-spark-1.3` | 1.25 / 4.25 | Paid sibling of the free model |
 
-Full Zen catalogue is 36 models. The gateway also appears to be OpenAI-compatible, which means a single transport may cover Zen + OpenAI + Ollama.
-
 ### Your Google Pro path
 
-- **With Google AI Pro:** Gemini CLI-style OAuth sign-in with the Google account — no API key, generous quota.
-- **After it lapses:** Gemini Developer API free tier from AI Studio, no subscription needed.
+- **With Google AI Pro:** Gemini CLI-style OAuth sign-in, no API key, generous quota.
+- **After it lapses:** Gemini Developer API free tier from AI Studio.
 - **Always:** direct API key if you prefer.
 
-This is the cleanest "paid → free" transition available, which is why Gemini is the default provider and the auto-fallback for vision.
+Gemini is the default provider and the auto-fallback for vision.
 
 ---
 
-## 3. Architecture
+## 3. Architecture v2
 
 ```
 ┌──────────────────────── Chunks.app (Swift/SwiftUI) ───────────────────────┐
 │                                                                            │
-│  MenuBarPanel ───── NSStatusItem + borderless NSPanel (no dock icon)      │
-│       │                                                                    │
+│  NotchShell ─────── NSStatusItem + notch-anchored NSPanel (bulging window) │
+│       │            fallback: menu-bar panel on non-notch Macs               │
 │       ├── SettingsPane   · provider picker · voice picker · hotkeys        │
-│       └── TranscriptHUD · streaming text, phase indicator                  │
+│       ├── TranscriptHUD  · streaming text, phase indicator, chips          │
+│       └── PresenceView   · (P7) mini-body + mood + speech bubbles IN-APP   │
 │                                                                            │
 │  CaptureEngine ──── ScreenCaptureKit, 2880×1864, single display           │
 │       │            CoordinateSpace: one authority for Retina scaling       │
@@ -130,66 +122,68 @@ This is the cleanest "paid → free" transition available, which is why Gemini i
 │       │   Tools: pen · arrow · ellipse(circle) · rect(highlight) · clear   │
 │       │   Undo stack · live-region preview · "explain this" submit          │
 │       ▼                                                                    │
-│  RegionResolver ──── annotation strokes/ellipses → bounding box            │
-│       │            → crop strategy: tight crop + padded context crop        │
+│  RegionResolver ──── strokes/ellipses → bbox → tight crop + padded context │
 │       ▼                                                                    │
 │  PromptBuilder ───── modes: .wholeScreen | .region(box) | .concept         │
 │       │            emits: image(s) + question + [POINT:x,y:label] contract │
 │       ▼                                                                    │
 │  BrainClient ────── provider registry → transport adapter → SSE stream      │
-│       │                                                                    │
-│       ├──► ResponseParser  · strips [POINT:x,y:label:screenN] tags         │
-│       │    · strips <SAY>…</SAY> blocks for TTS                             │
-│       ├──► PointEngine     · bezier arc flight + caption, then retract     │
-│       ├──► TTSEngine       · Kokoro (default) | AVSpeechSynthesizer        │
-│       └──► ActionEngine    · when the reply carries a proposed action      │
+│       │              Interactions API, store:false, backoff + fallback chain│
+│       ├──► ResponseParser · [POINT:x,y:label] · <SAY> · <MEMORY>           │
+│       │                   · <REMINDER> · <ARTIFACTS> · <ROUTINE>            │
+│       ├──► TrailerEngine  · badge UNDER cursor (+14–20px), follows, retract│
+│       ├──► TTSEngine      · Kokoro (default) | AVSpeechSynthesizer         │
+│       └──► ActionEngine   · single-task, declares <ARTIFACTS>              │
 │                                                                            │
 │  DictationController ─ CGEvent tap, hold-to-talk / toggle / wake word       │
 │                                                                            │
-│  ┌── MemoryEngine (loaded from Phase 1, refined every phase) ──────────┐   │
-│  │  MemoryStore  · plain markdown, hand-editable, git-friendly          │   │
-│  │  MemoryInjector· curated slice prepended to EVERY prompt              │   │
-│  │  MemoryWriter · model emits <MEMORY> blocks; app validates + merges │   │
-│  │  Notebook     · concepts Chunks explained, searchable, revisitable   │   │
+│  ┌── Memory + Assistant (Phase 1, refined every phase) ────────────────┐   │
+│  │  MemoryStore  · markdown, hand-editable, 2 KB cap, git-friendly     │   │
+│  │  MemoryInjector· curated slice prepended to EVERY prompt             │   │
+│  │  MemoryWriter · model emits <MEMORY>; app validates + merges        │   │
+│  │  SecretSweeper· regex+keyword reject before every write             │   │
+│  │  Notebook     · saved explanations, searchable, on-demand only      │   │
+│  │  ReminderStore· [reminder:..] tags + poll loop, survives reload     │   │
+│  │  Scheduler    · launchd LaunchAgents, read-only default             │   │
+│  │  Planner      · day brief from calendar + reminders + memory        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                            │
-│  ┌── ComputerUse (Phase 5) ──────────────────────────────────────────┐    │
-│  │  ActionEngine → AXTDriver → PolicyGate → Allow/Not-now card        │    │
+│  ┌── ComputerUse (Phase 5, permissioned) ─────────────────────────────┐    │
+│  │  ActionEngine → ToolLayer → AXTDriver → PolicyGate → ConsentGate   │    │
+│  │  ToolLayer: open app, timer, volume, Focus block (Clawster-style)  │    │
 │  │  AXTDriver: AX snapshot → element_token → AXPress/setValue         │    │
 │  │             window-scoped pixel fallback (no real-cursor move)     │    │
 │  │  PolicyGate: blocks desktop scope, ⌘L, ⌘1..9, ⌘⇧G, ⌥←/→, ctrl+tab │    │
+│  │  ConsentGate: Allow / Not now per turn + per-app toggles           │    │
 │  └────────────────────────────────────────────────────────────────────┘    │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
+Single assistant, one task at a time. No sub-agents. No parallel builders.
+
 ---
 
-## 4. Memory — the core feature
-
-You said memory is the main thing. That's the right call, and it changes the build order, so let me be explicit about it.
+## 4. Memory + personal assistant — the core feature
 
 ### The problem with the obvious design
 
-The naive approach — let the model append whatever it wants to a notes file — fails in three specific ways:
-
-1. **Prompt bloat.** If memory is injected into every prompt and it grows unchecked, you pay for it on every single turn *and* you drown the actual question in stale context.
-2. **Secret leakage.** A model asked to "remember this" will happily write down an API key you read aloud, a password, or a customer name.
-3. **Drift.** Nobody prunes. HeyClicky's own instruction contract has to *beg* the model to "prune anything stale or superseded" — prose that models follow inconsistently.
+1. **Prompt bloat** — unchecked memory drowns the question and costs every turn.
+2. **Secret leakage** — model happily writes API keys/passwords you read aloud.
+3. **Drift** — nobody prunes; prose contracts ("prune stale") are followed inconsistently.
 
 ### The design: app owns the file, model proposes the edits
 
 ```
-Turn N:  MemoryInjector prepends a CURATED slice  ──┐
-                                                   ├──▶ prompt ──▶ model
-Turn N:  model replies with optional <MEMORY> block ─┘                │
-                                                                    ▼
-                                          MemoryWriter parses, validates, merges
-                                                                    │
-                                                                    ▼
-                                                    MemoryStore (markdown on disk)
+Turn N:  MemoryInjector prepends CURATED slice ──┐
+                                                 ├──▶ prompt ──▶ model
+Turn N:  model replies with optional <MEMORY> ───┘                │
+                                                                  ▼
+                                        MemoryWriter parses, validates, merges
+                                                                  ▼
+                                                  MemoryStore (markdown on disk)
 ```
 
-**The model never writes the file.** It emits a structured block; the app decides what's admissible. That kills all three failure modes structurally rather than by asking nicely.
+**Model never writes the file.** Utsuwa proves the same principle at scale: app is game master, LLM suggests bounded deltas, app clamps and applies. Extraction fallback (second forced-JSON call) covers small models that skip the block.
 
 ### Storage: plain markdown, deliberately
 
@@ -210,29 +204,33 @@ Never store passwords, tokens, or API keys here.
 
 ## Standing preferences
 - Explain code before explaining concept       (2026-09-29)
+
+## Schedule (managed by Scheduler, read-only here)
+- Standup weekdays 09:30
+- Gym Tue/Thu 18:00
 ```
 
-Plain text on purpose: you can read it, edit it, grep it, put it in git, and it survives every app update. No database, no migration, no opaque store. If Chunks ever gets deleted or replaced, this file is still yours.
+Plain text: readable, greppable, git-friendly, survives app deletion. No DB migration. (Clawster uses LanceDB + Utsuwa uses IndexedDB+vectors; Chunks stays markdown for the hot path — simpler, hand-editable, zero-dependency. Semantic vector search is a P8 option, not a requirement.)
 
-### Two tiers, because they have different mechanics
+### Tiers
 
-| | **Memory** | **Notebook** |
-|---|---|---|
-| Holds | Facts about *you*, your projects, your preferences, your corrections | Concepts Chunks has *explained* to you |
-| Size | Hard cap ~2 KB (≈40 lines) | Unbounded, grows over months |
-| Injected | Every turn | Never — fetched on demand by search |
-| Lifetime | Continuously pruned | Append-only, you delete entries |
-| Why split | Must be tiny enough to always inject | Would destroy the prompt if always injected |
+| | **Memory** | **Notebook** | **Reminders/Schedules** |
+|---|---|---|---|
+| Holds | Facts about you, preferences, corrections | Concepts explained to you | Timers, reminders, recurring jobs, day plan |
+| Size | Hard cap ~2 KB (~40 lines) | Unbounded | Unbounded, one file per job |
+| Injected | Every turn | On demand (search) | On demand (due + today's slice) |
+| Lifetime | Continuously pruned | Append-only, you delete | Fires once / recurs per schedule |
+| Store | `memory.md` | `notebook/` markdown | `reminders.json` + `~/Library/LaunchAgents/com.chunks.*.plist` |
 
-**The Notebook is the sleeper feature.** Every time Chunks explains something on your screen, it can offer to save it:
+**Notebook is the sleeper feature.** Every explanation can be saved ("Want me to remember this as 'Debug Navigator'?"). Six months in, a personal knowledge base built from your own questions.
 
-> *"Want me to remember this? I'll keep it as 'Debug Navigator' so you can ask me about it later."*
+**Reminders:** model emits `[reminder:5min]...[/reminder]` or natural "remind me in 10 min" → client-side fallback schedules it. Poll loop every 10s, atomic claim so one window fires, missed-while-asleep surface on wake. Fired reminder enters as system event (no relationship/sentiment side effects — Utsuwa rule, adopted).
 
-Six months in, you have a personal knowledge base built from your own questions — every Xcode panel you've been confused by, every keyboard shortcut you've forgotten, explained in context at the moment you needed it. That's the thing HeyClicky's Clickys approximate with per-agent `AGENTS.md` files, but scoped to *you* instead of split across agents.
+**Scheduler:** launchd LaunchAgents (not in-process cron — survives sleep, coalesces on wake). Jobs read-only by default (*"every weekday 9:05 tell me what's new on my screen"* → notification). Actions require per-job opt-in. HeyClicky's own rule adopted: routines never silently escalate to writes.
+
+**Planner:** day brief = today's calendar + due reminders +Memory slice. Local-first; calendar via EventKit (no OAuth broker). Google/Slack/Linear later via official MCP servers (free, vendor-run), Ask-before-run default.
 
 ### The write contract
-
-The model may emit:
 
 ```
 <MEMORY>
@@ -240,331 +238,314 @@ The model may emit:
 </MEMORY>
 ```
 
-`MemoryWriter` then enforces, in this order:
+`MemoryWriter` enforces, in order:
 
-1. **Reject secrets.** Regex sweep for API-key shapes (`sk-`, `ghp_`, `AKIA`, long base64/hex blobs) plus a keyword blocklist (password, token, secret, credential, api key). Rejected facts are logged, never written.
-2. **Enforce the cap.** Over 2 KB? Refuse new adds and surface "memory is full — prune something?" in the HUD. Never silently truncate.
-3. **One line per fact.** Reject multi-line entries.
-4. **Dedupe.** Normalize and skip near-duplicates rather than accumulating.
-5. **Timestamp everything.** Append `(YYYY-MM-DD)`.
-6. **Never rewrite the header or the `## You` scaffolding.**
+1. **Reject secrets.** Regex (`sk-`, `ghp_`, `AKIA`, long base64/hex) + keywords. Log, never write.
+2. **Enforce cap.** Over 2 KB → refuse adds, surface "memory full — prune something?" Never silently truncate.
+3. **One line per fact.** Reject multi-line.
+4. **Dedupe.** Normalize + skip near-duplicates (cosine ≥0.9 if vectors enabled in P8, else normalized-text match).
+5. **Timestamp everything.** `(YYYY-MM-DD)`.
+6. **Never rewrite header/scaffolding.**
 
 ### Recall
 
-- **Always:** the curated Memory block, injected verbatim.
-- **On demand:** before answering a question that touches prior work, one extra model call does a Notebook lookup. Only fires when the question looks like it references something previous ("remind me what that Xcode thing was").
-- **Explicit:** `Cmd+M` opens the memory/notebook viewer for search, edit, and delete. Chunks must never be the only way to change memory.
-
-### Why this is worth building first
-
-Memory is what makes Chunks stop being a screenshot narrator and start being *your* tutor. Without it, every circle you draw starts from zero. With it, Chunks accumulates — and because the Notebook is yours in plain text, it's the one part of this that gets more valuable the longer you keep it, and survives everything else being deleted.
+- **Always:** curated Memory block, verbatim.
+- **On demand:** Notebook lookup via one extra call when question references prior work.
+- **Explicit:** `Cmd+M` memory/notebook/reminder viewer. Chunks is never the only way to edit.
 
 ---
 
-## 5. The three hardest engineering problems
+## 5. The hardest engineering problems
 
+### 5.1 Retina coordinate authority
 
-### 5.1 Retina coordinate authority (get this wrong and everything drifts)
+Screenshots 2880×1864 px vs AX 1440×932 points. Single `CoordinateSpace` type, one conversion function at the boundary. Round-trip tests 1x/2x/3x. Trailer offset (+14–20px y) lives here too — one place to get "underneath but identifiable" right.
 
-Screenshots are **2880×1864** (device pixels). The Accessibility API reports **1440×932 logical points**. macOS windows report in yet another frame. Mixing them is the single most common bug in this category — HeyClicky's own skill file says:
+### 5.2 Notch-anchored overlay that never steals focus
 
-> *"Never feed an element's `frame` values into `x, y` — frames are screen-absolute logical points, pixel args are screenshot pixels."*
+`NSPanel` `.nonactivatingPanel` + `canJoinAllSpaces` + `fullScreenAuxiliary`, never `NSApp.activate()`. Notch panel + annotation overlay + trailer all share this rule. Fork already solved most of it (`OverlayWindow.swift`, 881 lines) — reuse, add notch anchor + trailer layer.
 
-**Plan:** a single `CoordinateSpace` type that is the only thing allowed to convert. Every layer stores points; conversion to pixels happens once, at the boundary, in exactly one function. Round-trip tests at 1x/2x/3x.
+### 5.3 No-focus-steal policy gate + consent
 
-### 5.2 Overlay that never steals focus
-
-Annotations have to be drawn over *other* apps — including fullscreen ones. Requirements:
-- `NSPanel` with `.nonactivatingPanel`, `canJoinAllSpaces`, `fullScreenAuxiliary`
-- Never calls `NSApp.activate()`
-- Mouse events accepted while `ignoresMouseEvents == false`, but the window must not become key
-- On completion, fade out and release
-
-This is the part the MIT fork already solved (`OverlayWindow.swift`, 881 lines). I'm reusing it, not reimplementing it.
-
-### 5.3 The no-focus-steal policy gate
-
-Every open-source computer-use driver has an input ladder: `AX action → per-window event → per-PID event → global HID/cursor`. **Only the last rung moves your real cursor**, and it's the only one a user would notice and hate.
-
-I'm writing a `PolicyGate` that mirrors HeyClicky's closed-source Rego logic:
+Input ladder AX → per-window event → per-PID event → global HID. Only the last moves the real cursor. `PolicyGate` mirrors HeyClicky's closed Rego logic:
 
 ```
-DENY  scope == "desktop"                      # moves real pointer
-DENY  hotkey ⌘/ctrl + L                       # browser address bar — apps self-activate
-DENY  hotkey ⌘ + [1-9]                        # tab switching — visibly flips user's tabs
-DENY  hotkey ⌘ + [ ]  / ⌘⇧[ ⌘⇧]             # tab switching
-DENY  hotkey ⌘ + ⌥ + ←/→                     # Chrome/Safari prev/next tab
-DENY  hotkey ⌘⇧ + G                          # Finder "Go to Folder" — activates Finder
-DENY  hotkey ⌃ + Tab                          # cross-browser tab switch
+DENY  scope == "desktop"
+DENY  hotkey ⌘/ctrl + L
+DENY  hotkey ⌘ + [1-9] / [ ] / ⌘⇧[ ⌘⇧]
+DENY  hotkey ⌘ + ⌥ + ←/→ / ⌃ + Tab
+DENY  hotkey ⌘⇧ + G
 ALLOW everything else, background-delivered only
 ```
 
-Plus the confirmation gate: observation is always free; any *input* tool requires an explicit **Allow / Not now** card for that turn. A `Always allow` toggle exists per-category but is **off by default**.
+Plus `ConsentGate`: observation free; any input needs Allow/Not-now for that turn. Per-app toggles. `Always allow` off by default.
 
-Rationale, from HeyClicky's engineering note on why this must be argument-level rather than name-level:
+### 5.4 Trailer that tracks without jitter
 
-> "These aren't pure key events — the receiving app interprets 'user wants to type here' as activation intent and raises its window to be key."
+CGEvent-tap cursor polling + display-link follow, offset transform in `CoordinateSpace`, fade/retract on idle. Must not draw over fullscreen capture (the bug that forced HeyClicky v1.0.52 to remove its cursor) — trailer hides during capture.
 
 ---
 
-## 6. Phase plan
+## 6. Phase plan v2
 
-### Phase 0 — Vision spike ✅ **COMPLETE**
-
-**Verdict: Chunks can see your screen for $0. Confirmed with a ground-truth test.**
-
-#### Probe log
+### Phase 0 — Vision spike ✅ COMPLETE
 
 | Probe | Result |
 |---|---|
 | Zen free + image → `/chat/completions` | ❌ 403 `FreeTierError` |
-| Zen free + image → `/responses` (correct endpoint) | ❌ 403 `FreeTierError` |
-| Zen free, **text only** — isolates image from lock | ❌ 403 → **lock is on the tier, not on images** |
+| Zen free + image → `/responses` | ❌ 403 `FreeTierError` |
+| Zen free, text only | ❌ 403 → lock is on tier, not images |
 | Zen paid (`gpt-6-luna`, `muse-spark-1.3`) | ❌ 402 `Insufficient account funds` |
-| Gemini `models?pageSize=100` | ✅ 200 — **61 models** |
-| Gemini `gemini-2.5-flash:generateContent` | ❌ 404 — *"no longer available to new users"* |
-| **Gemini Interactions + synthetic probe.png** | ✅ **200 — description 100% correct** |
-| **Gemini Interactions + real 3420×2214 screenshot** | ✅ **200 — 1,066 image tokens** |
-| **Gemini Interactions, SSE streaming** | ✅ 200 — `step.delta` ×4, text assembled cleanly |
+| Gemini `models?pageSize=100` | ✅ 200 — 61 models |
+| Gemini `gemini-2.5-flash:generateContent` | ❌ 404 — retired |
+| **Gemini Interactions + synthetic probe.png** | ✅ **200 — 100% correct** |
+| **Gemini Interactions + real 3420×2214 shot** | ✅ **200 — 1,066 image tokens** |
+| **Gemini Interactions, SSE streaming** | ✅ `step.delta` ×4, clean |
 
-#### Ground-truth vision test
-
-Synthetic image: pale-yellow background, red square upper-left, green right-angled triangle centre, blue circle lower-right. Asked the model to enumerate shapes, colours, positions.
-
-Model's answer, verbatim:
-
-> 1. **Square** — Colour: Red — Location: Upper-left region
-> 2. **Triangle** (Right-angled triangle) — Colour: Green — Location: Center / middle region, with its horizontal top edge extending to the right
-> 3. **Circle** — Colour: Blue — Location: Lower-right region
-> *(Background: Pale yellow)*
-
-**Perfect score, including the triangle's orientation.** Real screenshots tested across `gemini-3.1-flash-lite`, `gemini-flash-lite-latest`, and `gemini-3.6-flash` — all three correctly identified the foreground app (Terminal), the OpenCode session, and the project name on screen.
-
-#### The numbers that matter
+Ground truth (red square / green triangle / blue circle on pale yellow): perfect, incl. triangle orientation. Real screenshots: correctly ID'd Terminal + OpenCode session + project name.
 
 | Metric | Measured |
 |---|---|
-| **Real full-screen screenshot cost** | **1,066 image tokens** (3420×2214 PNG, 1.7 MB) |
-| Total tokens per Chunks turn | ~1,085 in + ~100 out ≈ **1,200** |
-| Latency, full screenshot | 7.4 s (`3.1-flash-lite`) · 12.4 s (`flash-lite-latest`) · 18.4 s (`3.6-flash`, 587 thought tokens) |
-| Perceived latency | **Much lower with SSE streaming** — first `step.delta` arrives well before completion |
+| Full screenshot cost | 1,066 image tokens (3420×2214 PNG, 1.7 MB) |
+| Per turn | ~1,085 in + ~100 out ≈ 1,200 tokens |
+| Latency | 7.4s (`3.1-flash-lite`) · 12.4s (`flash-lite-latest`) · 18.4s (`3.6-flash`) — SSE makes perceived much lower |
+| Cost | $0 Gemini free · ~$0.0002/turn Zen vision · ~$1/mo at 100 turns/day |
 
-At ~1,200 tokens/turn, Chunks costs **$0 on Gemini's free tier**, or **~$0.0002/turn** on Zen's `deepseek-v4-flash-vision-exp` ($0.14/$0.28 per MTok) — roughly **$1/month** at 100 turns/day.
+API: `POST .../v1beta/interactions` + `Api-Revision: 2026-05-20`, `{"store":false,...}`, `?alt=sse` + `"stream":true` for streaming. `previous_interaction_id` for multi-turn; JSON-schema structured output replaces `<MEMORY>` regex later.
 
-#### The API changed — use Interactions, not generateContent
+Constraints: 503 high-demand on newest flash (~50%) → backoff + fallback chain (`3.8-flash → 3.6-flash → 3.1-flash-lite → flash-lite-latest`); 5 req/min free-tier → client token-bucket queue.
 
-Google has migrated new models to the **Interactions API**. `generateContent` returns *"no longer available to new users"* for retired models and is the wrong surface going forward.
+### Phase 1 — Notch shell + explain + memory core (3–4 days)
 
-```
-POST https://generativelanguage.googleapis.com/v1beta/interactions
-Headers: x-goog-api-key: <key>
-         Content-Type: application/json
-         Api-Revision: 2026-05-20
+> **Progress (2026-10-04).** Done: the result-tag protocol (`<SUMMARY>`, `<DONE_TITLE>`,
+> `<NEXT_ACTIONS>`, plus `[POINT:none]`) in `ResponseParser`/`AnswerStreamer`; the notch shell
+> — `NotchGeometry` (pure, 14 cases, checked against the measured 185x33.5 pt cutout) and
+> `Sources/Chunks/HUD/` — is on screen and driven by the live turn: streamed card, chips that
+> start a new turn, `<SUMMARY>` spoken on completion. Memory is closed the loop: every prompt
+> carries the injected block, a `<MEMORY>` proposal goes through `MemoryStore.propose` after
+> the reply, and the outcome lands as a footnote on the card (`MemoryReport`, 12 cases). Still
+> open in this phase: the HUD's pixels need a human, and `<NOTE>` offers have no Notebook to
+> save into yet.
 
-{ "model": "gemini-3.8-flash",
-  "store": false,
-  "input": [ { "type": "text",  "text": "..." },
-             { "type": "image", "data": "<base64>", "mime_type": "image/png" } ] }
-```
-
-Streaming: append `?alt=sse` and set `"stream": true`. Event sequence observed:
-`interaction.created` → `interaction.status_update` → `step.start` → `step.delta` ×N → `step.stop` → `interaction.completed`.
-
-**Three properties that matter for Chunks specifically:**
-
-- **`"store": false`** — nothing is retained server-side. Screenshots are not kept by Google. Verified working. This is the default we ship.
-- **`previous_interaction_id`** — server-side multi-turn state, so we don't resend the whole transcript each turn.
-- **JSON-schema structured output** — the `<MEMORY>` block from §4 becomes a validated schema rather than regex-parsed prose. Much more reliable.
-
-#### Two operational constraints we must design for
-
-Both were hit repeatedly during testing. Neither is a blocker; both are design inputs.
-
-**1. `503 UNAVAILABLE` — "high demand".** The newest flash models (`3.8-flash`, `3.7`, `3.6`, `3.5-flash`) returned 503 on roughly half of attempts. This is contention, not a bad key.
-
-→ `BrainClient` needs **exponential backoff + a model fallback chain**, e.g.
-`gemini-3.8-flash` → `gemini-3.6-flash` → `gemini-3.1-flash-lite` → `gemini-flash-lite-latest`.
-The registry already carries a model list per provider, so this is a natural fit.
-
-**2. `Rate limit exceeded ... (limit: 5 req/min)`.** The free tier allows ~5 requests per minute per model.
-
-→ A client-side **request queue** with per-model token-bucket limiting. At Chunks' interaction rate (a few turns per minute, user-initiated) this is rarely hit, but a queued background automation could trip it. Read-only automations must share the same queue.
-
-#### The unexpected win: one key covers the whole stack
-
-Enumerating the 61 models on this key turned up far more than a text/vision brain:
-
-| Model | Purpose | Chunks phase |
-|---|---|---|
-| `gemini-3.5-transcribe`, `gemini-3.5-transcribe-live` | **STT** | Phase 4 |
-| `gemini-3.8-flash-tts`, `gemini-3.8-flash-lite-tts` | **TTS with voice design** | Phase 4 |
-| `gemini-3.8-live`, `gemini-3.1-flash-live-preview` | **Bidirectional realtime voice** (`bidiGenerateContent`) | Phase 4 |
-| `gemini-2.5-computer-use-preview-10-2025` | **Google's own computer-use model** | Phase 5 |
-| `gemini-robotics-er-2-preview` / `-streaming-preview` | **Spatial reasoning** | Phase 3 (pointing) |
-| `gemini-3.8-flash` + `previous_interaction_id` | Brain + memory | Phases 1–7 |
-| Google Search tool, Maps grounding, URL context | Built-in tools | Optional |
-
-**This materially simplifies the plan.** Phases 4 and 5 no longer need Kokoro + a separate STT binary + Peekaboo as the *only* path. They become: *local-first, with Gemini as a zero-setup, better-quality fallback on the same key you already have.*
-
-Revised voice stack:
-- **STT:** Apple `SpeechTranscriber` on-device (free, private) → `gemini-3.5-transcribe` if quality is lacking → whisper.cpp if offline matters most
-- **TTS:** Kokoro local (default) → `gemini-3.8-flash-tts` (free, natural, and it has *voice design* — pick a voice by description)
-- **Realtime:** `gemini-3.8-live` via WebSocket if we want true duplex
-
-#### Zen: still useful, still not free
-
-Muse Spark 1.3 Free is genuinely multimodal (confirmed: `modalities.input: [text, image, video, pdf, audio]`, 1M context) — but **client-locked to the OpenCode app**, so Chunks can't reach it.
-
-Zen's paid tier stays worth having for one reason: **30+ models on one OpenAI-compatible key**, including Claude and GPT, for when you want to *switch brains*. That directly serves the "switchable, paid→free" requirement.
-
-⚠️ **Privacy flag, restated.** Zen's docs: *"Muse Spark 1.3 Contributor Free: …permission to use your prompts and completions to train future Meta models."* For a screen-reading app that's a real trade-off. `Space Bunny Free` and `LongCat 2.5 Preview Free` are documented **zero-retention, no training**; `Big Pickle`, `MiMo`, `Ling`, and `Nemotron` free tiers are **not**.
-
-#### Final brain recommendation
-
-| Route | Cost/turn | Vision | Privacy | Role |
-|---|---|---|---|---|
-| **`gemini-3.8-flash` free** ⭐ | **$0** | ✅ proven | `store:false`, nothing retained | **Default** |
-| `gemini-3.1-flash-lite` free | $0 | ✅ proven | same | Fallback under 503 |
-| `gemini-3.1-pro-preview` free | $0 | ✅ | same | Quality tier when it isn't contended |
-| Zen `deepseek-v4-flash-vision-exp` | ~$0.0002 | ✅ | zero-retention | Cheap 2nd opinion |
-| Zen `gpt-6-luna` / `claude-haiku-4-5` | ~$0.0001–0.0006 | ✅ | provider retention | "Switch brain" escape hatch |
-| Ollama local | $0 | ✅ | **fully private** | Air-gap option |
-
-**Chunks is free by default.** Zen is optional and earns its place only as the model switcher.
-
-
-
-### Phase 1 — Shell + explain + **memory core** (3 days)
-
-- Fork `farzaa/clicky`, rename to Chunks, new bundle id + icon
-- Strip: ElevenLabs, AssemblyAI, Cloudflare Worker dependency, PostHog
+- Fork `farzaa/clicky`, rename Chunks, new bundle id + icon
+- Strip: ElevenLabs, AssemblyAI, Cloudflare Worker, PostHog
+- `NotchShell` (notch panel + fallback menu-bar) + `TranscriptHUD` + chips
 - `CaptureEngine` + `CoordinateSpace`
-- `BrainClient` with provider registry, streaming, `<SAY>` tag extraction
-- **`MemoryStore` + `MemoryInjector` + `MemoryWriter` + secret-rejection** (§4)
-- Menu bar panel, PTT via CGEvent tap, `Cmd+M` memory viewer
-- **Milestone:** hold a key, ask "what am I looking at?", hear the answer. Tell it "I use Raycast not Spotlight" — next turn it knows.
+- `BrainClient` registry + streaming + `<SAY>` extraction
+- `MemoryStore` + `MemoryInjector` + `MemoryWriter` + `SecretSweeper`
+- PTT via CGEvent tap, `Cmd+M` viewer, hotkeys `Cmd+Shift+Space / / /A`
+- **Milestone:** summon from notch, ask "what am I looking at?", hear answer. "I use Raycast" sticks next turn.
 
-### Phase 2 — Annotate (3 days) ⭐ the headline feature
+### Phase 2 — Annotate (3 days) ⭐ headline
 
-- Overlay `NSPanel`, tool palette, four tools + undo + clear
-- `RegionResolver` → crop with context padding
-- Two submit paths: *"explain this"* (crop only) and *"explain this in the context of my screen"* (full + annotated crop)
-- Notebook integration: offer to save the explanation, one-tap accept
-- **Milestone:** circle something on screen, get a spoken explanation of that circle, save it.
+- Overlay NSPanel, pen/arrow/ellipse/rect + undo + clear
+- `RegionResolver` → tight crop + padded context crop
+- Two submits: *"explain this"* (crop) / *"in context of my screen"* (full + crop)
+- Notebook save offer, one-tap accept
+- **Milestone:** circle → spoken explanation → saved.
 
-### Phase 3 — Point (1 day)
+### Phase 3 — Trailer point (1–2 days)
 
-- Parse `[POINT:x,y:label:screenN]` from streamed replies
-- Bezier-arc cursor flight + caption, auto-retract
-- Multi-point support
-- **Milestone:** ask "where's the run button?", watch the cursor fly there and say it aloud.
+- Parse `[POINT:x,y:label]`, multi-point
+- Trailer badge under cursor (+14–20px), follow + caption, auto-retract, hidden during capture
+- **Milestone:** "where's the run button?" → trailer glides there + says it.
 
 ### Phase 4 — Voice (1.5 days)
 
-- `SpeechTranscriber` (macOS 26+) with `AnalysisContext` vocabulary biasing
-- Kokoro integration + settings toggle to `AVSpeechSynthesizer`
-- Barge-in: speak over the answer to interrupt
-- **Milestone:** fully hands-free local conversation, zero API keys.
+- `SpeechTranscriber` + vocabulary biasing, whisper.cpp fallback
+- Kokoro + `AVSpeechSynthesizer` toggle, barge-in
+- **Milestone:** hands-free local conversation.
 
-### Phase 5 — Act — scope fixed (3 days)
+### Phase 5 — Permissioned act (3 days)
 
-- `AXTDriver`: AX snapshot → element tokens → `AXPress`/`setValue`/`focus`
-- Window-scoped pixel fallback for canvas/AX-less targets
-- `PolicyGate` + Allow/Not-now card
-- **Milestone:** "click the blue button in this app" → confirmation card → clicks the right thing, your cursor never moves.
-- **No additions to this scope.** No proactive actions, no unattended clicking, no multi-step chains without per-step confirmation.
+- `ToolLayer` (open/timer/volume/Focus) + `AXTDriver` (AX → window-pixel → page)
+- `PolicyGate` + `ConsentGate` (Allow/Not-now per turn, per-app toggles)
+- **Milestone:** "click the blue button in this app" → card → clicks, real cursor never moves.
 
-### Phase 6 — Automations (1 day)
+> **Progress (2026-10-04).** Built: `[ACT:…]` / `[DO:…]` parsed out of the stream into
+> `ActionRequest` / `DoRequest`; `ScreenshotGeometry` (image fractions → AppKit → AX points);
+> `AXTDriver` (layer-0 window hit test → `AXUIElementCopyElementAtPosition` → pressable ancestor →
+> `AXPress`, never warps the pointer); `PolicyGate`; a one-question `ConsentGate`; and the
+> **Allow / Not now** row on the notch card that both kinds of request share. The tool half is
+> open-app + set-volume — a timer is deliberately left to Phase 6's `ReminderStore` rather than
+> built twice, and Focus needs a Shortcut name the user owns, which has no settings surface yet.
+> Verified on live hardware: the *refusal* path via `chunks --probe-ax`, and the volume write via
+> a no-op write to the real output device. Still unobserved: a successful press, and a launched
+> app — every app on screen during development was Electron, so every point resolved to an
+> unpressable `AXGroup` and Chunks correctly refused.
 
-- `launchd` LaunchAgent wrapper, one plist per job
-- Jobs are read-only by default: *"every weekday at 9:05, tell me what's new on my screen"* → notification, no action
-- Actions require per-job opt-in
-- **Rationale:** HeyClicky's own docs ship this as a rule — routines must never silently escalate to writes.
+### Phase 6 — Reminders + scheduler + planner (2 days)
 
-### Phase 7 — Memory depth (ongoing, never "done")
+- `ReminderStore` + poll loop + `[reminder:]` tags + natural-language fallback
+- launchd LaunchAgents, read-only default, per-job action opt-in
+- `Planner` day brief (calendar EventKit + reminders + memory)
+- **Milestone:** "remind me in 10 min" fires; weekday 9:05 brief notifies, never writes silently.
 
-- Notebook search and recall-quality tuning
-- Memory compaction — propose prunes as it nears the 2 KB cap
-- Optional per-project memory scopes
-- **This is the phase that compounds.** Every other feature is a tool you use; this is the reason Chunks still knows you in six months.
+### Phase 7 — Presence in-app (2 days, late)
+
+- Mood engine (~10 moods), mini-body in notch window/HUD only, speech bubbles, `IDENTITY.md`/`SOUL.md` personality edit
+- Never a desktop pet; hidden during fullscreen capture
+- **Milestone:** moods shift with day, body reacts in-window, no screen clutter.
+
+### Phase 8 — Memory depth (ongoing)
+
+- Notebook search tuning, compaction proposals near cap, optional per-project scopes, optional local embeddings (Utsuwa-style 384-d) if markdown search proves insufficient.
 
 ---
 
-## 7. File layout
+## 7. File layout v2
 
 ```
 chunks/
-├── Package.swift                    # or .xcodeproj, fork preserves the latter
 ├── Chunks.xcodeproj
-├── CLAUDE.md / AGENTS.md           # from farzaa/clicky, extended with Chunks conventions
+├── CLAUDE.md / AGENTS.md
 ├── Sources/
-│   ├── App/                         leanring_buddyApp → ChunksApp
-│   ├── Shell/                       MenuBarPanelManager, SettingsPane, TranscriptHUD
-│   ├── Capture/                     CaptureEngine, CoordinateSpace  ← Retina truth lives here
-│   ├── Annotate/                    OverlayWindow, AnnotationCanvas, ToolPalette, RegionResolver
-│   ├── Point/                       PointEngine, CursorOverlay
-│   ├── Voice/                       DictationController, STTProvider, TTSEngine
-│   ├── Brain/                       BrainClient, ProviderRegistry, Transports/, PromptBuilder,
-│   │                                ResponseParser, CapabilityProbe
-│   ├── Memory/                      MemoryStore, MemoryInjector, MemoryWriter,
-│   │                                SecretSweeper, NotebookStore, NotebookSearch
-│   ├── Action/                      AXTDriver, ActionEngine, PolicyGate, ConsentGate
-│   ├── Automations/                 LaunchAgentPlanner, JobStore
-│   └── DesignSystem/                from fork
+│   ├── App/                  ChunksApp
+│   ├── NotchShell/           NotchPanelManager, SettingsPane, TranscriptHUD, Chips
+│   ├── Presence/             (P7) MoodEngine, MiniBodyView, Bubbles, PersonalityFiles
+│   ├── Capture/              CaptureEngine, CoordinateSpace
+│   ├── Annotate/             OverlayWindow, AnnotationCanvas, ToolPalette, RegionResolver
+│   ├── Point/                TrailerEngine, TrailerOverlay
+│   ├── Voice/                DictationController, STTProvider, TTSEngine
+│   ├── Brain/                BrainClient, ProviderRegistry, Transports/, PromptBuilder,
+│   │                         ResponseParser, CapabilityProbe
+│   ├── Memory/               MemoryStore, MemoryInjector, MemoryWriter,
+│   │                         SecretSweeper, NotebookStore, NotebookSearch
+│   ├── Assistant/            ReminderStore, SchedulerJobStore, LaunchAgentPlanner, Planner
+│   ├── Action/               ToolLayer, AXTDriver, ActionEngine, PolicyGate, ConsentGate
+│   └── DesignSystem/
 ├── Tests/
-│   ├── CoordinateSpaceTests         ← 1x/2x/3x round-trip
-│   ├── PolicyGateTests              ← every deny rule
-│   ├── RegionResolverTests
-│   ├── ResponseParserTests
-│   ├── MemoryWriterTests            ← secret rejection, cap enforcement, dedupe
-│   └── MemoryStoreTests             ← hand-edit round-trip, no data loss
+│   ├── CoordinateSpaceTests · TrailerOffsetTests
+│   ├── PolicyGateTests · ConsentGateTests
+│   ├── RegionResolverTests · ResponseParserTests
+│   └── MemoryWriterTests · ReminderTests · PlannerTests
 └── docs/
-    ├── ARCHITECTURE.md
-    ├── PROVIDERS.md
-    └── MEMORY.md                    ← the memory format spec
+    ├── ARCHITECTURE.md · PROVIDERS.md · MEMORY.md · PRESENCE.md
 ```
 
 ---
 
-## 8. Risks, honestly
+## 8. What we learned from Clawster + Utsuwa (2026-09-30)
 
-| Risk | Severity | Mitigation |
-|---|---|---|
-| **Zen vision claim turns out false** | High, but now low-probability | Phase 0 gate. Gemini is the fallback. Registry degrades loudly, never silently |
-| **Memory grows unbounded / bloats every prompt** | **High** | Hard 2 KB cap. Refuse adds at cap and *ask*. Never truncate silently. Notebook is separate and never auto-injected |
-| **Model writes a secret into memory** | **High** | Structural: `SecretSweeper` regex+keyword filter runs before every write. Model proposes, app disposes |
-| **Memory drift / contradiction** | Medium | Dedupe + timestamps + you can hand-edit. `Cmd+M` viewer is always one keystroke away |
-| **On-device STT quality on 16 GB** | Medium | `SpeechTranscriber` on M5 is good; whisper.cpp fallback. Measure in Phase 4 |
-| **Kokoro bundle size** | Low | ~300 MB, optional — system voice is the fallback |
-| **AX trees missing/partial** | High for canvas apps | Window-scoped pixel fallback + honest "this app doesn't expose controls" message |
-| **Overlay vs fullscreen apps** | Medium | `fullScreenAuxiliary` + Spaces testing. The fork already handles most of it |
-| **Fork is frozen at 20 commits** | Low | It's 7.7k lines with a good `AGENTS.md`. That's a feature, not a liability |
-| **Scope creep toward agents** | Medium | Hard rule in `AGENTS.md`: no code generation, no file artifacts, no sub-agents |
+- **Clawster** (`clawster.pet`, MIT, Electron, 30★): validates pet + hotkeys + onboarding wizard + local tool classification (Qwen 1.5B ~200ms) + LanceDB memory. Adopt: hotkey conventions, wizard permission flow, Focus tools. Reject: Electron weight, cloud-chat dependency, desktop-pet-always-on.
+- **Utsuwa** (`utsuwa.ai`, AGPL-3.0 since 0.12.1 — learn, don't paste): validates BYOK + offline, app-owns-numbers + clamped LLM deltas + extraction fallback, local embeddings (384-d MiniLM), MCP with Ask-before-run + hardening + allowlists, Kokoro-local TTS, reminder-as-system-event. Adopt patterns; do not copy code (AGPL viral). Reject 3D/VRM/AR weight for Chunks.
+- Both confirm: markdown hot-path (Chunks) beats DB hot-path for hand-editability; vectors optional later. Both confirm consent gating is the hard part, not the model.
+
+See `CLAWSTER-RESEARCH.md` and `UTSUWA-RESEARCH.md` for full notes.
 
 ---
 
-## 9. Explicitly rejected
+## 9. Risks, honestly (v2)
 
-- **Electron/Tauri shell** — adds ~150 MB and a CPU floor to a menu-bar app that must be invisible. Native Swift is the right call.
-- **Bundling Codex/Claude Code** — you said no agents. 216 MB saved and a whole safety surface removed.
-- **A second process (Python sidecar)** — everything needed is available natively. A sidecar doubles the failure modes for no gain.
-- **Self-hosting an OAuth broker** — official MCP servers (Google, Slack, Notion, GitHub) are free and vendor-maintained.
-- **Docker-based scheduling** — `launchd` is built in, catches up after sleep, and writes real logs.
-- **A skills marketplace** — not a feature, a business.
+| Risk | Severity | Mitigation |
+|---|---|---|
+| Memory bloat / prompt drown | High | 2 KB cap, refuse-at-cap + ask, Notebook never auto-injected |
+| Secret into memory | High | `SecretSweeper` structural, model proposes / app disposes |
+| AX trees missing (canvas/Qt) | High | Window-pixel fallback + honest "can't see controls" |
+| Trailer jitter / capture-black (HeyClicky v1.0.52 bug) | Medium | Display-link follow, hide during capture, offset in one place |
+| Notch geometry across Macs | Medium | Fallback menu-bar panel, Spaces/fullscreen testing |
+| On-device STT on 16 GB | Medium | SpeechTranscriber M5 + whisper.cpp fallback, measure P4 |
+| Scope creep to agent teams | Medium | Hard rule: single assistant, no sub-agents, no marketplace |
+| Zen vision claim false | Low now | Gemini fallback proven; registry degrades loudly |
+| AGPL contamination (Utsuwa) | High if copied | Learn patterns only; MIT fork stays clean; no Utsuwa code vendored |
+| Fork frozen (20 commits) | Low | 7.7k lines + good AGENTS.md = feature |
+
+---
+
+## 10. Explicitly rejected
+
+- Electron/Tauri shell (~150 MB + CPU floor for a notch app).
+- Bundling Codex/Claude Code (saves 216 MB + whole safety surface; single-assistant rule).
+- Python sidecar (native covers it).
+- Self-hosted OAuth broker (official MCP servers free, vendor-maintained).
+- Docker cron (launchd catches up after sleep, real logs).
+- Skills marketplace / companion marketplace (a business, not a feature).
+- Always-on desktop pet (req: trailer under cursor + body in-app only).
+- Copying Utsuwa code (AGPL). Patterns only.
+
+---
+
+## 11. v3 — HeyClicky parity (scope correction, 2026-10-03)
+
+User direction: *"I just wanted the HeyClicky exact replica without the sub agents / sub Clickys."* v2 removed too much. v3 restores the full HeyClicky surface and cuts **only** the multi-agent layer.
+
+### Locked decisions v3 (these override §0 where they differ)
+
+| Area | v3 decision |
+|---|---|
+| Work engine | **Native single-agent tool loop.** Gemini/OpenAI function-calling drives Chunks' own tools (app control, AX input, read/search files, calendar, MCP). One task per turn, never spawns, no Codex binary, no `multi_agent`. |
+| Output | **No generated files.** `welcome.html`-style artifacts, PDFs, decks, and the `<ARTIFACTS>` tile pipeline are out. The agent may *read* files and screen content as context; answers land in the panel + voice. |
+| Skills | **Bundled skills as context only.** ~15 curated `SKILL.md` domains (portable from the MIT `hermes-agent` catalog HeyClicky itself vendored). Model picks by intent; no names shown to the user. **No marketplace, no authoring UI, no sharing.** |
+| Persona | **Full companion layer, in-window.** Notch face + ~10 moods + speech bubbles + sound design (`agent-done`, `needs-you`, `listening`) + `IDENTITY.md`/`SOUL.md`. Not a desktop pet, no procedural gacha wardrobe/portraits. |
+| Voice | Two paths, as HeyClicky has: **PTT dictation** (on-device) and **realtime duplex conversation** — `gemini-3.8-live` over WebSocket on the same key (§6 discovery below), with the local cascade as fallback. |
+| Safety | Two gates exactly as HeyClicky ships them: per-turn **Allow / Not now** consent, plus a permanent **`PolicyGate`** (background-only delivery, no desktop scope, focus-steal shortcuts denied). Gate 2 is not waivable. |
+| Backend | **None.** No `api.heyclicky.com` equivalent, no model proxy, no turn-lease protocol, no Supabase, no billing/referrals/analytics. BYOK straight to the provider, `store:false`, Keychain. |
+
+### What is now IN that v2 listed as OUT
+
+Realtime duplex voice · bundled skills · tool-calling agent loop · read-only file + calendar context · sound design · routines with real task bodies · integrations via official MCP servers · onboarding permission wizard.
+
+### Still OUT (the only things that remain removed)
+
+Parallel sub-agents and agent teams · persistent named agents / Clicky roster / per-agent workspaces · skills marketplace and its authoring economy · server-decided proactive agents and background surveillance · generated artifact files · cloud model proxy, metering, billing, referrals · Electron/Tauri · Docker cron · bundled Codex/Claude Code · self-hosted OAuth broker · copying Utsuwa (AGPL) code.
+
+### Feature parity matrix
+
+| HeyClicky | v3 Chunks | Build cost |
+|---|---|---|
+| Notch + menu-bar shell, agent chips, HUD | ✅ adopt | `NotchShell` + chips on the fork's panels |
+| PTT dictation, global hotkey, multi-language | ✅ adopt | mostly vendored already (`BuddyDictationManager`) |
+| Realtime duplex voice + barge-in | ✅ adopt via `gemini-3.8-live` | Medium |
+| Screen capture on hotkey, no raw screenshots stored | ✅ adopt (already built) | done |
+| Scribble/annotate → explain region | ✅ adopt (already built) | done |
+| `[POINT:x,y]` pointing | ✅ adopt as **trailer under cursor** (v1.0.52 killed the foreground cursor for black captures — don't re-import that bug) | Small |
+| Computer use, background-only, Rego-gated | ✅ adopt as `PolicyGate` + `ConsentGate` + action-honesty fields (`path`/`verified`/`effect`/`escalation`) | **Large — the hard part** |
+| `<SUMMARY>` → TTS, `<DONE_TITLE>`, `<NEXT_ACTIONS>` chips | ✅ adopt | Small (parser exists) |
+| `<ARTIFACTS>` file tiles | ❌ **out** (no generated files) | — |
+| `<ROUTINE>` + cron backend | ✅ adopt, launchd instead of server cron | Medium |
+| Codex subprocess per turn + turn-lease protocol | ❌ out — replaced by native tool loop | — |
+| Per-agent `AGENTS.md` memory | ✅ single user-level `memory.md` (already built) | done |
+| Skills marketplace (200 skills, 118 authors) | ❌ out; bundled set only | Small |
+| Procedural faces, `hairstyle: "Twilight swirl"` | ❌ out; fixed notch body + moods | Small |
+| Composio + custom MCP connectors | ✅ official vendor MCP servers only, Ask-before-run | Medium |
+| Onboarding wizard, permission choreography, Screen-Recording-restart guide | ✅ adopt | Medium |
+| Sparkle auto-update | ✅ later (needs a signed feed) | Small |
+| PostHog + Sentry | ❌ out by design | — |
+| Quiet while on a call / screen sharing; keep-awake while routines armed | ✅ adopt | Small |
+| Free/Pro/Max metering | ❌ out — local-first, $0 on Gemini free tier | — |
+
+### The one-key stack (restored from v1 — load-bearing for P-voice)
+
+Enumerating the 61 models on the Gemini key turns up more than a brain. This is what makes "full HeyClicky voice" cheap:
+
+| Model | Purpose | Phase |
+|---|---|---|
+| `gemini-3.5-transcribe`, `-transcribe-live` | STT | P4 |
+| `gemini-3.8-flash-tts`, `-flash-lite-tts` | TTS with voice design | P4 |
+| `gemini-3.8-live`, `gemini-3.1-flash-live-preview` | **Bidirectional realtime voice** (`bidiGenerateContent`) | P9 |
+| `gemini-2.5-computer-use-preview-10-2025` | Google's computer-use model | P5 option |
+| `gemini-robotics-er-2-preview` / `-streaming` | Spatial reasoning for pointing | P3 option |
+
+So: **local-first, with Gemini as the zero-setup higher-quality path on the key you already have.**
+
+### Revised phase plan
+
+Phases P1–P8 in §6 stand. Three additions and one reordering:
+
+- **P5 grows** from "click the button" to the full **agent tool loop**: `ToolRegistry` → function-calling → act → **re-snapshot and diff to verify** → report honestly. Tools: `open_app`, `ax_press`/`set_value`, `type_text`, `press_key` (gate-checked), `read_file`/`search_files` (scoped to user-approved roots, one-prompt-per-folder rule), `calendar_read`, `mcp_call`. Everything write-capable is behind consent; the loop never chains without per-step confirmation.
+- **P9 — Realtime voice:** `gemini-3.8-live` WebSocket duplex, barge-in, server-side tool calls for calendar + reminders. Local cascade remains the offline default.
+- **P10 — Skills + persona:** bundled `SKILL.md` set injected by intent, mood engine + notch body + sound design, `IDENTITY.md`/`SOUL.md` editable.
+- **P11 — Integrations:** official Google Workspace / Slack / GitHub / Notion MCP servers, Ask-before-run default, results treated as untrusted data, per-server allowlist, secrets never inherited.
+- **P12 — Onboarding + ship:** 3-step permission wizard (`PermissionFlowCoordinator` equivalent), Screen-Recording restart guidance, launch-at-login, Sparkle.
+
+**Sequence note:** P5 (the agent loop) is now the critical path — it is the single biggest artifact and everything downstream (routines with real actions, integrations, presence reacting to work) touches it. P9–P12 are additive and can interleave.
 
 ---
 
 ## Next step
 
-**Phase 0 is done — Chunks is confirmed to see your screen, for $0.** Both keys have been shredded from disk; neither is in the repo.
+1. **Rewrite `AGENTS.md`'s "What Chunks is NOT"** — it currently forbids the agent tool loop, skills, and the companion layer that v3 now requires. That document is the scope authority for every future session, so it must match v3 before code is written.
+2. **Rotate both keys** pasted during Phase 0 (Gemini → macOS Keychain, never files).
+3. **Then build in order:** P1 notch shell (chips + `<SUMMARY>`/`<DONE_TITLE>`/`<NEXT_ACTIONS>` parsing) → P5 agent loop + `PolicyGate`/`ConsentGate` → P9 realtime voice → P10 skills/persona → P11 integrations.
 
-**Rotate both keys.** They were pasted into this conversation. The Gemini key in particular is now the app's production brain — regenerate it at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys) before we ship, and I'll wire the replacement into the macOS Keychain rather than any file.
-
-**One decision left, and it's small:** Zen. It costs you nothing to skip and nothing to keep.
-
-- **Skip Zen** — Chunks is already free on Gemini alone, with 4 fallback tiers under 503.
-- **Keep Zen** (top up ~$5) — you get Claude and GPT in the same provider switcher, so "switch my brain easily" becomes literal rather than aspirational. Cost with `gpt-6-luna` ≈ **$1/month** at heavy use.
-
-My suggestion: **skip it for now.** Gemini alone covers every feature in the plan, and I'd rather not have two keys in the codebase while we're still building. Add Zen later if you want model choice — the registry is designed for it and adding a provider later is a one-file change.
-
-**Then Phase 1 starts:** fork `farzaa/clicky`, rename to Chunks, strip the paid dependencies, and build shell + capture + `CoordinateSpace` + the memory core — because every prompt path after that depends on memory existing.
+Zen stays optional; skip the top-up (Gemini covers brain + STT + TTS + live + vision for $0).

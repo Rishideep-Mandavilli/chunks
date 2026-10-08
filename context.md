@@ -4,15 +4,16 @@
 in any new session, before touching code, and update it whenever something below is
 proven wrong. Facts here were expensive to learn; several cost hours of debugging.
 
-Last updated: 2026-09-29
+Last updated: 2026-10-09
 
 ---
 
 ## What Chunks is
 
-A native macOS menu-bar companion that sees your screen, explains it, and points at
-things in it. Hold a hotkey, it captures your screen, sends it to a model, and shows the
-answer in a floating card. Circle a region and it explains just that.
+A native macOS menu-bar/notch companion that sees your screen, explains it, and helps you act
+on it — by voice. Hold a hotkey, it captures your screen, sends it to a model, and shows the
+answer in a card that grows out of the notch. Circle a region and it explains just that. Ask it
+to press a control or open an app, and it asks permission first.
 
 ## Hard scope boundaries — do not add these
 
@@ -37,7 +38,7 @@ Adding any of the above without asking is a failure, not initiative.
 | `SCScreenshotManager.captureImage(in:)` | One-shot, display-agnostic, takes a rect in points. Replaces the `SCStream` + `FrameCollector` path entirely. |
 | `[POINT:x,y,label]` in **image-local pixel coordinates** | Inherited Clicky used *display* logical points. After a circle-to-explain crop the model would have to infer the crop's offset from the screen, and it guesses. Image-local pixels it can only get right. Image size is stated in the prompt. |
 
-## The six invariants — do not break these
+## The eight invariants — do not break these
 
 1. **All coordinates are `LogicalPoint`.** Screenshots are device pixels (2x); AX reports
    logical points; `NSPanel` frames are logical. Conversion happens exactly once, inside
@@ -53,6 +54,15 @@ Adding any of the above without asking is a failure, not initiative.
 6. **Retries are mandatory.** Gemini free tier returns `503 high demand` on roughly half of
    requests against the newest flash models, and caps at **5 req/min**. A turn that fails
    on 503 is a bug, not bad luck.
+7. **A listen-only keyboard tap needs Input Monitoring, not just Accessibility.** With
+   `kTCCServiceListenEvent` missing, `CGEvent.tapCreate` is created without error and receives
+   *nothing* — every permission row reads "Granted" while ⌃⌥ and ⌃⌥⌘C are dead. Preflight it,
+   and send the failure to `Log.write`, never `print()`.
+8. **The model proposes every act; the app decides whether it happens.** `[ACT:x,y,label]` runs
+   `ResponseParser → ScreenshotGeometry → AXTDriver.elementAt → PolicyGate → card → ConsentGate →
+   AXPress`; `[DO:open_app:X]` / `[DO:set_volume:N]` runs `DoRequest.parse → ToolLayer's one
+   sentence → the *same* card → ToolRunner`. One card holds **one** question — a reply proposing
+   two gets asked about one and the other does not run. Forbidden presses are refused, not asked.
 
 ## Traps already paid for
 
@@ -138,9 +148,14 @@ Gemini, verified point resolution) is **not** worth replacing, and clicky predat
 `SCScreenshotManager.captureImage(in:)` (macOS 26+) and the Gemini Interactions API. The
 remaining work is where vendoring pays:
 
+Computer use is **off** this list: `AXTDriver`, `PolicyGate`, `ConsentGate` and the
+`[ACT:…]` / `[DO:…]` chain are built (Phase 5), following clicky's AX approach — window-list
+hit test, `AXUIElementCopyElementAtPosition`, pressable-ancestor walk, `AXPress` — rather than
+importing its files, because Chunks' coordinate authority and consent card already own those
+decisions.
+
 | Remaining | Source to vendor from |
 |---|---|
-| Computer use (`AXTDriver`, `AXTManager`, `PolicyGate`, `ConsentGate`) | clicky — working AX code |
 | Automations (read-only, `launchd`) | clicky's cron scheduler, translated to `launchd` |
 | Voice input (`SpeechTranscriber`, macOS 26+) | `FluidInference/FluidAudio` (Apache-2.0) — ANE Whisper. `Beingpax/VoiceInk` is a shipping Mac app built on it (GPL-3.0: learn from, do not link). |
 
@@ -149,10 +164,233 @@ the upstream file headers and add a `THIRD-PARTY-NOTICES.md`.
 
 ## Current state
 
-166 tests, 11 suites, green. The app runs, captures, calls Gemini, parses the reply, and
-renders a card. **Known unverified:** the card's appearance after the latest opacity and
-spacing fix (the machine locked before it could be screenshotted), the menu items actually
-firing when clicked, and the annotation overlay's interactive behaviour — none of which
-can be checked without a human or an unlocked screen.
+351 tests, 17 suites, green. The app runs, captures, calls Gemini, parses the reply and
+renders the notch card; ⌃⌥ push-to-talk and ⌃⌥⌘C work; memory is a closed loop; annotation,
+the cursor trailer, `[ACT:…]` presses and `[DO:…]` tools are wired to the one consent card.
 
-Not yet built: voice in, computer use, automations.
+**Everything that paragraph claimed is now disproved, on the user's own machine.** Presses have
+opened apps from spoken turns; a desktop icon has been pressed and the launch believed from its
+effect; a message has been typed into WhatsApp's live composer
+(`Typed 22 characters into ‎Compose message.`). Keep reading — the interesting part is what that
+took.
+
+---
+
+## 2026-10-05 → 10-08: computer use, and five facts that cost hours
+
+The user pointed Chunks at WhatsApp, Chrome and his desktop. Every failure turned out to be a wrong
+assumption in code that looked correct. In the order they were found:
+
+**1. The model's aim is a fraction, not a pixel.** The log showed three turns asking for
+`[ACT:955,975:"send button"]` against a `1280x829` image. 975 is 118% of an image 829 rows tall, so
+the mapping clamped to the last row of the screen, no window contained it, and Chunks said *"that
+app did not expose a control"* about a button in plain sight. Those numbers are the button's
+coordinates in a **0–1000 grid** — the space Gemini grounds in. The whole tag protocol (`[POINT]`,
+`[ACT]`, `[TYPE]`, `[SCROLL]`) is now that grid, mapped by `ScreenshotGeometry`, with any value over
+1000 read as pixels (that one is unambiguous) and the result kept half a point *inside* the display.
+**This is also what the "clicked the wrong chat row" bug actually was**: a 17% vertical compression
+moves a list row onto its neighbour. The name-arbitration fix built first was correct and beside
+the point.
+
+**2. A browser publishes an element before it publishes that element's actions.** At one point on a
+live Chrome page, the first read answered `AXShowMenu, AXScrollToVisible`; reading *the same
+element* again answered `AXPress` too. Chromium builds action lists lazily once an assistive client
+has walked the node, and both switches that used to force it early are refused —
+`AXEnhancedUserInterface` with `-25208`, `AXManualAccessibility` with `-25205` on real Chrome
+(Electron accepts the latter, which is why typing into a Chromium surface worked while clicking
+Chrome didn't). So `isPublishingLazily(actions:)` recognises the signature and the walk re-reads
+once after 150 ms — only on that signature, so a genuinely dead element costs one round trip, not
+two.
+
+**3. A name can match a control the user cannot see.** Over Chrome's address bar, the hit test
+resolved an `AXMenuItem` at **y = −82** — a row of an omnibox dropdown that had already closed,
+still addressable in the tree. With asking off that is a press on something invisible, which is the
+exact thing the confirm card exists to prevent. `isOnScreen(_:in:)` now vetoes any candidate
+outside the window the aim landed in, on both routes. Elements with *no* frame are still allowed,
+because most desktop icons publish none.
+
+**4. An app can answer a hit test and still publish no windows.** WhatsApp's app element returns an
+**empty `AXWindows`**, and its `AXChildren` holds a menu bar and nothing else — so every name search
+started from a root with nothing in it and refused controls the user could see. Climbing `AXParent`
+from the element the aim hit reaches a real window with 85+ nodes. `searchRoot` does that climb, and
+`focusedRoot` additionally falls back to `AXFocusedWindow`/`AXMainWindow`.
+
+**5. Catalyst puts the field-ness in the subrole, not the role.** The one that took five attempts.
+WhatsApp's search box, open with a caret in it, is `role=AXStaticText subrole=AXSearchField`.
+`editableRoles` checked the role, so Chunks saw a label — and every downstream fix (aim, name
+search, focus read-back, first-responder typing, sole-visible-field) was correct and useless.
+`isEditableField(role:subrole:)` accepts either half and refuses a secure field on either. The same
+app answers `AXFocusedUIElement` with `AXGroup/iOSContentGroup` the size of the window, so the "is
+the approved field the focused element?" gate can never pass there; `focusedFieldMatches` asks the
+weaker question instead. **A gate nothing can satisfy protects nothing.**
+
+### What got broken on the way, so nobody repeats it
+
+**The always-on microphone.** To kill the 3-second dictation lag, `AVAudioEngine` was made to run
+from launch with a 2-second pre-roll ring. It broke push-to-talk completely — the press reached the
+engine, the log said `microphone live`, and nothing happened for eight seconds. Cause: the ring
+mutated a Swift array on the audio render thread while the main thread read from it. Reverted to
+engine-on-press. **The real cause of the 3 s was never the engine** — it was `SFSpeechRecognizer`
+being constructed inside the press path, which is why the recogniser is now warmed at launch
+(`warmUpTranscriber()`) and the mic stays off until the chord is held. The user's standing position:
+**the microphone opens on the press, not before.**
+
+**Two more, same pass.** `contextualStrings` was never set — the manager built a keyterm list on
+every press, passed it to the provider, and nothing read it; the list itself was inherited junk
+naming a different product ("Learning Buddy", "makesomething", "Vercel"). Both fixed. And the voice
+was `AVSpeechSynthesisVoice(language: currentLanguageCode())`, i.e. the system default — on this Mac
+a compact Irish voice — while `--probe-voice` proved **the app is never offered the premium neural
+voices System Settings lists**, so ranking cannot reach them. Samantha at a gentler rate and slightly
+raised pitch is the ceiling until a premium voice is installed.
+
+### One bug still unexplained
+
+A turn whose reply ended in raw `<DONE_TITLE>Ready` on the card — an **unclosed** tag, meaning the
+model stopped before emitting any act tag, so nothing was refused and nothing ran. The log recorded
+request size and duration but never the reply, which made that unanswerable; every turn now logs
+`turn: reply ends …` (last 160 chars). **Next time an action silently doesn't happen, read that line
+before touching the Accessibility layer.**
+
+### Also new, because it's part of the picture
+
+`open_url` (`[DO:open_url:youtube.com|Chrome]`) — "open youtube in chrome" is one URL handoff to
+`NSWorkspace`, verified live, not a click on an icon plus typing in an address bar plus Enter.
+`[SCROLL:x,y:label|down]` — and the reason it uses Accessibility verbs is a measurement: a synthetic
+`CGEvent` scroll wheel **moves the pointer** to the event's location, which invariant 8 forbids.
+**Plans**: several act tags in one reply run in order, each re-resolved against the live tree, and
+*a step that doesn't happen stops the plan* — the steps after it were aimed at a screen the failed
+step would have changed. `--probe-ax` gained a field line and a scroller line; `--probe-voice` exists.
+
+## 2026-10-09: the speech-engine swap (#31), and five facts that cost time
+
+`--probe-stt` (`Sources/Chunks/STTProbe.swift`) records once and runs **three** engines over the
+same audio — the shipping `SFSpeechRecognizer` provider plus Apple's two on-device modules through
+the new `SpeechAnalyzerTranscriptionProvider`. It drives the real providers, not a paraphrase, so
+a result there is a result in the app.
+
+**1. The new Speech API is real on this Mac, and the en-IN model is already downloaded.**
+`SpeechTranscriber` supports 45 locales with 9 English ones installed; `DictationTranscriber`
+supports 54 with `en_IN` + `en_US` installed; `Locale.autoupdatingCurrent` is `en_IN`, so
+dictation needs no download. `te_IN` is *supported* by the framework but **not** offered by the
+dictation model, which is why Telugu needs its own decision later. Read it with
+`--probe-stt --check`: no microphone, no recording.
+
+**2. `AnalyzerInputConverter` is macOS 27+, a year newer than `SpeechAnalyzer` itself.** Assuming
+they shipped together is a compile error at best. The gate is `#available(macOS 27.0, *)` for the
+converter and 26.0 for the analyzer, with a raw-`AnalyzerInput(buffer:)` fallback on 26.
+
+**3. Exec'ing the bundle binary from an agent shell aborts with a TCC privacy violation.** The
+crash names `NSSpeechRecognitionUsageDescription` even though the key is present and the bundle
+verifies, because TCC attributes the request to the *responsible process* — the shell that spawned
+it. Run bundle diagnostics as their own app: `open -n -W build/Chunks.app --args --probe-stt 5`
+and read `~/Library/Logs/Chunks/chunks.log`. This is invariant 7's lesson restated for the
+microphone.
+
+**4. `Log.write` is async, so `exit()` throws away the last lines** — which for a diagnostic are
+exactly its answer. `Log.flush()` now exists and every exit path in the probe calls it.
+
+**5. A run-loop stop that arrives before the loop starts is lost, and a stdout buffer hides it.**
+The first version hung silently. `dispatchMain()` plus a watchdog that reports a timeout beats
+`CFRunLoopRun` + `CFRunLoopStop`, and `setvbuf(stdout, nil, _IONBF, 0)` makes a hang readable.
+
+Measured on real hardware (silence, so no quality verdict yet): tap delivered 31 buffers of
+16000Hz/1ch — which is what both models accept natively; legacy correctly reported
+`kAFAssistantErrorDomain 1110 No speech detected`; both analyzer sessions started, finalized and
+settled. Keyterms survive the swap through `AnalysisContext.contextualStrings[.general]`, the
+equivalent of the `contextualStrings` fix from 2026-10-08.
+
+**Built as an opt-in, then measured, then made the default.** `SpeechEngineChoice` (ChunksKit,
+11 tests) shipped with `legacyRecognizer` as `defaultChoice` so the swap could be A/B-ed from a
+terminal (`defaults write app.chunks.mac app.chunks.sttEngine dictation`); the user's own recording
+decided it, and the default moved. See the verdict below for what that measurement actually said.
+
+**6. `make-app.sh` does not compile, and `swift run chunks-test` does not build the app target.**
+The script assembles `build/Chunks.app` from `.build/debug/chunks` (or `.build/release` with the
+`release` argument) and exits 0 whether or not that binary is current. So the sequence must be
+`swift build && ./scripts/make-app.sh` — skipping the build ships yesterday's binary *silently*,
+and the app then behaves like the change was never made. This cost a full detour on 2026-10-09:
+the engine default had flipped correctly in source, in the tests, and in `--check`, and the running
+app kept logging the old engine because the bundle was assembled from a stale object file.
+
+## The measured verdict on the speech engines (2026-10-09)
+
+One 12-second recording, 125 buffers, the user's own Indian English, three engines:
+
+| engine | first partial | what it heard |
+|---|---|---|
+| legacy (`SFSpeechRecognizer`) | 1746ms | "Hello, welcome to Star Mahi**na**… mostly by my sister…" |
+| dictation (`DictationTranscriber`) | 1748ms | "Hello, welcome to Star Mahi**la**… mostly by my sister…" |
+| transcription (`SpeechTranscriber`) | 1921ms | "**Hi,** hello, welcome to Star Mahila**C** show… mostly **seen** by… my friends **was**." |
+
+`dictation` is the default now (`SpeechEngineChoice.defaultChoice`), with `legacy` as the fallback
+on a Mac without macOS 26. `transcription` hallucinated a word that was never said and is not the
+default, though it is the only one that caught "seen".
+
+**The honest size of the win:** dictation and legacy differed in *one word* — the show's proper
+noun — at identical latency. They appear to share an underlying model, so this swap improves named
+entities, not recognition in general. **1.7s to first partial is the number still worth attacking**,
+and it is not caused by the engine choice: warm recognisers were already the fix for that.
+
+Revert in one command if it ever misbehaves:
+`defaults write app.chunks.mac app.chunks.sttEngine legacy` then relaunch.
+
+## 2026-10-09: tap-to-arm, and what HeyClicky's cursor really is
+
+**Tap-to-arm** is `Sources/ChunksKit/TalkArmer.swift` (7 tests), wired into
+`CompanionManager.handleShortcutTransition`. A tap of ⌃⌥ arms the microphone and a second tap sends
+it; a hold past **350 ms** still behaves exactly as push-to-talk, so the old muscle memory keeps
+working and the change is reversible mid-sentence. The precedence that matters: the *manager* owns
+whether audio is flowing, the armer only models the gesture — so a press resets the armer whenever
+`isDictationInProgress` is false (a dictation that ended by error or by the panel's own mic button
+would otherwise leave the armer "armed" and turn the next press into a stop for a session that does
+not exist, which reads as a dead hotkey), and a release is swallowed only while nothing is
+recording. **An out-of-sync armer must never be able to leave the mic open.**
+
+**The cursor work he asked about is mostly already here** — and it is a *drawn* cursor, not the real
+one. `Sources/Chunks/Clicky/OverlayWindow.swift`: one borderless, click-through `NSWindow` per
+screen at `.screenSaver` level hosting a 16×16 triangle with a glow that grows with speed; it follows
+the pointer with a spring (`response 0.2`, `damping 0.6`) and flies to a `[POINT:]` target along a
+quadratic bezier, duration `distance/800` clamped **0.6–1.4 s**, smoothstep easing, rotation along
+the curve tangent, a scale pulse at the apex. No `CGWarpMouseCursorPosition` anywhere — which is
+what invariant 8 requires. Greeting (`"hi — i'm chunks"`, typed at 0.03 s/char), pointer phrases
+("found it!" etc., held 3.0 s), and the state morph (waveform while listening, spinner while
+processing) are all built too.
+
+**Missing:** drawing as *output* (circles/arrows over his apps), and hiding the buddy during a
+capture — the bug that gave HeyClicky black screen recordings (v1.0.52), still plan-only.
+
+**The regression that came with the vendoring, found while answering the above:**
+`AnnotationOverlayWindow` was deleted in `10bd07e`, and **nothing in the shell produces an
+`AnnotationShape` any more** — the only caller of `composited(with:)` passes `[]`. So
+*circle-to-explain is currently dead*, while `AGENTS.md` claimed it was running and called that
+overlay "the short path" for output drawing. Both statements are now corrected: output drawing has
+no surface to reuse, it has to be rebuilt first.
+
+## Where it stands, and what's next
+
+
+Verified working on the user's machine: press, launch-and-believe-the-effect, type into WhatsApp's
+composer, scroll resolution, open-url, plans, the notch card, memory, push-to-talk (after the
+revert).
+
+| # | What | Why it's next |
+|---|---|---|
+| 31a | ~~`SpeechAnalyzer` behind `BuddyTranscriptionProvider`~~ **done, and the default** | Measured on the user's voice; `dictation` won. Needs one real ⌃⌥ turn on the new engine before it stops being a lab result. |
+| 31b | Tap-to-arm instead of hold-to-talk | Still to build. Blocked on one decision: with no key-release edge, what ends a dictation — a second tap, a silence timeout, or the engine's own endpointing. |
+| 29 | The app window: sidebar history, chat bubbles, input bar, settings | The user has shown the reference UI twice and said the notch card is not the surface he wants. **He has changes to propose here — ask before building.** |
+| 30 | Voice picker | Rides along with #29's settings row; blocked by the premium-voice finding above. |
+| 28 | Chunks drawing on screen (circle/arrow as output) | HeyClicky parity. Short path: the annotation overlay already exists for input. |
+| 18 | Idle CPU (~3%: 60 Hz timers, per-keystroke tap logging) | Ships with #29's window work. |
+| 9 | Verify the panel chord and live captions | Needs eyes. |
+
+**How to verify anything here without touching the screen:**
+`/Applications/Chunks.app/Contents/MacOS/Chunks --probe-ax x,y --named "the label"` (press, field
+and scroller resolution, read-only), `--probe-desktop`, `--probe-voice`, `--self-test`, and
+`~/Library/Logs/Chunks/chunks.log`. Build with `swift build`, test with `swift run chunks-test`,
+ship with `./scripts/make-app.sh && ./scripts/install.sh` — never a hand-signed bundle, or TCC and
+the Keychain forget the app.
+
+## Not yet built
+
+automations, reminders/planner (Phase 6), the notch face (Phase 7), any consumer
+for `<NOTE>` offers, the app window.

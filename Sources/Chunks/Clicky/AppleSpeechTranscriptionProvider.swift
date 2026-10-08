@@ -23,18 +23,31 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
     let isConfigured = true
     let unavailableExplanation: String? = nil
 
+    /// One recogniser, built once, for the life of the process.
+    ///
+    /// `SFSpeechRecognizer(locale:)` is not a cheap object: it binds to a recognition service and
+    /// on a cold start takes the best part of a second to answer. Building it *inside* the press
+    /// path is where the first words of every sentence went — the microphone was not connected to
+    /// anything until it came back. Held here and warmed at launch, the key press has only to
+    /// start consuming audio.
+    private lazy var recognizer: SFSpeechRecognizer? = Self.makeBestAvailableSpeechRecognizer()
+
+    /// Called at launch so the first press does not pay for the service handshake.
+    func warmUp() { _ = recognizer }
+
     func startStreamingSession(
         keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
-        guard let speechRecognizer = Self.makeBestAvailableSpeechRecognizer() else {
+        guard let speechRecognizer = recognizer else {
             throw AppleSpeechTranscriptionProviderError(message: "dictation is not available on this mac.")
         }
 
         return try AppleSpeechTranscriptionSession(
             speechRecognizer: speechRecognizer,
+            keyterms: keyterms,
             onTranscriptUpdate: onTranscriptUpdate,
             onFinalTranscriptReady: onFinalTranscriptReady,
             onError: onError
@@ -72,6 +85,7 @@ private final class AppleSpeechTranscriptionSession: NSObject, BuddyStreamingTra
 
     init(
         speechRecognizer: SFSpeechRecognizer,
+        keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
@@ -86,6 +100,10 @@ private final class AppleSpeechTranscriptionSession: NSObject, BuddyStreamingTra
         recognitionRequest.shouldReportPartialResults = true
         recognitionRequest.taskHint = .dictation
         recognitionRequest.addsPunctuation = true
+        // The words the caller said to expect. This line was missing entirely: the manager built
+        // a keyterm list on every press, passed it in, and nothing on the other side ever read it,
+        // so "message Nitesh" had no more chance of hearing *Nitesh* than a random word would.
+        recognitionRequest.contextualStrings = keyterms
 
         if speechRecognizer.supportsOnDeviceRecognition {
             recognitionRequest.requiresOnDeviceRecognition = true

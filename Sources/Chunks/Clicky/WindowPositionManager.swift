@@ -135,6 +135,47 @@ class WindowPositionManager {
         NSWorkspace.shared.open(url)
     }
 
+    // MARK: - Input Monitoring
+
+    /// Whether Chunks may listen to keyboard events at all.
+    ///
+    /// A separate grant from Accessibility, and the one this app was missing: a listen-only
+    /// `CGEvent.tapCreate` for key events needs `kTCCServiceListenEvent`. With only
+    /// Accessibility ticked the tap yields no events, so push-to-talk and the panel chord are
+    /// both dead while every permission row in the panel reads "Granted".
+    static func hasInputMonitoringPermission() -> Bool {
+        CGPreflightListenEventAccess()
+    }
+
+    @discardableResult
+    static func requestInputMonitoringPermission() -> PermissionRequestPresentationDestination {
+        let presentationDestination = permissionRequestPresentationDestination(
+            hasPermissionNow: hasInputMonitoringPermission(),
+            hasAttemptedSystemPrompt: hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch
+        )
+
+        switch presentationDestination {
+        case .alreadyGranted:
+            return .alreadyGranted
+        case .systemPrompt:
+            hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch = true
+            _ = CGRequestListenEventAccess()
+        case .systemSettings:
+            openInputMonitoringSettings()
+        }
+
+        return presentationDestination
+    }
+
+    private static var hasAttemptedInputMonitoringSystemPromptDuringCurrentLaunch = false
+
+    /// Opens System Settings to the Input Monitoring pane, where the app has to be ticked
+    /// by hand — macOS offers no programmatic path for this one.
+    static func openInputMonitoringSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     static func permissionRequestPresentationDestination(
         hasPermissionNow: Bool,
         hasAttemptedSystemPrompt: Bool

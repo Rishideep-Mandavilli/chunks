@@ -31,12 +31,53 @@ public enum AnswerPanelLayout {
     public static let minimumHeight: CGFloat = 96
     public static let maximumHeight: CGFloat = 420
 
+    /// Room for the memory footnote — what the store did about the model's proposal.
+    ///
+    /// Two lines of secondary type, and the view puts `lineLimit(2)` on it, so the card's
+    /// height and the note's ceiling agree instead of the note clipping.
+    public static let noteHeight: CGFloat = 32
+
+    /// How much of a footnote the card can show.
+    public static let noteCharacterBudget = 150
+
+    /// Whether the card is asking about a press, or reporting the answer to that question.
+    ///
+    /// A pending press is asked about *on the card the answer is written on*, in one line of
+    /// question and one row of two buttons. Like the memory footnote, the height is fixed and
+    /// the view caps the question at one line, so the number the window is sized from and the
+    /// number the buttons actually occupy cannot drift apart.
+    public enum CardConfirmation: Equatable, Sendable {
+        /// Nothing asked.
+        case none
+        /// "Press Send in Mail?" with Allow / Not now.
+        case question
+        /// The one line saying what happened after the answer.
+        case result
+    }
+
+    public static let confirmQuestionHeight: CGFloat = 16
+    public static let confirmButtonRowHeight: CGFloat = 28
+    public static let confirmGap: CGFloat = 8
+
+    /// Room for the whole question block: the line the user reads and the row they tap.
+    public static var confirmHeight: CGFloat {
+        confirmQuestionHeight + confirmGap + confirmButtonRowHeight
+    }
+
     /// How many characters of detail the card will show.
     ///
     /// The model likes to answer with a long bulleted list, and an unbounded amount of it
     /// turns a glanceable card into a wall of small type with the point chips pushed off
     /// the bottom. Bounding it makes the card predictable whatever the model says.
     public static let detailCharacterBudget = 420
+
+    /// How much of the user's own words fit on the notch pill.
+    ///
+    /// The pill is one line at the HUD's width; a caption that wraps turns a status pill
+    /// into a second card in the middle of a sentence, and the card arrives anyway a moment
+    /// later carrying the whole reply. 52 characters is what fits at 12 pt inside a 360 pt
+    /// pill, which is most spoken questions before the ellipsis.
+    public static let captionCharacterBudget = 52
 
     /// Clamp detail to what the card can show, marking anything dropped.
     ///
@@ -73,6 +114,9 @@ public enum AnswerPanelLayout {
     public static func measure(speech: String,
                                detail: String,
                                pointCount: Int,
+                               actionCount: Int = 0,
+                               hasNote: Bool = false,
+                               confirmation: CardConfirmation = .none,
                                width: CGFloat = defaultWidth,
                                inset: CGFloat = inset) -> CGFloat {
         let textWidth = width - 2 * inset
@@ -83,14 +127,37 @@ public enum AnswerPanelLayout {
         // constants. Two independent versions of "how tall is this card" is how the drawn
         // content and the card disagree, and the disagreement is only ever visible on a
         // real screen with real text in it.
+        //
+        // Point targets and follow-up actions are the same widget: one line, `chipHeight`
+        // tall, in one stack. Counting them separately and adding once is deliberate, so a
+        // reply with three points and two suggested next actions reserves five chip rows
+        // rather than the three it would get from `max`.
         var height = inset * 2
             + statusRowHeight
             + speechLines * speechLineHeight
         if detailLines > 0 {
             height += sectionGap + detailLines * detailLineHeight
         }
-        if pointCount > 0 {
-            height += chipGap + CGFloat(pointCount) * chipHeight
+        let chipCount = max(0, pointCount) + max(0, actionCount)
+        if chipCount > 0 {
+            height += chipGap + CGFloat(chipCount) * chipHeight
+        }
+        // Counted between the chips and the footnote because that is the order the card draws
+        // them in. A question the user cannot reach because the window is too short is the same
+        // class of bug as a clipped answer — the press simply never gets asked.
+        switch confirmation {
+        case .none:
+            break
+        case .question:
+            height += sectionGap + confirmHeight
+        case .result:
+            height += sectionGap + confirmQuestionHeight
+        }
+        // The memory footnote is the last thing the card draws, so it is the last thing
+        // counted. Its height is fixed rather than measured because the view caps it at two
+        // lines: the ceiling and the allowance have to be the same number.
+        if hasNote {
+            height += sectionGap + noteHeight
         }
 
         // Clamped, not merely bounded: a reply long enough to exceed the maximum is real,

@@ -101,6 +101,57 @@ public enum AnswerPanelTests {
             expectEqual(streamer.proposal?.add.count, 1, "but it must be offered for writing")
         }
 
+        // MARK: Result protocol through the streamer
+
+        test("SUMMARY, DONE_TITLE and NEXT_ACTIONS are all resolved by the streamer") {
+            let streamer = AnswerStreamer()
+            streamer.push("The icons are saved beside the page.\n")
+            streamer.push("<SUMMARY>Your welcome page is ready.</SUMMARY>")
+            streamer.push("<DONE_TITLE>Welcome Page</DONE_TITLE>")
+            streamer.push("<NEXT_ACTIONS>\n- Add a dark theme\n</NEXT_ACTIONS>")
+            let result = streamer.finish()
+            expectEqual(streamer.summary, "Your welcome page is ready.")
+            expectEqual(streamer.doneTitle, "Welcome Page")
+            expectEqual(streamer.nextActions, ["Add a dark theme"])
+            expectEqual(result.detail.trimmingCharacters(in: .whitespacesAndNewlines),
+                        "The icons are saved beside the page.",
+                        "result tags must not become transcript text: \(result.detail)")
+        }
+
+        test("SUMMARY wins the utterance over SAY, and SAY is the fallback") {
+            // Two models, one UI: a model that closes with SUMMARY should be heard saying
+            // that line, not the three sentences of narration it emitted while working.
+            let withSummary = AnswerStreamer()
+            withSummary.push("<SAY>Let me look. Building now.</SAY>")
+            withSummary.push("<SUMMARY>The page is ready.</SUMMARY>")
+            withSummary.finish()
+            expectEqual(withSummary.utterance, "The page is ready.")
+
+            let withoutSummary = AnswerStreamer()
+            withoutSummary.push("<SAY>The page is ready.</SAY>")
+            withoutSummary.finish()
+            expectEqual(withoutSummary.utterance, "The page is ready.",
+                        "a reply with no SUMMARY must still be spoken aloud")
+        }
+
+        test("a reply that ignores every tag is still spoken") {
+            // The pipeline speaks `utterance`. If a model answers in plain prose, that prose
+            // parses to detail only — and returning "" here would leave the user hearing
+            // nothing while a card full of text sits on screen.
+            let streamer = AnswerStreamer()
+            streamer.push("The run button is in the toolbar, top left.")
+            streamer.finish()
+            expectEqual(streamer.utterance, "The run button is in the toolbar, top left.")
+        }
+
+        test("a second NEXT_ACTIONS block replaces the chips instead of doubling them") {
+            let streamer = AnswerStreamer()
+            streamer.push("<NEXT_ACTIONS>\n- First\n</NEXT_ACTIONS>")
+            streamer.push("<NEXT_ACTIONS>\n- Second\n- Third\n</NEXT_ACTIONS>")
+            streamer.finish()
+            expectEqual(streamer.nextActions, ["Second", "Third"])
+        }
+
         test("an unterminated tag at the end of the stream is still shown") {
             let streamer = AnswerStreamer()
             streamer.push("The answer is 42.")
@@ -169,6 +220,24 @@ public enum AnswerPanelTests {
                    "each extra chip must add a row: \(one) -> \(three)")
         }
 
+        test("next-action chips share the point chips' stack, including its one gap") {
+            // Measured as deltas between chip counts, not against the chipless card: a
+            // one-word answer is clamped up to `minimumHeight`, so its raw height is not
+            // the number the arithmetic says and a difference from zero hides that.
+            let oneAction = AnswerPanelLayout.measure(speech: "Here.", detail: "",
+                                                      pointCount: 0, actionCount: 1)
+            let twoActions = AnswerPanelLayout.measure(speech: "Here.", detail: "",
+                                                       pointCount: 0, actionCount: 2)
+            let mixed = AnswerPanelLayout.measure(speech: "Here.", detail: "",
+                                                  pointCount: 1, actionCount: 2)
+            expect(oneAction > AnswerPanelLayout.minimumHeight,
+                   "a chip row must clear the clamped floor or the next assertion proves nothing")
+            expectEqual(twoActions - oneAction, AnswerPanelLayout.chipHeight,
+                        "each action chip must reserve its own row, not overlap the answer")
+            expectEqual(mixed - twoActions, AnswerPanelLayout.chipHeight,
+                        "points and actions are one stack: adding a point adds a row, not a row plus a second gap")
+        }
+
         test("detail text adds height only when present") {
             // Long enough to clear the 96pt floor — otherwise both cases clamp to the
             // minimum and the comparison proves nothing.
@@ -219,6 +288,84 @@ public enum AnswerPanelTests {
             expect(bounded.hasSuffix("…"))
             expect(!bounded.contains("xx"),
                    "a whole-line cut was expected, got a slice: \(bounded.suffix(40))")
+        }
+
+        // MARK: Live caption for the user's own voice
+
+        // The notch pill is one line of 12pt type at the HUD width. A caption longer than
+        // that wraps, and a wrapped pill is a second card appearing mid-sentence — the one
+        // surface that must stay glanceable while the user is still talking.
+        test("a caption is bounded to one pill line") {
+            let spoken = "can you tell me what this error in the xcode console means and how I should fix it"
+            let bounded = AnswerPanelLayout.boundedDetail(spoken,
+                                                          budget: AnswerPanelLayout.captionCharacterBudget)
+            expect(bounded.count <= AnswerPanelLayout.captionCharacterBudget + 1,
+                   "caption overflows the pill: \(bounded.count) chars — \(bounded)")
+            expect(bounded.hasSuffix("…"), "the cut must be visible: \(bounded)")
+        }
+
+        test("the caption budget stays smaller than the card's detail budget") {
+            expect(AnswerPanelLayout.captionCharacterBudget < AnswerPanelLayout.detailCharacterBudget,
+                   "the pill is narrower than the card; a caption budget that outgrows the card's "
+                     + "means someone raised the wrong number")
+        }
+
+        test("a short caption is shown whole") {
+            let spoken = "what is this button"
+            expectEqual(AnswerPanelLayout.boundedDetail(spoken,
+                                                       budget: AnswerPanelLayout.captionCharacterBudget),
+                        spoken, "a question that fits must not be elided")
+        }
+
+        // MARK: The press question row
+
+        test("a pending press question makes the card exactly one question block taller") {
+            // Tall enough that neither measurement is sitting on `minimumHeight`: the clamp
+            // would absorb the growth and the assertion would pass or fail on the floor value
+            // instead of on the row.
+            let speech = String(repeating: "a fairly long spoken answer. ", count: 12)
+            let base = AnswerPanelLayout.measure(speech: speech, detail: "", pointCount: 0)
+            let asking = AnswerPanelLayout.measure(speech: speech, detail: "", pointCount: 0,
+                                                   confirmation: .question)
+            expect(asking > AnswerPanelLayout.minimumHeight + 20,
+                   "the fixture is clamped, so it proves nothing: \(asking)")
+            expectEqual(asking - base,
+                        AnswerPanelLayout.sectionGap + AnswerPanelLayout.confirmHeight,
+                        "the card must grow by the row the view actually draws, not an estimate")
+        }
+
+        test("the answer line after a press is shorter than the question it replaces") {
+            let speech = String(repeating: "a fairly long spoken answer. ", count: 12)
+            let asking = AnswerPanelLayout.measure(speech: speech, detail: "", pointCount: 0,
+                                                   confirmation: .question)
+            let answered = AnswerPanelLayout.measure(speech: speech, detail: "", pointCount: 0,
+                                                     confirmation: .result)
+            expect(answered < asking,
+                   "a one-line result must not keep the buttons' height or the card has dead space")
+            let base = AnswerPanelLayout.measure(speech: speech, detail: "", pointCount: 0)
+            expectEqual(answered - base,
+                        AnswerPanelLayout.sectionGap + AnswerPanelLayout.confirmQuestionHeight,
+                        "the result row is one measured line")
+        }
+
+        test("a question cannot push the card past its maximum") {
+            let long = String(repeating: "a fairly long spoken answer. ", count: 60)
+            let height = AnswerPanelLayout.measure(speech: long, detail: long, pointCount: 3,
+                                                   actionCount: 3,
+                                                   confirmation: .question)
+            expect(height <= AnswerPanelLayout.maximumHeight,
+                   "the confirm buttons would be drawn below the window and unclickable: \(height)")
+        }
+
+        test("the question block is tall enough for two real buttons") {
+            // 28 pt is the smallest tap that is not a mis-tap risk on a card this dense, and
+            // the row it lives in is the one thing the user must be able to hit deliberately.
+            expect(AnswerPanelLayout.confirmButtonRowHeight >= 26,
+                   "the Allow / Not now targets are too small to tap safely")
+            expectEqual(AnswerPanelLayout.confirmHeight,
+                        AnswerPanelLayout.confirmQuestionHeight + AnswerPanelLayout.confirmGap
+                        + AnswerPanelLayout.confirmButtonRowHeight,
+                        "the measured block must be the sum of the rows the view draws")
         }
     }
 }

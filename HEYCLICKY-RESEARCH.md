@@ -1,5 +1,7 @@
 # HeyClicky — Product & Architecture Research
 
+> **Note (2026-09-30):** historical reverse-engineering of v1.0.52, preserved as-is. Current build direction is Chunks v2 in `CHUNKS-BUILD-PLAN.md` + `CLAWSTER-RESEARCH.md` + `UTSUWA-RESEARCH.md`.
+
 **Subject:** `HeyClicky.app` (internal names: *Clicky*, *leanring-buddy*, *Learning Buddy*, *Buddy*)
 **Bundle ID:** `com.humansongs.clicky`
 **Version analyzed:** 1.0.52 (build 63), compiled 25 Sep 2026

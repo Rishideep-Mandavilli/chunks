@@ -54,6 +54,27 @@ public enum ProviderRegistryTests {
             }
         }
 
+        // The chain is a latency decision, not a capability list. Measured on the same
+        // screenshot, `gemini-3.1-pro-preview` took 55 seconds and still came back contended —
+        // so with Pro in the second slot, every 503 on Flash cost the user a minute of a card
+        // that said nothing. Pro belongs at the end, as the accuracy escape hatch.
+        test("a contended Flash escalates through fast models before reaching Pro") {
+            let ids = ProviderRegistry.geminiFreeModels.map { $0.id }
+            guard let pro = ids.firstIndex(of: "gemini-3.1-pro-preview") else {
+                expect(false, "Pro is gone from the chain; a fallback that answers in a minute "
+                            + "is not the point of this test, but this case needs updating")
+                return
+            }
+            expect(pro == ids.count - 1,
+                  "Pro is at index \(pro) of \(ids.count - 1): a 503 on Flash would route "
+                    + "through a slow model before trying the cheap fast ones")
+            expectEqual(ids.first, "gemini-3.6-flash",
+                        "the first model tried is what the user waits on every single turn")
+            expectEqual(ProviderRegistry.defaultFreeModelID, ids.first,
+                        "the default model and the head of the chain disagree, so a fresh "
+                            + "install starts on the tier that has never served a turn here")
+        }
+
         test("models with unknown vision capability are excluded from the vision chain") {
             let p = BrainProvider(
                 id: "test", displayName: "Test", transport: .geminiInteractions,

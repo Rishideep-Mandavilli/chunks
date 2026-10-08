@@ -30,6 +30,34 @@ enum Log {
     /// Rotate at 1 MB so an app left running for a week does not fill the disk.
     private static let maximumBytes = 1_048_576
 
+    /// One line fit to show a user, specific when the error knows why it failed.
+    ///
+    /// `BrainError` and `ChunksError` describe their cause in human terms ("No Gemini API key
+    /// set. Add one from the Chunks menu.", "503 high demand"). `localizedDescription` on
+    /// those types does not: they are not `NSError`s, so it comes back as
+    /// "The operation couldn’t be completed. (Chunks.BrainError error 1.)" — which is the
+    /// message a user would get without this. Hence the explicit match on the two types that
+    /// know something, with `localizedDescription` as the fallback for everything else.
+    static func userMessage(for error: Error) -> String {
+        let described: String
+        switch error {
+        case let brain as BrainError: described = brain.description
+        case let chunks as ChunksError: described = chunks.description
+        default: described = error.localizedDescription
+        }
+
+        let oneLine = described
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !oneLine.isEmpty else { return "Something went wrong." }
+        guard oneLine.count > 120 else { return oneLine }
+
+        // Cut at a word boundary so the card does not end mid-token.
+        let clipped = String(oneLine.prefix(120))
+        let lastSpace = clipped.lastIndex(of: " ") ?? clipped.endIndex
+        return String(clipped[..<lastSpace]).trimmingCharacters(in: .whitespaces) + "…"
+    }
+
     private static let queue = DispatchQueue(label: "app.chunks.log", qos: .utility)
 
     static func write(_ message: String) {
@@ -47,6 +75,15 @@ enum Log {
         }
         // Also to the unified log, so `log stream` still works for someone who prefers it.
         NSLog("%@", line)
+    }
+
+    /// Blocks until every queued line has reached the file.
+    ///
+    /// `write` is deliberately off the calling path, so a process that exits immediately after
+    /// its last log call loses that call — and the lines a diagnostic writes last are the ones
+    /// that carry its answer. Any code that is about to `exit()` calls this first.
+    static func flush() {
+        queue.sync {}
     }
 
     private static func formatted(_ message: String) -> String {

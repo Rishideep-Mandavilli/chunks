@@ -26,6 +26,19 @@ public enum RetryPolicy: Sendable {
         case network(detail: String)
         /// Anything unrecognised. Do not retry blindly.
         case unknown(statusCode: Int?, detail: String)
+
+        /// One word for the log, so a slow turn reads as "flash failed after 20.0s — network"
+        /// rather than a dumped associated value that may carry the user's screen text.
+        public var logName: String {
+            switch self {
+            case .serviceUnavailable: return "contended"
+            case .rateLimited:        return "rate limited"
+            case .unauthorised:       return "unauthorised"
+            case .badRequest:         return "bad request"
+            case .network:            return "network"
+            case .unknown:            return "unknown"
+            }
+        }
     }
 
     public enum Decision: Equatable, Sendable {
@@ -50,10 +63,11 @@ public enum RetryPolicy: Sendable {
             return .retrySameModel(afterSeconds: backoff(attempt: attempt, base: 0.6, cap: 4.0))
 
         case .rateLimited:
-            // The limit is per model per minute, so another model in the chain may be
-            // under its own budget — but only after a real wait.
-            if attempt >= maxAttemptsPerModel - 1 { return .fallBackToNextModel }
-            return .retrySameModel(afterSeconds: backoff(attempt: attempt, base: 4.0, cap: 30.0))
+            // The cap is per model per minute, so this model is still full after an eight-second
+            // wait — but every other model in the chain has its own untouched window. Switching
+            // is free; waiting here is the one thing that provably cannot help. Measured: a turn
+            // that retried the 429'd model twice spent 12.6s asleep before moving on.
+            return .fallBackToNextModel
 
         case .network:
             if attempt >= maxAttemptsPerModel - 1 { return .fallBackToNextModel }
@@ -112,6 +126,18 @@ public enum RetryPolicy: Sendable {
         default:
             return .unknown(statusCode: nil, detail: nsError.localizedDescription)
         }
+    }
+
+    /// Whether an error means "someone stopped this turn" rather than "the model answered badly".
+    ///
+    /// A URL task cancelled by a Swift task cancellation surfaces as `NSURLErrorCancelled`, which
+    /// `classify` can only call `.unknown` — and `.unknown` retries. So the user pressing stop was
+    /// being logged as a model failure, and Chunks responded to a request for silence by starting
+    /// a second stream. Nothing here is a policy decision: a cancelled turn is over.
+    public static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
     /// A message worth showing the user. Deliberately honest about *what* went wrong —

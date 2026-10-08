@@ -68,18 +68,35 @@ final class BrainGateway {
         get { _model }
         set { _model = newValue }
     }
-    private var _model = "gemini-3.8-flash"
+    private var _model = ProviderRegistry.defaultFreeModelID
 
     /// `workerBaseURL` in clicky pointed at its Cloudflare proxy. Chunks talks to Google
     /// directly, so nothing is proxied and nothing about the request passes through a
     /// server we do not control.
     private let session: URLSession
-    private let rateLimiter = RateLimiter()
+
+    /// One bucket per model, because that is how the free tier counts: five requests a minute
+    /// *per model*. With a single shared bucket, one contended turn walking three attempts
+    /// across three models burned nine tokens out of five — and every turn after it then slept
+    /// out the rest of the 60-second window before sending a request that was going to fail
+    /// anyway. That wait, not the model, is most of what "takes minutes" meant.
+    private var rateLimiters: [String: RateLimiter] = [:]
+
+    private func limiter(for modelID: String) -> RateLimiter {
+        if let existing = rateLimiters[modelID] { return existing }
+        let fresh = RateLimiter()
+        rateLimiters[modelID] = fresh
+        return fresh
+    }
 
     init() {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 90
-        configuration.timeoutIntervalForResource = 120
+        // `timeoutIntervalForRequest` is an *idle* timeout: it resets on every byte, so it
+        // bounds the wait for the model's first token and never cuts off a stream that is
+        // already talking. At 90s a contended model could hold the user silent for a minute
+        // and a half before we were allowed to try another one.
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 90
         configuration.waitsForConnectivity = false
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
@@ -114,14 +131,24 @@ final class BrainGateway {
         guard !chain.isEmpty else { throw BrainError.noCapableModel(warning ?? "No model available.") }
 
         var lastError: Error?
-        modelLoop: for candidate in chain {
+        var attempts = 0
+        let chainStarted = Date()
+        Log.write("turn: chain \(chain.map(\.id).joined(separator: " > "))"
+            + " · \(images.count) image(s), \(images.reduce(0) { $0 + $1.data.count } / 1024) KB"
+            + " · text \(userPrompt.count + systemPrompt.count) chars")
+        modelLoop: for (index, candidate) in chain.enumerated() {
+            attempts = index + 1
+            let attemptStarted = Date()
             for attempt in 0..<3 {
                 // Stay under the free tier's per-model cap rather than walking into it.
-                let wait = rateLimiter.delayUntilAvailable()
+                let limiter = limiter(for: candidate.id)
+                let wait = limiter.delayUntilAvailable()
                 if wait > 0 {
+                    Log.write("turn: \(candidate.id) at its per-minute cap, waiting "
+                        + "\(String(format: "%.1f", wait))s")
                     try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                 }
-                rateLimiter.consume()
+                limiter.consume()
 
                 do {
                     let text = try await stream(
@@ -132,17 +159,54 @@ final class BrainGateway {
                         userPrompt: userPrompt,
                         images: images,
                         onTextChunk: onTextChunk)
-                    return (text, Date().timeIntervalSince(started))
+                    let total = Date().timeIntervalSince(started)
+                    Log.write("turn: served by \(candidate.id) in \(String(format: "%.1f", total))s"
+                        + " (\(attempts) model(s) tried)")
+                    // The tail of the reply, always. Every act tag the protocol has is required to
+                    // come *last*, so "it said it would do it and did nothing" is a question about
+                    // the end of the text — and until now the log recorded the size of the request
+                    // and the time, never what came back. A reply ending mid-tag reads here as
+                    // `<DONE_TITLE>Ready` with no closer, which is a different bug from a reply
+                    // that chose not to emit a tag at all.
+                    let tail = text.count > 160 ? "…" + String(text.suffix(160)) : text
+                    Log.write("turn: reply ends \u{2023} " + tail.replacingOccurrences(
+                        of: "\n", with: " ⏎ "))
+                    return (text, total)
                 } catch {
+                    // Not a model failure. `NSURLErrorCancelled` arrives whenever the caller
+                    // stops a turn, and classifying it as an unknown error retried a stream the
+                    // user had just asked to end.
+                    if RetryPolicy.isCancellation(error) || Task.isCancelled {
+                        Log.write("turn: cancelled after "
+                            + "\(String(format: "%.1f", Date().timeIntervalSince(started)))s on \(candidate.id)"
+                            + " — not retried")
+                        throw error
+                    }
                     lastError = error
-                    switch RetryPolicy.decide(for: classify(error), attempt: attempt) {
+                    let waited = Date().timeIntervalSince(attemptStarted)
+                    let kind = classify(error)
+                    let decision = RetryPolicy.decide(for: kind, attempt: attempt)
+                    // The decision is logged, not guessed at: "failed, retrying" beside a line
+                    // that then switched models is how a log stops being worth reading.
+                    let action: String
+                    switch decision {
+                    case .retrySameModel(let after):
+                        action = "retrying it in \(String(format: "%.1f", after))s"
+                    case .fallBackToNextModel:
+                        action = "switching model"
+                    case .fail:
+                        action = "failing the turn"
+                    }
+                    Log.write("turn: \(candidate.id) failed after "
+                        + "\(String(format: "%.1f", waited))s — \(kind.logName); \(action)")
+                    switch decision {
                     case .retrySameModel(let after):
                         try? await Task.sleep(nanoseconds: UInt64(after * 1_000_000_000))
                     case .fallBackToNextModel:
                         // Labelled, because a bare `break` here exits the switch and
                         // retries the model we just gave up on.
-                        NSLog("[Chunks] %@ contended, trying %@", candidate.id,
-                              chain.first { $0.id != candidate.id }?.id ?? "nothing")
+                        let next = index + 1 < chain.count ? chain[index + 1].id : "nothing"
+                        Log.write("turn: switching away from \(candidate.id) to \(next)")
                         continue modelLoop
                     case .fail:
                         throw error
@@ -171,7 +235,8 @@ final class BrainGateway {
         var parts: [GeminiRequestBuilder.ContentPart] = []
         for image in images {
             parts.append(.text(image.label))
-            parts.append(.image(base64: image.data.base64EncodedString(), mimeType: "image/png"))
+            parts.append(.image(base64: image.data.base64EncodedString(),
+                                mimeType: Self.mimeType(for: image.data)))
         }
         parts.append(.text(userPrompt))
 
@@ -224,6 +289,15 @@ final class BrainGateway {
             }
         }
         return accumulated
+    }
+
+    /// The live capture path encodes JPEG and `--self-test` encodes PNG, and the tuple carrying
+    /// them has no field for the difference — so the type is read off the magic bytes. Claiming
+    /// `image/png` for JPEG bytes is the kind of bug that appears to work, because Gemini sniffs;
+    /// the day it stops sniffing, the model is asked to explain a screen it was never shown.
+    static func mimeType(for data: Data) -> String {
+        guard data.count > 1, data[0] == 0xFF, data[1] == 0xD8 else { return "image/png" }
+        return "image/jpeg"
     }
 
     /// `store: false` is not negotiable. Chunks sends screenshots of the user's whole screen

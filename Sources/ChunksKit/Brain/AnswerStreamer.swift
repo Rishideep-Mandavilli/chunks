@@ -21,6 +21,43 @@ public final class AnswerStreamer {
     public private(set) var points: [PointTarget] = []
     public private(set) var proposal: MemoryProposal?
 
+    /// The turn's completion line, spoken when the stream ends.
+    public private(set) var summary: String?
+
+    /// One-line label for the notch chip / panel title.
+    public private(set) var doneTitle: String?
+
+    /// Follow-up suggestions, in the order the model offered them.
+    public private(set) var nextActions: [String] = []
+
+    /// `[ACT:…]` proposals, in order. Not executed here: the caller runs each through
+    /// `PolicyGate` and then asks the user. Deliberately an array rather than one slot — a
+    /// model that proposes two presses in one turn should not have the first silently
+    /// replaced by the second before the user has seen either.
+    public private(set) var actionRequests: [ActionRequest] = []
+
+    /// `[DO:…]` proposals, in order, for the same reason `actionRequests` is an array. A press
+    /// and a tool run are two questions, and the gate only holds one — so a reply that proposed
+    /// both keeps both visible to the caller, which asks about one and logs the rest rather
+    /// than losing track of what the model actually wanted.
+    public private(set) var toolRequests: [DoRequest] = []
+
+    /// What to say aloud *for this turn*, resolved.
+    ///
+    /// `<SUMMARY>` wins when present: it is the model's deliberate completion line, whereas
+    /// `<SAY>` blocks are narration interleaved with work and can be several sentences long.
+    /// Falling back to the accumulated `<SAY>` text is what keeps a reply that used no
+    /// `<SUMMARY>` still speakable — which is every reply from a model that has not learned
+    /// the full protocol yet. The last fallback is the shown detail, for a reply that ignored
+    /// the tags altogether: plain prose lands there, and silence is the one failure the user
+    /// cannot work around.
+    public var utterance: String {
+        if let summary, !summary.isEmpty { return summary }
+        let spoken = speech.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !spoken.isEmpty { return spoken }
+        return detail.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// The `<SAY>` body from the most recent `.speech`, when the next `.text` is expected
     /// to be the "also shown" copy of it.
     ///
@@ -80,6 +117,14 @@ public final class AnswerStreamer {
             case .point(let target):
                 points.append(target)
 
+            case .act(let request):
+                actionRequests.append(request)
+
+            case .tool(let request):
+                // Consumed, never echoed: a `[DO:…]` the streamer dropped would reach the
+                // transcript as literal text the user reads aloud as an answer.
+                toolRequests.append(request)
+
             case .memory(let proposed):
                 proposal = proposed
 
@@ -88,6 +133,17 @@ public final class AnswerStreamer {
                 // it yet; dropping it here is why the tag never leaks into the transcript
                 // as a literal "<NOTE>".
                 break
+
+            case .summary(let text):
+                summary = text
+
+            case .doneTitle(let text):
+                doneTitle = text
+
+            case .nextActions(let actions):
+                // Replace, not append: a model that emits the block twice should not
+                // double the chip row.
+                nextActions = actions
             }
         }
     }

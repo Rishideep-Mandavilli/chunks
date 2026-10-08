@@ -1,6 +1,7 @@
 # Open-Source HeyClicky Alternatives — For Free, Fully-Customizable Mac Automation
 
-**Compiled:** 2026-09-28 · All star counts, licenses, and push dates verified via authenticated `gh api` / `api.github.com` on that date.
+**Compiled:** 2026-09-28 · Star counts/licenses/push dates verified via authenticated `gh api` on that date.
+**Updated:** 2026-09-30 · Added Clawster + Utsuwa deep-dives (see `CLAWSTER-RESEARCH.md`, `UTSUWA-RESEARCH.md`). Current recommendation = Chunks v2 native plan in `CHUNKS-BUILD-PLAN.md` (notch shell, single assistant, memory-first). Below is preserved research.
 
 ---
 
@@ -10,9 +11,14 @@
 
 | Path | What you get | Cost | Effort | Verdict |
 |---|---|---|---|---|
-| **A. Fork `clickyX`** | HeyClicky's exact feature set, cross-platform, **with a working cron scheduler already built** | Free, MIT | Low — clone and run | ⭐ **Start here** |
-| **B. Fork `farzaa/clicky`** | The authentic HeyClicky ancestor, native Swift, 7.7k LOC, cleanest code | Free, MIT | Medium — you build computer-use + automations | Best if you want to own every line |
+| **D. Chunks v2 (current)** | Native notch app, single assistant, memory+reminders+planner, permissioned control, trailer pointer, in-app moods | Free (Gemini free tier) | Medium — fork `farzaa/clicky` + build P1–P8 | ⭐ **Do this** — see `CHUNKS-BUILD-PLAN.md` |
+| **A. Fork `clickyX`** | HeyClicky's exact feature set, cross-platform, **with a working cron scheduler already built** | Free, MIT | Low — clone and run | Fallback if native fails |
+| **A2. Learn from `clawster`** | Pet UX, hotkeys, onboarding wizard, local tool classifier, Focus tools | Free, MIT | Learn patterns only | Adopt hotkeys/wizard/Focus, reject Electron+cloud lock |
+| **A3. Learn from `utsuwa`** | BYOK/offline, app-owns-state memory, local embeddings, MCP hardening, Kokoro-local TTS | Free, **AGPL-3.0** | Learn patterns only — do NOT vendor code | Adopt registry/memory/MCP/consent patterns |
+| **B. Fork `farzaa/clicky`** | The authentic HeyClicky ancestor, native Swift, 7.7k LOC, cleanest code | Free, MIT | Medium — base for Chunks v2 | Base for Chunks v2 |
 | **C. Assemble from components** | Maximum control, best-of-breed, fully local | Free (API keys optional) | High | Best long-term, slowest to first win |
+
+**Current recommendation (2026-09-30):** do **D. Chunks v2**. It keeps B as the base, takes hotkeys/onboarding/Focus from Clawster and registry/memory/MCP/consent from Utsuwa, stays MIT-clean (no AGPL code), and adds what neither has: notch shell, annotate+trailer-pointer, permissioned AX control, reminders/scheduler/planner.
 
 **My recommendation:** start with **A**, because it is the only option where the feature you specifically asked for — automations — is already implemented, tested, and shipping.
 
@@ -77,7 +83,23 @@ If your priority is **"HeyClicky's features but mine, with automations instead o
 
 ---
 
-## 2. Tier B — `farzaa/clicky` (the authentic fork)
+## 1b. Clawster — pet UX to learn from (MIT, do not fork wholesale)
+
+**`wuyuwenj/clawster`** · MIT · Electron + React · ~30★ / 1 fork · v0.1.3 / staging 259 commits · `clawster.pet`. Full notes: `CLAWSTER-RESEARCH.md`.
+
+- Was pure OpenClaw client (`127.0.0.1:18789`, `IDENTITY.md`/`SOUL.md`), all-local. Now hybrid: local Qwen 1.5B tool classifier (~200ms) + Cloudflare Worker → `gpt-4o-mini` + LanceDB `~/.clawster/memory/` (facts always-inject + emotional memories top-5, `text-embedding-3-small` 1536-d, dedup 0.92).
+- Take: `Cmd+Shift+Space` / `Cmd+Shift+/` / `Cmd+Shift+A` hotkeys, 3-step wizard permission flow, Focus Mode block, tool layer (open/timer/volume), mood model.
+- Reject for Chunks: Electron weight, cloud-chat lock (Pro coming), always-on desktop pet, no annotate/point/AX, tiny bus factor.
+
+## 1c. Utsuwa — local-first patterns to learn from (AGPL, do NOT vendor)
+
+**`JuiceBoxxGames/utsuwa`** · **AGPL-3.0-or-later since 0.12.1** (MIT only to 0.12.0) · SvelteKit + Tauri v2 + web `app.utsuwa.ai`. Full notes: `UTSUWA-RESEARCH.md`.
+
+- App owns numbers; LLM suggests bounded JSON deltas; app clamps/applies; extraction fallback for small models. Memory 3-tier on-device (Dexie + localforage, 384-d `Xenova/paraphrase-multilingual-MiniLM-L12-v2` in-browser, 70% sim +30% importance). BYOK (OpenAI/Anthropic/Gemini/DeepSeek/Grok/Ollama/LM Studio) + fully offline (Kokoro-FastAPI, Whisper-local, OmniVoice). MCP built-in with Ask-before-run default + prompt hardening + stdio allowlists fail-closed. Reminders as system events (no sentiment side-effects).
+- Take patterns only: registry, clamped deltas, local embeddings (P8 option), MCP gating, Kokoro-local, reminder/event rules.
+- Reject: VRM/Three.js/AR/photo/dating-sim weight; photo-attach-only vision (no screen-awareness); no computer-use. **Never paste Utsuwa code into MIT Chunks.**
+
+## 2. Tier B — `farzaa/clicky` (the authentic fork — Chunks v2 base)
 
 **`farzaa/clicky`** · MIT · Swift · 7,667★ / 1,525 forks · 7,751 LOC across 23 files · 20 commits, all from 7–9 April 2026.
 
@@ -402,7 +424,9 @@ Each vendor has already solved its own OAuth. **You can skip the broker entirely
 
 ## 9. What I'd actually build
 
-### Recommended path
+### Recommended path (superseded 2026-09-30 by Chunks v2 — see `CHUNKS-BUILD-PLAN.md`)
+
+**Do Chunks v2 (native notch, single assistant).** Below preserved for history:
 
 **Start from `clickyX`.** It's MIT, it already has the automations scheduler you asked for, it already has Codex as an agent runtime and 64 skills, and you can run it today without writing code.
 

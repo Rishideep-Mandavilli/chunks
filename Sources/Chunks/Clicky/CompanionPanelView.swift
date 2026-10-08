@@ -8,11 +8,14 @@
 //
 
 import AVFoundation
+import ChunksKit
 import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
-    @State private var emailInput: String = ""
+    @State private var keyInput: String = ""
+    @State private var isEditingKey: Bool = false
+    @State private var keyMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -30,6 +33,9 @@ struct CompanionPanelView: View {
                     .frame(height: 12)
 
                 modelPickerRow
+                    .padding(.horizontal, 16)
+
+                actingRow
                     .padding(.horizontal, 16)
             }
 
@@ -49,24 +55,11 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
             }
 
-            // Show Clicky toggle — hidden for now
-            // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            //     Spacer()
-            //         .frame(height: 16)
-            //
-            //     showClickyCursorToggleRow
-            //         .padding(.horizontal, 16)
-            // }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                    .padding(.horizontal, 16)
-            }
-
             Spacer()
-                .frame(height: 12)
+                .frame(height: 16)
+
+            apiKeyRow
+                .padding(.horizontal, 16)
 
             Divider()
                 .background(DS.Colors.borderSubtle)
@@ -91,7 +84,7 @@ struct CompanionPanelView: View {
                     .frame(width: 8, height: 8)
                     .shadow(color: statusDotColor.opacity(0.6), radius: 4)
 
-                Text("Clicky")
+                Text("Chunks")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
             }
@@ -126,22 +119,17 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var permissionsCopySection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Drop your email to get started.")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Hold \(BuddyPushToTalkShortcut.pushToTalkDisplayText) to talk.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
-                Text("If I keep building this, I'll keep you in the loop.")
+                Text("\(PanelShortcut.displayText) opens and closes this panel.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted {
-            Text("You're all set. Hit Start to meet Clicky.")
+            Text("You're all set. Hit Start to meet Chunks.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -152,7 +140,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Some permissions were revoked. Grant all four below to keep using Clicky.")
+                Text("Some permissions were revoked. Grant every row below to keep using Chunks.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -178,64 +166,139 @@ struct CompanionPanelView: View {
         }
     }
 
-    // MARK: - Email + Start Button
+    // MARK: - Start Button
 
     @ViewBuilder
     private var startButton: some View {
         if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            if !companionManager.hasSubmittedEmail {
-                VStack(spacing: 8) {
-                    TextField("Enter your email", text: $emailInput)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .foregroundColor(DS.Colors.textPrimary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                .fill(Color.white.opacity(0.08))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-                        )
+            Button(action: {
+                companionManager.triggerOnboarding()
+            }) {
+                Text("Start")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(DS.Colors.textOnAccent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
+                            .fill(DS.Colors.accent)
+                    )
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+        }
+    }
 
-                    Button(action: {
-                        companionManager.submitEmail(emailInput)
-                    }) {
-                        Text("Submit")
-                            .font(.system(size: 14, weight: .semibold))
+    // MARK: - API Key
+
+    /// The one field the app cannot run without.
+    ///
+    /// Upstream shipped a Cloudflare proxy and the key lived server-side, so clicky's UI
+    /// never asked for one; every "add a key from the Chunks menu" message in this codebase
+    /// pointed at a menu that does not exist. Writing to the Keychain is the only path that
+    /// keeps the key out of UserDefaults, a plist, and the shell history.
+    private var apiKeyRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                HStack(spacing: 8) {
+                    Image(systemName: "key")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(companionManager.hasApiKey ? DS.Colors.textTertiary : DS.Colors.warning)
+                        .frame(width: 16)
+
+                    Text("Gemini API key")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+
+                Spacer()
+
+                if companionManager.hasApiKey && !isEditingKey {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(DS.Colors.success)
+                            .frame(width: 6, height: 6)
+                        Text("Saved")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.success)
+                    }
+
+                    Button(action: { isEditingKey = true }) {
+                        Text("Change")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                } else {
+                    Button(action: { companionManager.refreshApiKeyState() }) {
+                        Text("Check")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+
+            if isEditingKey || !companionManager.hasApiKey {
+                SecureField("AIza…  pasted from aistudio.google.com", text: $keyInput)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                            .fill(Color.white.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    )
+                    .onSubmit(saveKey)
+
+                HStack {
+                    if let keyMessage {
+                        Text(keyMessage)
+                            .font(.system(size: 11))
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer()
+
+                    Button(action: saveKey) {
+                        Text("Save to Keychain")
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(DS.Colors.textOnAccent)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
                             .background(
-                                RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
-                                    .fill(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                Capsule()
+                                    .fill(keyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                           ? DS.Colors.accent.opacity(0.4)
                                           : DS.Colors.accent)
                             )
                     }
                     .buttonStyle(.plain)
                     .pointerCursor()
-                    .disabled(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(keyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-            } else {
-                Button(action: {
-                    companionManager.triggerOnboarding()
-                }) {
-                    Text("Start")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
-                                .fill(DS.Colors.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
             }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func saveKey() {
+        let trimmed = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if companionManager.saveApiKey(trimmed) {
+            keyInput = ""
+            keyMessage = nil
+            isEditingKey = false
+        } else {
+            keyMessage = "The Keychain refused the write. Rebuild with a signing identity and try again."
         }
     }
 
@@ -252,6 +315,8 @@ struct CompanionPanelView: View {
             microphonePermissionRow
 
             accessibilityPermissionRow
+
+            inputMonitoringPermissionRow
 
             screenRecordingPermissionRow
 
@@ -332,6 +397,68 @@ struct CompanionPanelView: View {
         .padding(.vertical, 6)
     }
 
+    /// Named after the System Settings pane rather than the feature, because that is the
+    /// string the user has to find in the sidebar. Without this row the app looks fully
+    /// granted while ⌃ and ⌃⌘C do nothing at all — the keyboard tap needs Input
+    /// Monitoring, which Accessibility does not cover.
+    private var inputMonitoringPermissionRow: some View {
+        let isGranted = companionManager.hasInputMonitoringPermission
+        return HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
+                    .frame(width: 16)
+
+                Text("Input Monitoring")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            if isGranted {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(DS.Colors.success)
+                        .frame(width: 6, height: 6)
+                    Text("Granted")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.success)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    // macOS applies this grant on the next launch, so the row would
+                    // otherwise keep reading "missing" after the box is ticked.
+                    Button(action: { companionManager.restartToApplyPermissions() }) {
+                        Text("Restart")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+
+                    Button(action: {
+                        WindowPositionManager.requestInputMonitoringPermission()
+                    }) {
+                        Text("Grant")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .fill(DS.Colors.accent)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
     private var screenRecordingPermissionRow: some View {
         let isGranted = companionManager.hasScreenRecordingPermission
         return HStack {
@@ -348,7 +475,7 @@ struct CompanionPanelView: View {
 
                     Text(isGranted
                          ? "Only takes a screenshot when you use the hotkey"
-                         : "Quit and reopen after granting")
+                         : "Tick it in Settings, then press ↻ here")
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.textTertiary)
                 }
@@ -366,24 +493,37 @@ struct CompanionPanelView: View {
                         .foregroundColor(DS.Colors.success)
                 }
             } else {
-                Button(action: {
-                    // Triggers the native macOS screen recording prompt on first
-                    // attempt (auto-adds app to the list), then opens System Settings
-                    // on subsequent attempts.
-                    WindowPositionManager.requestScreenRecordingPermission()
-                }) {
-                    Text("Grant")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(DS.Colors.accent)
-                        )
+                HStack(spacing: 8) {
+                    // The grant only lands on the next launch, so without this button the
+                    // list looks broken: the user checks the box in System Settings and
+                    // this row keeps saying it is missing.
+                    Button(action: { companionManager.restartToApplyPermissions() }) {
+                        Text("Restart")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+
+                    Button(action: {
+                        // Triggers the native macOS screen recording prompt on first
+                        // attempt (auto-adds app to the list), then opens System Settings
+                        // on subsequent attempts.
+                        WindowPositionManager.requestScreenRecordingPermission()
+                    }) {
+                        Text("Grant")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textOnAccent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .fill(DS.Colors.accent)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
                 }
-                .buttonStyle(.plain)
-                .pointerCursor()
             }
         }
         .padding(.vertical, 6)
@@ -544,35 +684,6 @@ struct CompanionPanelView: View {
 
 
 
-    // MARK: - Show Clicky Cursor Toggle
-
-    private var showClickyCursorToggleRow: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "cursorarrow")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(width: 16)
-
-                Text("Show Clicky")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-            }
-
-            Spacer()
-
-            Toggle("", isOn: Binding(
-                get: { companionManager.isClickyCursorEnabled },
-                set: { companionManager.setClickyCursorEnabled($0) }
-            ))
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .tint(DS.Colors.accent)
-            .scaleEffect(0.8)
-        }
-        .padding(.vertical, 4)
-    }
-
     private var speechToTextProviderRow: some View {
         HStack {
             HStack(spacing: 8) {
@@ -597,6 +708,11 @@ struct CompanionPanelView: View {
 
     // MARK: - Model Picker
 
+    /// The free Gemini tiers, shortest label first.
+    ///
+    /// This row used to offer "Sonnet" and "Opus" — ids carried over from clicky's Claude
+    /// build that Chunks has no way to reach. Picking one there set a preferred model that
+    /// every turn then had to fall back away from.
     private var modelPickerRow: some View {
         HStack {
             Text("Model")
@@ -605,41 +721,69 @@ struct CompanionPanelView: View {
 
             Spacer()
 
-            HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+            Menu {
+                ForEach(ProviderRegistry.geminiFreeModels, id: \.id) { model in
+                    Button {
+                        companionManager.setSelectedModel(model.id)
+                    } label: {
+                        if model.id == companionManager.selectedModel {
+                            Label(model.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(model.displayName)
+                        }
+                    }
+                }
+            } label: {
+                Text(ProviderRegistry.geminiFreeModels
+                        .first(where: { $0.id == companionManager.selectedModel })?
+                        .displayName ?? companionManager.selectedModel)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.white.opacity(0.1))
+                    )
             }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
         .padding(.vertical, 4)
     }
 
-    private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
-        return Button(action: {
-            companionManager.setSelectedModel(modelID)
-        }) {
-            Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
-                )
-        }
-        .buttonStyle(.plain)
-        .pointerCursor()
-    }
+    /// Whether the notch asks before Chunks presses a control or runs a tool.
+    ///
+    /// Off by default, because the ask is what the user objected to: they named a thing on
+    /// screen and got a question about it instead of an action. The row exists so the switch is
+    /// a visible choice rather than a Keychain-style secret — and the copy says plainly that
+    /// turning it off does not unlock secure fields or password apps, which `PolicyGate` still
+    /// refuses whatever this says.
+    private var actingRow: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Ask before acting")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text(companionManager.askBeforeActing
+                        ? "Shows Allow / Not now in the notch first."
+                        : "Acts on what you name. Secure fields still refuse.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
 
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.askBeforeActing },
+                set: { companionManager.setAskBeforeActing($0) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
+        .padding(.vertical, 4)
+    }
 
     // MARK: - Footer
 
@@ -651,7 +795,7 @@ struct CompanionPanelView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "power")
                         .font(.system(size: 11, weight: .medium))
-                    Text("Quit Clicky")
+                    Text("Quit Chunks")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundColor(DS.Colors.textTertiary)
@@ -668,7 +812,7 @@ struct CompanionPanelView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "play.circle")
                             .font(.system(size: 11, weight: .medium))
-                        Text("Watch Onboarding Again")
+                        Text("See the Intro Again")
                             .font(.system(size: 12, weight: .medium))
                     }
                     .foregroundColor(DS.Colors.textTertiary)

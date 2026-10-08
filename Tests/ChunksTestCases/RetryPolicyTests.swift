@@ -54,14 +54,23 @@ public enum RetryPolicyTests {
             expectEqual(RetryPolicy.decide(for: f, attempt: 2), .fallBackToNextModel)
         }
 
-        test("rate limiting backs off far longer than high demand") {
-            let demand = RetryPolicy.decide(for: .serviceUnavailable(highDemand: true), attempt: 0)
-            let limited = RetryPolicy.decide(for: .rateLimited(requestsPerMinute: 5), attempt: 0)
-            guard case .retrySameModel(let a) = demand, case .retrySameModel(let b) = limited else {
-                expect(false, "expected both to retry same model")
+        // The free tier counts five requests a minute *per model*. Backing off on the model
+        // that just 429'd means sleeping for eight seconds against a sixty-second window, then
+        // hitting the same wall — while the next model in the chain sat there unused.
+        test("a rate limit switches model immediately instead of sleeping on the same one") {
+            for attempt in 0...2 {
+                expectEqual(RetryPolicy.decide(for: .rateLimited(requestsPerMinute: 5),
+                                               attempt: attempt),
+                            .fallBackToNextModel,
+                            "attempt \(attempt) slept on a model whose minute had not expired")
+            }
+            // Contention is different: it clears in seconds, so waiting on the same model is
+            // the cheap answer there and the fallback stays a last resort.
+            guard case .retrySameModel = RetryPolicy.decide(for: .serviceUnavailable(highDemand: true),
+                                                             attempt: 0) else {
+                expect(false, "high demand should retry the same model before switching")
                 return
             }
-            expect(b > a, "rate-limit backoff (\(b)s) should exceed high-demand backoff (\(a)s)")
         }
 
         test("backoff grows with attempt and stays under the cap") {
@@ -130,6 +139,36 @@ public enum RetryPolicyTests {
         test("a fresh rate limiter never blocks") {
             let limiter = RateLimiter(limit: 5, window: 60)
             expectEqual(limiter.delayUntilAvailable(), 0)
+        }
+
+        // The turn log is the only place a slow answer can be diagnosed after the fact, and it
+        // must not have to print an associated value that could carry the user's screen text.
+        test("each failure kind has a one-word log name") {
+            expectEqual(RetryPolicy.Failure.serviceUnavailable(highDemand: true).logName, "contended")
+            expectEqual(RetryPolicy.Failure.rateLimited(requestsPerMinute: 5).logName, "rate limited")
+            expectEqual(RetryPolicy.Failure.network(detail: "boom").logName, "network")
+            expectEqual(RetryPolicy.Failure.badRequest(detail: "boom").logName, "bad request")
+            expect(RetryPolicy.Failure.unknown(statusCode: nil, detail: "x").logName == "unknown")
+        }
+
+        // `classify` has no word for "the user stopped the turn", so a cancellation lands as
+        // `.unknown` — and `.unknown` is retried. That is the bug this predicate exists to catch
+        // before the classifier runs: pressing stop used to make Chunks answer a request for
+        // silence by opening a second stream and logging it as a model failure.
+        test("a cancellation is recognised as the end of a turn, not a model failure") {
+            let cancelled = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+            expect(RetryPolicy.isCancellation(cancelled),
+                   "URLSession reports a task it killed as NSURLErrorCancelled; the gateway's "
+                        + "stream path is exactly where that arrives")
+            expect(RetryPolicy.isCancellation(CancellationError()),
+                   "a Swift-level cancel must end the turn too")
+
+            expect(!RetryPolicy.isCancellation(
+                NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)),
+                "a timeout is the model being slow, and the user did not ask for silence")
+            expect(!RetryPolicy.isCancellation(
+                NSError(domain: "com.example.other", code: 1)),
+                  "an unrelated error must not be swallowed as a cancellation")
         }
     }
 }

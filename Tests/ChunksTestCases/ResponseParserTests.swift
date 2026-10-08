@@ -21,6 +21,15 @@ public enum ResponseParserTests {
     static func memory(_ events: [ReplyEvent]) -> MemoryProposal? {
         events.compactMap { if case .memory(let m) = $0 { return m }; return nil }.first
     }
+    static func summaries(_ events: [ReplyEvent]) -> String? {
+        events.compactMap { if case .summary(let s) = $0 { return s }; return nil }.first
+    }
+    static func titles(_ events: [ReplyEvent]) -> String? {
+        events.compactMap { if case .doneTitle(let t) = $0 { return t }; return nil }.first
+    }
+    static func actions(_ events: [ReplyEvent]) -> [String] {
+        events.compactMap { if case .nextActions(let a) = $0 { return a }; return nil }.first ?? []
+    }
 
     public static func register() {
         TestRunner.currentSuite = "ResponseParser"
@@ -31,6 +40,19 @@ public enum ResponseParserTests {
             let p = ResponseParser()
             let ev = p.feed("This is the Debug Navigator.") + p.finish()
             expectEqual(ResponseParserTests.texts(ev), "This is the Debug Navigator.")
+        }
+
+        test("feed() alone holds the prose back; finish() is what releases it") {
+            // The tail could still grow into a tag, so nothing is final until the stream ends.
+            // A caller that reads the accumulated answer before `finish()` sees an empty one —
+            // which is how `chunks --self-test` reported "the reply parsed to nothing" against
+            // a perfectly good sentence from the model.
+            let p = ResponseParser()
+            expect(p.feed("You are looking at a settings window.").isEmpty,
+                   "an unflushed stream released text it might still have to hold back")
+            let flushed = p.feed("") + p.finish()
+            expectEqual(ResponseParserTests.texts(flushed), "You are looking at a settings window.",
+                        "the held-back prose was never released")
         }
 
         test("empty input produces nothing") {
@@ -100,6 +122,18 @@ public enum ResponseParserTests {
             let ev = p.feed("[POINT:notanumber,20:Thing:screen1]") + p.finish()
             expect(ResponseParserTests.points(ev).isEmpty, "should not have parsed")
             expect(ResponseParserTests.texts(ev).contains("[POINT:"), "malformed tag was swallowed instead of shown")
+        }
+
+        test("[POINT:none] is understood, not shown and not pointed") {
+            // The prompt tells the model to emit this when pointing would not help, so the
+            // fail-open path would put "[POINT:none]" on the card and the cursor would fly
+            // wherever a missing coordinate resolved to.
+            let p = ResponseParser()
+            let ev = p.feed("The run button is top left. [POINT:none]") + p.finish()
+            expect(ResponseParserTests.points(ev).isEmpty)
+            let shown = ResponseParserTests.texts(ev)
+            expect(!shown.contains("[POINT"), "the sentinel leaked into the shown text: \(shown)")
+            expect(shown.contains("run button"), "the answer itself must survive: \(shown)")
         }
 
         // MARK: <MEMORY>
@@ -270,6 +304,136 @@ public enum ResponseParserTests {
             }
             ev += p.finish()
             expectEqual(ResponseParserTests.texts(ev), original)
+        }
+
+        // MARK: Result protocol — <SUMMARY> / <DONE_TITLE> / <NEXT_ACTIONS>
+
+        test("<SUMMARY> is spoken, not shown") {
+            let p = ResponseParser()
+            let ev = p.feed("Detail text.\n<SUMMARY>The welcome page is ready.</SUMMARY>") + p.finish()
+            expectEqual(ResponseParserTests.summaries(ev), "The welcome page is ready.")
+            expect(!ResponseParserTests.texts(ev).contains("SUMMARY"),
+                   "the completion line belongs to the TTS pipeline; echoing it back reads as the model quoting itself")
+            expect(ResponseParserTests.texts(ev).contains("Detail text."), "detail lost")
+        }
+
+        test("<DONE_TITLE> becomes a one-line chip label") {
+            let p = ResponseParser()
+            let ev = p.feed("<DONE_TITLE>Rishideep Welcome Page</DONE_TITLE>") + p.finish()
+            expectEqual(ResponseParserTests.titles(ev), "Rishideep Welcome Page")
+            expect(ResponseParserTests.texts(ev).isEmpty, "title leaked into the transcript")
+        }
+
+        test("a multi-line DONE_TITLE keeps its first line") {
+            let p = ResponseParser()
+            let ev = p.feed("<DONE_TITLE>Debug Navigator\nprose the model should not have put here</DONE_TITLE>") + p.finish()
+            expectEqual(ResponseParserTests.titles(ev), "Debug Navigator")
+        }
+
+        test("an over-long DONE_TITLE is cut at a word boundary, not mid-word") {
+            let long = String(repeating: "word ", count: 30)
+            let p = ResponseParser()
+            let ev = p.feed("<DONE_TITLE>\(long)</DONE_TITLE>") + p.finish()
+            let title = ResponseParserTests.titles(ev) ?? ""
+            expect(title.count <= ResponseParser.titleCharacterLimit + 1,
+                   "a title wider than the chip pushes the answer off the card: got \(title.count)")
+            expect(!title.contains("wor…"), "truncation sliced a word in half: \(title)")
+        }
+
+        test("<NEXT_ACTIONS> parses a bullet list into chips") {
+            let p = ResponseParser()
+            let ev = p.feed("""
+            <NEXT_ACTIONS>
+            - Add a CSS-only dark theme
+            * Export it as a PDF
+            </NEXT_ACTIONS>
+            """) + p.finish()
+            expectEqual(ResponseParserTests.actions(ev), ["Add a CSS-only dark theme", "Export it as a PDF"])
+        }
+
+        test("<NEXT_ACTIONS> tolerates numbering and caps at three chips") {
+            let p = ResponseParser()
+            let ev = p.feed("""
+            <NEXT_ACTIONS>
+            1. First action
+            2. Second action
+            3. Third action
+            4. Fourth action
+            5. Fifth action
+            </NEXT_ACTIONS>
+            """) + p.finish()
+            let got = ResponseParserTests.actions(ev)
+            expectEqual(got.count, ResponseParser.maxNextActions,
+                        "more than \(ResponseParser.maxNextActions) chips is a menu the user reads, not one they tap")
+            expectEqual(got.first, "First action")
+        }
+
+        test("<NEXT_ACTIONS> drops blank and repeated lines") {
+            let p = ResponseParser()
+            let ev = p.feed("""
+            <NEXT_ACTIONS>
+
+            - Open it in Safari
+
+            - Open it in Safari
+            - Rename the file
+            </NEXT_ACTIONS>
+            """) + p.finish()
+            expectEqual(ResponseParserTests.actions(ev), ["Open it in Safari", "Rename the file"])
+        }
+
+        test("a result tag split across deltas never shows its markup") {
+            // The framing a real SSE stream uses: chunk boundaries land mid-token.
+            let p = ResponseParser()
+            var ev: [ReplyEvent] = []
+            for delta in ["Answer. <SUMM", "ARY>It is don", "e.</SUMMARY><DON", "E_TITLE>Done<", "/DONE_TITLE>"] {
+                ev += p.feed(delta)
+            }
+            ev += p.finish()
+            expectEqual(ResponseParserTests.summaries(ev), "It is done.")
+            expectEqual(ResponseParserTests.titles(ev), "Done")
+            let shown = ResponseParserTests.texts(ev)
+            expect(!shown.contains("<") && !shown.contains(">"),
+                   "partial markup reached the screen: \(shown.debugDescription)")
+        }
+
+        test("a whole reply with result tags parses identically at any chunk size") {
+            let reply = """
+            <SAY>Here is the page.</SAY>
+            The five icons sit in a single row.
+
+            [POINT:412,180,Run button]
+
+            <SUMMARY>A one-screen welcome page is ready.</SUMMARY>
+            <DONE_TITLE>Welcome Page</DONE_TITLE>
+            <NEXT_ACTIONS>
+            - Add a dark theme
+            </NEXT_ACTIONS>
+            """
+
+            let whole = ResponseParser()
+            var wholeEvents = whole.feed(reply)
+            wholeEvents += whole.finish()
+
+            let perCharacter = ResponseParser()
+            var characterEvents: [ReplyEvent] = []
+            for character in reply { characterEvents += perCharacter.feed(String(character)) }
+            characterEvents += perCharacter.finish()
+
+            expectEqual(wholeEvents, characterEvents,
+                        "result tags must parse the same way regardless of delta framing")
+            expectEqual(ResponseParserTests.summaries(wholeEvents), "A one-screen welcome page is ready.")
+            expectEqual(ResponseParserTests.titles(wholeEvents), "Welcome Page")
+            expectEqual(ResponseParserTests.actions(wholeEvents), ["Add a dark theme"])
+        }
+
+        test("an unterminated result tag is released as text, not swallowed") {
+            // Fail open: the user loses a chip, not their answer.
+            let p = ResponseParser()
+            var ev = p.feed("<SUMMARY>this never closed")
+            ev += p.finish()
+            expect(ResponseParserTests.texts(ev).contains("<SUMMARY>this never closed"),
+                   "an incomplete SUMMARY ate the reply instead of showing it")
         }
     }
 }

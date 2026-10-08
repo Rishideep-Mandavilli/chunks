@@ -72,27 +72,74 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc signature. Enough for local running; distribution would need a Developer ID
-# plus notarisation, which is a Phase-6 concern.
-codesign --force --deep --sign - "$APP" 2>/dev/null || {
-  echo "warning: ad-hoc codesign failed; the app will still run locally" >&2
-}
+# Code signature. Ad-hoc (`-`) is fine for a throwaway run but is the reason Screen Recording
+# grants keep appearing to "not stick": TCC identifies the app by its signature, and an ad-hoc
+# signature is its cdhash — so every rebuild is, as far as Privacy settings is concerned, a
+# brand-new app. The same rule is what makes the *Keychain* forget the API key: a generic
+# password's ACL names the app that wrote it, so an ad-hoc build reads as a different app and
+# the stored key becomes invisible to the next one. So the default is the local identity when
+# it exists, and falling back to ad-hoc is opt-in (`CHUNKS_SIGN_IDENTITY=-`) rather than the
+# accident that costs the user their grants and their key.
+if [ -z "${CHUNKS_SIGN_IDENTITY:-}" ]; then
+  # `find-identity -v` hides this identity because the self-signed certificate is not trusted
+  # by any anchor (CSSMERR_TP_NOT_TRUSTED), and yet `codesign` uses it happily — which is what
+  # a stable signature needs. So list *all* codesigning identities and match the name.
+  if security find-identity -p codesigning 2>/dev/null | grep -q '"Chunks Local"'; then
+    CHUNKS_SIGN_IDENTITY="Chunks Local"
+  else
+    CHUNKS_SIGN_IDENTITY="-"
+  fi
+fi
+SIGN_IDENTITY="$CHUNKS_SIGN_IDENTITY"
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  echo "note: ad-hoc signing — a rebuild invalidates both Screen Recording grants and the stored API key" >&2
+fi
+# Strip Finder metadata before sealing. This project lives under ~/Documents, which iCloud syncs,
+# and the file provider stamps `com.apple.FinderInfo` onto the bundle folder — a bundle carrying
+# it fails to sign at all ("resource fork, Finder information, or similar detritus not allowed"),
+# and an app that does not verify is an app TCC will not match to the grant the user already
+# ticked. The stamp comes back within milliseconds, so one clear is a race: clear, seal, verify,
+# and repeat. A build that never verifies is still installable — `install.sh` re-seals the copy it
+# makes outside the synced folder — but it is the ad-hoc signature that costs the grants and the
+# stored API key, so failing loudly here is the point.
+SEALED=0
+for _ in 1 2 3; do
+  xattr -cr "$APP" 2>/dev/null || true
+  if codesign --force --deep --sign "$SIGN_IDENTITY" "$APP" >/dev/null 2>&1 \
+     && codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+    SEALED=1
+    break
+  fi
+done
+if [ "$SEALED" != 1 ]; then
+  echo "warning: could not seal $APP with '$SIGN_IDENTITY' (iCloud keeps stamping the bundle) — install.sh will try again at the destination" >&2
+fi
 
 echo "==> Built $APP"
 echo
 echo "    open $APP"
 echo
-echo "  IMPORTANT - Screen Recording"
-echo "    macOS keys the Screen Recording grant to the app's CODE SIGNATURE."
-echo "    Every ad-hoc rebuild here produces a new signature, so a grant made"
-echo "    against a previous build stops applying. After each rebuild, re-grant in"
-echo "    System Settings > Privacy & Security > Screen Recording, then QUIT AND"
-echo "    REOPEN Chunks."
+
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  echo "  IMPORTANT - Screen Recording"
+  echo "    macOS keys the Screen Recording grant to the app's CODE SIGNATURE."
+  echo "    This build is ad-hoc, so its identity is its cdhash: a grant made"
+  echo "    against the previous build stops applying, and the Keychain hides the"
+  echo "    stored API key. Re-grant in System Settings > Privacy & Security >"
+  echo "    Screen Recording, then QUIT AND REOPEN Chunks."
+  echo
+  echo "    If Chunks is listed but still cannot see your screen, remove it from"
+  echo "    that list and add it again with +."
+  echo
+  echo "    To stop paying this cost every rebuild: create the \"Chunks Local\""
+  echo "    self-signed code-signing certificate (see scripts/install.sh)."
+else
+  echo "  Screen Recording: this build is signed as \"$SIGN_IDENTITY\", so the grant the"
+  echo "    user already ticked — and the API key already stored — apply to it by name"
+  echo "    instead of by cdhash. Nothing needs re-granting after the next rebuild."
+fi
 echo
-echo "    If Chunks is listed but still cannot see your screen, remove it from"
-echo "    that list and add it again with +."
-echo
-echo "    Chunks now shows an orange triangle in the menu bar and an on-screen"
-echo "    card explaining this when the grant is missing."
+echo "    Chunks shows an orange triangle in the menu bar and an on-screen"
+echo "    card explaining a missing grant."
 echo
 echo "    To check without the UI:  $APP/Contents/MacOS/Chunks --self-test"

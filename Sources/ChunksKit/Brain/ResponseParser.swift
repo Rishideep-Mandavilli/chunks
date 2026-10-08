@@ -88,6 +88,26 @@ public enum ReplyEvent: Equatable, Sendable {
     case memory(MemoryProposal)
     /// The model offered to save an explanation to the Notebook.
     case noteOffer(title: String)
+    /// The one line to speak when the turn finishes.
+    ///
+    /// Distinct from `.speech`: `<SAY>` is narration the model chose to speak *and* show,
+    /// while `<SUMMARY>` is the completion utterance — what Chunks says aloud so a
+    /// hands-free user learns the turn ended without reading anything. Not shown, because
+    /// showing it would duplicate the answer it summarises.
+    case summary(String)
+    /// One-line label for the notch/chip title.
+    case doneTitle(String)
+    /// Follow-up suggestions, rendered as tappable chips.
+    case nextActions([String])
+    /// The model is asking to act on a control. A proposal only — `PolicyGate` decides
+    /// whether it happens, and the user says yes.
+    case act(ActionRequest)
+    /// The model is asking for a tool to run: an app opened, the volume changed. Also a
+    /// proposal only, and it goes through the same one-question gate as `.act`.
+    ///
+    /// Not named `.do` — `do` is a keyword, and a case that cannot be written `ReplyEvent.do`
+    /// is a case that will confuse whoever reads the switch.
+    case tool(DoRequest)
 }
 
 // MARK: - Parser
@@ -107,7 +127,7 @@ public final class ResponseParser {
         let start: String        // literal that opens it
         let end: String?         // literal that closes it, nil if self-closing (e.g. [POINT:…])
         let kind: Kind
-        enum Kind { case say, memory, note, point }
+        enum Kind { case say, memory, note, point, act, type, scroll, tool, summary, doneTitle, nextActions }
     }
 
     private static let constructs: [Construct] = [
@@ -115,6 +135,27 @@ public final class ResponseParser {
         Construct(start: "<MEMORY>", end: "</MEMORY>", kind: .memory),
         Construct(start: "<NOTE>",   end: "</NOTE>",   kind: .note),
         Construct(start: "[POINT:",  end: "]",         kind: .point),
+        // Same body format as [POINT:…] — the model is pointing at a control it wants
+        // pressed rather than one it wants flown to.
+        Construct(start: "[ACT:",    end: "]",         kind: .act),
+        // Typing rather than clicking: `[TYPE:x,y:label|the text]`. Its own tag because the body
+        // carries words the user has to be able to read before they go anywhere, and because the
+        // thing it aims at is a field, which is usually not a pressable control at all.
+        Construct(start: "[TYPE:",   end: "]",         kind: .type),
+        // Moving a list rather than clicking it: `[SCROLL:x,y:label|down]`. Its own tag because the
+        // thing it aims at is a scroll area, which is usually not a control at all, and because a
+        // synthetic wheel event would drag the user's pointer along with it — so this verb goes
+        // through the element's own Accessibility scroll actions instead.
+        Construct(start: "[SCROLL:", end: "]",         kind: .scroll),
+        // A tool run rather than a click: `[DO:open_app:Notes]`, `[DO:set_volume:40]`.
+        // Its own tag because the body is a name or a number, not a coordinate — and because
+        // the thing being approved is not on screen, so the card must not claim it is.
+        Construct(start: "[DO:",     end: "]",         kind: .tool),
+        // The result protocol HeyClicky closes a turn with: what to say, what to call it,
+        // and what to offer next.
+        Construct(start: "<SUMMARY>",       end: "</SUMMARY>",       kind: .summary),
+        Construct(start: "<DONE_TITLE>",    end: "</DONE_TITLE>",    kind: .doneTitle),
+        Construct(start: "<NEXT_ACTIONS>",  end: "</NEXT_ACTIONS>",  kind: .nextActions),
     ]
 
     private var buffer = ""
@@ -163,11 +204,62 @@ public final class ResponseParser {
             case .note:
                 let title = (hit.inner ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 if !title.isEmpty { events.append(.noteOffer(title: title)) }
+            case .summary:
+                if let line = ResponseParser.singleLine(hit.inner) { events.append(.summary(line)) }
+            case .doneTitle:
+                if let line = ResponseParser.singleLine(hit.inner) { events.append(.doneTitle(line)) }
+            case .nextActions:
+                let actions = ResponseParser.parseActions(hit.inner ?? "")
+                if !actions.isEmpty { events.append(.nextActions(actions)) }
             case .point:
-                if let target = ResponseParser.parsePoint(hit.inner ?? "") {
+                let inner = hit.inner ?? ""
+                if ResponseParser.isNoPoint(inner) {
+                    // "[POINT:none]" is the model saying there is nothing to point at. It is a
+                    // complete answer, not a parse failure, so it is consumed quietly — the
+                    // fail-open path below would put "[POINT:none]" on the user's card.
+                } else if let target = ResponseParser.parsePoint(inner) {
                     events.append(.point(target))
                 } else {
                     // Malformed POINT: show it raw rather than losing it.
+                    events.append(.text(String(buffer[hit.range])))
+                }
+            case .act:
+                let inner = hit.inner ?? ""
+                if ResponseParser.isNoPoint(inner) {
+                    // Same "none" escape as [POINT:] — the model considered acting and
+                    // concluded there is nothing to act on. Consumed quietly.
+                } else if let target = ResponseParser.parsePoint(inner) {
+                    events.append(.act(ActionRequest(target: target)))
+                } else {
+                    // A malformed ACT would, unlike a malformed POINT, have asked for a click.
+                    // Showing it raw is still the right failure: the user sees the tag instead
+                    // of wondering why nothing happened.
+                    events.append(.text(String(buffer[hit.range])))
+                }
+            case .type:
+                if let request = ActionRequest.parseType(hit.inner ?? "") {
+                    events.append(.act(request))
+                } else {
+                    // The same visible failure as a malformed ACT. This one matters more: a
+                    // swallowed `[TYPE:…]` is words the user asked to send that silently vanished.
+                    events.append(.text(String(buffer[hit.range])))
+                }
+            case .scroll:
+                if let request = ActionRequest.parseScroll(hit.inner ?? "") {
+                    events.append(.act(request))
+                } else {
+                    // A `[SCROLL:…]` that does not parse is shown rather than dropped: the user
+                    // asked to look further down a list, and a swallowed tag reads as Chunks
+                    // deciding not to.
+                    events.append(.text(String(buffer[hit.range])))
+                }
+            case .tool:
+                if let request = DoRequest.parse(hit.inner ?? "") {
+                    events.append(.tool(request))
+                } else {
+                    // Fail open, and visibly: an unrecognised tool tag becomes text, so the
+                    // user can see the model tried to change something. A silently swallowed
+                    // `[DO:…]` reads as Chunks ignoring them.
                     events.append(.text(String(buffer[hit.range])))
                 }
             }
@@ -279,7 +371,74 @@ public final class ResponseParser {
         return [.speech(spoken), .text(spoken)]
     }
 
+    // MARK: Result protocol helpers
+
+    /// Longest label a notch chip can carry before it stops being readable.
+    public static let titleCharacterLimit = 60
+
+    /// Follow-up chips shown at once. HeyClicky offers a short list for the same reason:
+    /// more than this is a menu the user has to read, not a set of one-tap replies.
+    public static let maxNextActions = 3
+
+    /// Collapse to one trimmed line, or `nil` if there is nothing to show.
+    ///
+    /// Both `<DONE_TITLE>` and `<SUMMARY>` are meant to be a single line. A model that
+    /// answers with a paragraph gets its first sentence rather than a card that overflows,
+    /// and an empty block is dropped rather than emitting a blank title.
+    static func singleLine(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let collapsed = raw
+            .split(whereSeparator: { $0.isNewline })
+            .first
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard let line = collapsed, !line.isEmpty else { return nil }
+        if line.count <= ResponseParser.titleCharacterLimit { return line }
+        let cut = String(line.prefix(ResponseParser.titleCharacterLimit))
+        // Cut on a word boundary when one is nearby, so a long title does not end mid-word.
+        if let lastSpace = cut.lastIndex(of: " "), cut.distance(from: cut.startIndex, to: lastSpace) > 20 {
+            return String(cut[..<lastSpace]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        }
+        return cut + "…"
+    }
+
+    /// `<NEXT_ACTIONS>` bodies are bullet lists: "- Add a dark theme". Parse into items.
+    ///
+    /// Tolerant of the formats models actually emit — hyphen, asterisk, numbered, bare
+    /// lines, and bullets split across newlines with surrounding blank lines.
+    static func parseActions(_ raw: String) -> [String] {
+        var out: [String] = []
+        for rawLine in raw.split(whereSeparator: { $0.isNewline }) {
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+
+            // Strip a leading bullet marker, then any space it left behind.
+            for marker in ["- ", "* ", "• "] where line.hasPrefix(marker) {
+                line = String(line.dropFirst(marker.count))
+            }
+            // "1. " / "2) " — digits followed by a separator, at most two digits deep.
+            if let dot = line.firstIndex(where: { $0 == "." || $0 == ")" }),
+               line.startIndex != dot, line[line.startIndex..<dot].allSatisfy({ $0.isNumber }),
+               dot < line.endIndex {
+                let after = line.index(after: dot)
+                if after < line.endIndex, line[after] == " " {
+                    line = String(line[line.index(after: after)...])
+                }
+            }
+
+            line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !out.contains(line) else { continue }
+            out.append(line)
+            if out.count == ResponseParser.maxNextActions { break }
+        }
+        return out
+    }
+
     // MARK: POINT parsing
+
+    /// Whether the body of a `[POINT:…]` is the model's "nothing to point at" sentinel.
+    static func isNoPoint(_ inner: String) -> Bool {
+        inner.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "none"
+    }
 
     /// `[POINT:x,y:label:screenN]` — the format inherited from the original open-source
     /// Clicky, so models already trained on it produce it.

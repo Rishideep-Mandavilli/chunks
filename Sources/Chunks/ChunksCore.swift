@@ -66,6 +66,23 @@ enum SelfTest {
                 + "@\(display.backingScale)x\(display.isMain ? " main" : "")")
         }
 
+        // The notch HUD's anchor, resolved the same way the panel resolves it. Printed here
+        // because a wrong anchor is invisible in unit tests: the notch's real width and depth
+        // only exist on a real display.
+        if let hudScreen = NotchAnchor.screen() {
+            let notch = NotchAnchor.geometry(for: hudScreen)
+            let local = notch.hudRect(width: NotchHUDModel.defaultCardWidth, height: 200)
+            let global = LogicalRect(x: hudScreen.frame.origin.x, y: hudScreen.frame.origin.y,
+                                     width: hudScreen.frame.width, height: hudScreen.frame.height)
+            let window = NotchGeometry.appKitWindowFrame(local, globalScreen: global)
+            say("  hud: \(notch.hasNotch ? "notch" : "menu-bar fallback") "
+                + "\(Int(notch.notchWidth))x\(Int(notch.notchHeight))pt on "
+                + "\(Int(hudScreen.frame.width))x\(Int(hudScreen.frame.height))pt"
+                + " — card at (\(Int(window.minX)), \(Int(window.minY)))")
+        } else {
+            say("  hud: NO DISPLAY")
+        }
+
         guard let display = CaptureEngine.mainDisplay() else {
             say("FAIL: no display")
             exit(1)
@@ -85,12 +102,7 @@ enum SelfTest {
                 }
                 say("  png: \(png.count / 1024) KB")
 
-                let request = TurnRequest(
-                    question: flag("--question") ?? "What am I looking at? Answer in one sentence.",
-                    scope: .wholeScreen,
-                    imageData: png,
-                    imagePixelSize: captured.pixelSize,
-                    memoryBlock: "")
+                let question = flag("--question") ?? "What am I looking at? Answer in one sentence."
 
                 let replied = Date()
                 var raw = ""
@@ -99,7 +111,7 @@ enum SelfTest {
                               label: "The user's whole screen "
                                     + "(\(captured.pixelSize.width)x\(captured.pixelSize.height) pixels)")],
                     systemPrompt: SelfTest.systemPrompt,
-                    userPrompt: flag("--question") ?? "What am I looking at? Answer in one sentence.",
+                    userPrompt: question,
                     onTextChunk: { delta in raw += delta })
                 let elapsed = Date().timeIntervalSince(replied)
                 raw = response.text
@@ -112,11 +124,19 @@ enum SelfTest {
 
                 let streamer = AnswerStreamer()
                 streamer.push(raw)
+                // Flush, exactly as a live turn does at the end of the stream. The parser holds
+                // back any tail that might still grow into a tag, and this prompt asks for
+                // "no tags" — so without `finish()` a perfectly good plain-language reply was
+                // still sitting in the parser's buffer and the check below read it as nothing.
+                streamer.finish()
                 let parsed = streamer.displayable
                 say("  speech: \(parsed.speech.isEmpty ? "(none)" : parsed.speech)")
                 let detail = parsed.detail.isEmpty ? "(none)"
                     : parsed.detail.replacingOccurrences(of: "\n", with: " / ")
                 say("  detail: \(detail)")
+                say("  title: \(streamer.doneTitle ?? "(none)")")
+                if let summary = streamer.summary { say("  summary: \(summary)") }
+                for action in streamer.nextActions { say("  next action: \(action)") }
                 for target in streamer.points {
                     let resolved = captured.globalPoint(forImagePixelX: target.x, target.y)
                     say("  point: image (\(Int(target.x)), \(Int(target.y))) -> screen "
@@ -128,7 +148,7 @@ enum SelfTest {
                     }
                 }
 
-                if parsed.speech.isEmpty && parsed.detail.isEmpty {
+                if parsed.speech.isEmpty && parsed.detail.isEmpty && streamer.utterance.isEmpty {
                     say("FAIL: the reply parsed to nothing")
                     exit(1)
                 }

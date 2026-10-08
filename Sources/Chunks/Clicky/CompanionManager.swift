@@ -239,8 +239,7 @@ final class CompanionManager: ObservableObject {
         transientHideTask = nil
 
         if enabled {
-            overlayWindowManager.hasShownOverlayBefore = true
-            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         } else {
             overlayWindowManager.hideOverlay()
@@ -304,9 +303,15 @@ final class CompanionManager: ObservableObject {
         // were revoked (e.g. signing change), don't show the cursor — the
         // panel will show the permissions UI instead.
         if hasCompletedOnboarding && allPermissionsGranted && isClickyCursorEnabled {
-            overlayWindowManager.hasShownOverlayBefore = true
-            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
+            Log.write("cursor: shown at launch")
+        } else {
+            // The cursor is either on the screen or it is not, and until this line existed the
+            // log could not tell those apart — so "the buddy doesn't work" had no evidence behind
+            // it. Naming the guard that failed is the difference between a bug report and a fix.
+            Log.write("cursor: NOT shown at launch — onboarding=\(hasCompletedOnboarding) "
+                + "permissions=\(allPermissionsGranted) enabled=\(isClickyCursorEnabled)")
         }
     }
 
@@ -322,9 +327,10 @@ final class CompanionManager: ObservableObject {
 
         ClickyAnalytics.trackOnboardingStarted()
 
-        // Show the overlay for the first time — isFirstAppearance triggers
-        // the welcome animation, which starts the intro when it finishes
-        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+        // Show the overlay for the first time — the greeting starts the welcome animation,
+        // which hands off to the intro when it finishes
+        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self,
+                                         greeting: true)
         isOverlayVisible = true
     }
 
@@ -334,9 +340,9 @@ final class CompanionManager: ObservableObject {
     func replayOnboarding() {
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
         ClickyAnalytics.trackOnboardingReplayed()
-        // Tear down any existing overlays and recreate with isFirstAppearance = true
-        overlayWindowManager.hasShownOverlayBefore = false
-        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+        // Tear down any existing overlays and recreate them with the greeting this time
+        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self,
+                                         greeting: true)
         isOverlayVisible = true
     }
 
@@ -455,9 +461,9 @@ final class CompanionManager: ObservableObject {
 
                     // If onboarding was already completed, show the cursor overlay now
                     if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
-                        overlayWindowManager.hasShownOverlayBefore = true
-                        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                                                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
+                        Log.write("cursor: shown by permission poll (it was not on screen)")
                     }
                 }
             } catch {
@@ -611,8 +617,7 @@ final class CompanionManager: ObservableObject {
 
             // If the cursor is hidden, bring it back transiently for this interaction
             if !isClickyCursorEnabled && !isOverlayVisible {
-                overlayWindowManager.hasShownOverlayBefore = true
-                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                 isOverlayVisible = true
             }
 

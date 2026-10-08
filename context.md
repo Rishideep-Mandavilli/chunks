@@ -366,6 +366,45 @@ capture — the bug that gave HeyClicky black screen recordings (v1.0.52), still
 overlay "the short path" for output drawing. Both statements are now corrected: output drawing has
 no surface to reuse, it has to be rebuilt first.
 
+## 2026-10-09: verifying the cursor, and two captures that lied
+
+`--shot [path]` (`Sources/Chunks/ScreenShot.swift`) makes **Chunks itself** write a PNG of the
+screen. It exists because a screenshot taken from a shell belongs to the shell: without Screen
+Recording for that process, macOS returns an image of the wallpaper with other apps' windows
+removed, which looks like a result and is not one.
+
+**The cursor is drawn and follows the pointer — measured, not inferred.** The view now logs its own
+state (`cursor: view appeared … first=… / 1.5s in — opacity=… buddyAt=(x,y)`), and a capture taken
+while the app was running showed `#3280FF` — the exact `DS.Colors.overlayCursorBlue` — plus its
+glow, at the pixel the view said it had drawn. `buddyIsVisibleOnThisScreen`, `cursorOpacity` and
+`voiceState` all read correctly at 1.5s in.
+
+**Two false negatives that happened on the way, both worth remembering:**
+1. A scan that found **zero** blue pixels was taken after `pkill` and a capture-only launch — so no
+   app instance was running and nothing was on screen. The measurement was of my own sequencing.
+2. A later capture was **uniformly black** (`000000`) with no sleep assertion preventing it: the
+   display had gone to sleep. A black frame is a screen state, not a rendering bug.
+Rule: before concluding "it isn't drawing", confirm an instance is running *and* the display is
+awake, and check the app's own cursor log line.
+
+**The greeting (`"hi — i'm chunks"`) had a real defect, and my first diagnosis of it was wrong.**
+Four call sites wrote `overlayWindowManager.hasShownOverlayBefore = true` immediately before
+`showOverlay`, which computes `isFirstAppearance = !hasShownOverlayBefore` — I read that as "the
+greeting can never run on any machine", which was too strong: `triggerOnboarding` and
+`replayOnboarding` never set the flag, so the greeting does run there. The honest statement is that
+the inference could not work in general, because the flag is **per-process** and therefore reads as
+a first appearance on every launch — which is exactly why the launch sites wrote it, and why
+`triggerOnboarding` (which sets `hasCompletedOnboarding = true` first) defeated any
+onboarding-state heuristic. The flag is gone: `showOverlay(…, greeting: Bool = false)` and the two
+paths that want the bubble pass `greeting: true`. Verified: launch for an onboarded user now logs
+`first=false` and fires no demo turn (the greeting hands off to `startIntroSequence`, which spends a
+real model request — so it must never run at every launch).
+
+**Still unverified:** the flight to a `[POINT:]` target on a live turn (the code path is right — it
+publishes through `ScreenshotGeometry.appKitGlobalPoint`, the same route an `[ACT]` takes, so the
+triangle and the press cannot disagree), and the waveform/spinner swap during listening and
+processing.
+
 ## Where it stands, and what's next
 
 

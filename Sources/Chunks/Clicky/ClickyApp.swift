@@ -36,6 +36,9 @@ struct leanring_buddyApp: App {
         if STTProbe.isRequested {
             STTProbe.run()
         }
+        if ScreenShot.isRequested {
+            ScreenShot.run()
+        }
     }
 
     var body: some Scene {

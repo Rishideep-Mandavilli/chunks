@@ -324,6 +324,14 @@ struct BlueCursorView: View {
             let mouseLocation = NSEvent.mouseLocation
             isCursorOnThisScreen = screenFrame.contains(mouseLocation)
 
+            // The window being on screen and the view being drawn are two different facts, and
+            // nothing in this file distinguished them: the log said "cursor: shown at launch"
+            // while a screen capture found no cursor-blue anywhere. This says which half failed.
+            Log.write("cursor: view appeared — screen \(Int(screenFrame.width))x\(Int(screenFrame.height))"
+                + " at (\(Int(screenFrame.origin.x)),\(Int(screenFrame.origin.y)))"
+                + " mouse=(\(Int(mouseLocation.x)),\(Int(mouseLocation.y)))"
+                + " inThisScreen=\(isCursorOnThisScreen) first=\(isFirstAppearance)")
+
             let swiftUIPosition = convertScreenPointToSwiftUICoordinates(mouseLocation)
             self.cursorPosition = CGPoint(x: swiftUIPosition.x + 35, y: swiftUIPosition.y + 25)
 
@@ -341,6 +349,15 @@ struct BlueCursorView: View {
                 }
             } else {
                 self.cursorOpacity = 1.0
+            }
+
+            // Where the buddy should be, after every gate has had its chance to run. With this
+            // line a screenshot can be checked at exactly that pixel instead of guessed at.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                Log.write("cursor: 1.5s in — opacity=\(self.cursorOpacity)"
+                    + " visibleOnThisScreen=\(self.buddyIsVisibleOnThisScreen)"
+                    + " voiceState=\(self.companionManager.voiceState)"
+                    + " buddyAt=(\(Int(self.cursorPosition.x)),\(Int(self.cursorPosition.y)))")
             }
         }
         .onDisappear {
@@ -758,15 +775,15 @@ private struct BlueCursorSpinnerView: View {
 @MainActor
 class OverlayWindowManager {
     private var overlayWindows: [OverlayWindow] = []
-    var hasShownOverlayBefore = false
 
-    func showOverlay(onScreens screens: [NSScreen], companionManager: CompanionManager) {
+    /// `greeting` is the whole decision about the welcome bubble, stated by the caller instead of
+    /// inferred from a shared "have we ever shown this" flag. The inference could not work: the
+    /// flag is per-process, so it read as a first appearance on every launch — which is why the
+    /// launch sites used to write it before calling, and why the one place that genuinely wants
+    /// the greeting (`triggerOnboarding`) sets `hasCompletedOnboarding` first and defeats it.
+    func showOverlay(onScreens screens: [NSScreen], companionManager: CompanionManager, greeting: Bool = false) {
         // Hide any existing overlays
         hideOverlay()
-
-        // Track if this is the first time showing overlay (welcome message)
-        let isFirstAppearance = !hasShownOverlayBefore
-        hasShownOverlayBefore = true
 
         // Create one overlay window per screen
         for screen in screens {
@@ -774,7 +791,7 @@ class OverlayWindowManager {
 
             let contentView = BlueCursorView(
                 screenFrame: screen.frame,
-                isFirstAppearance: isFirstAppearance,
+                isFirstAppearance: greeting,
                 companionManager: companionManager
             )
 

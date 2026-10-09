@@ -202,7 +202,14 @@ final class NotchPanelManager {
         // A click in the menu-bar row next to the notch belongs to the system's own extras,
         // so dismissal is fine; nothing here needs the onboarding guard the menu panel uses,
         // because the HUD is never the surface that grants permissions.
-        model.dismiss()
+        //
+        // This stays dismiss-everything, and it is NOT because a click ought to erase a reply.
+        // Making `.result` cards click-proof was tried on 2026-10-09 and is worse: the click
+        // outside is currently the ONLY way the user can close the card — there is no close
+        // button, no timeout and no key for it — so protecting it turned every answer into
+        // furniture fixed under the notch until the next press. Keeping a reply on screen needs
+        // an affordance that dismisses it on purpose, not the removal of the only one that exists.
+        model.dismiss(reason: "click outside the card")
         hide()
     }
 

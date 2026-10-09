@@ -405,6 +405,50 @@ publishes through `ScreenshotGeometry.appKitGlobalPoint`, the same route an `[AC
 triangle and the press cannot disagree), and the waveform/spinner swap during listening and
 processing.
 
+## 2026-10-09: an offline brain, measured on this Mac
+
+Ollama is installed and running here, with `qwen3:14b` (no vision), `gemma4:e2b-it-qat`
+(**vision**, 4.3 GB) and `gemma3n:e2b` (completion only) already pulled; 16 GB RAM, 170 GB free.
+So no download was needed — the machine already had a model that can see.
+
+**A real turn on the local model, twice:** 704 KB screenshot → served in **14.4s cold**, **7.9s**
+once the weights were resident. The answer was correct about the screen: *"a software development
+environment displaying a code editor next to a file explorer pane containing folders like Prolog
+and Warpawz."* It named folders it had never seen, so the vision path is genuinely working.
+
+**The catch, and it is a big one:** the reply contained no `<SAY>` tag. Chunks reads a tagless
+reply as detail, which means **the card fills and nothing is spoken** — offline you lose the voice,
+not just the quality. The gateway now says so in the log (`brain: this reply carried no spoken
+line…`) instead of letting a quiet voice look like a bug. Small local models answer the question
+and ignore the reply protocol; that is the trade, and it should be re-tested against a bigger
+vision model before offline is treated as equivalent.
+
+How it works, and why it is shaped this way:
+- **Capabilities come from the server, not from names.** Ollama's `/api/tags` reports
+  `vision` per model, which is authoritative in a way a marker list never is — that list is now
+  only the fallback for servers that say nothing.
+- **Choosing a local brain never falls back to the cloud.** A closed port is an error the user
+  reads ("Ollama is not answering on localhost — start it, or switch back"), because quietly
+  uploading the screen would be the worst way to honour someone who chose offline.
+- **The offline branch runs before the Keychain read**, so a Mac with no Gemini key stored can
+  still answer.
+- **The Gemini path is untouched**: the local branch returns nil when the cloud is chosen, and the
+  measured fallback chain, per-model rate limits and retries are exactly as they were. Two
+  transports, one shared reply event vocabulary, so `[POINT]`, act tags and `<SUMMARY>` stay
+  provider-blind.
+
+Switch from a terminal (`UserDefaults`, like `askBeforeActing` — it is a switch, not a secret):
+```
+defaults write app.chunks.mac app.chunks.brainProvider ollama
+defaults write app.chunks.mac app.chunks.brainModel "gemma4:e2b-it-qat"
+defaults delete app.chunks.mac app.chunks.brainProvider   # back to Gemini
+```
+**Not built yet:** the picker in the panel (logic is `BrainSettings`), and an automatic
+cloud→local downgrade when the network is unreachable — which is the direction the "never fall
+back" rule does not forbid, and the one that would make offline actually useful without asking.
+`--self-test` also needed `Log.flush()`: the async log was eating its last lines, including the
+reply tail.
+
 ## Where it stands, and what's next
 
 

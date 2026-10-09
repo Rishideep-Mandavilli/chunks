@@ -85,6 +85,8 @@ enum SelfTest {
 
         guard let display = CaptureEngine.mainDisplay() else {
             say("FAIL: no display")
+            Log.flush()
+
             exit(1)
         }
 
@@ -98,6 +100,8 @@ enum SelfTest {
 
                 guard let png = ScreenCapture(image: image, globalRect: captured.globalRect).png() else {
                     say("FAIL: could not encode PNG")
+                    Log.flush()
+
                     exit(1)
                 }
                 say("  png: \(png.count / 1024) KB")
@@ -150,15 +154,21 @@ enum SelfTest {
 
                 if parsed.speech.isEmpty && parsed.detail.isEmpty && streamer.utterance.isEmpty {
                     say("FAIL: the reply parsed to nothing")
+                    Log.flush()
+
                     exit(1)
                 }
                 say("OK")
+                Log.flush()
+
                 exit(0)
             } catch {
                 say("FAIL: \(error)")
                 if let chunksError = error as? ChunksError {
                     say("  detail: \(chunksError.description)")
                 }
+                Log.flush()
+
                 exit(1)
             }
         }

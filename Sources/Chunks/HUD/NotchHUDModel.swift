@@ -140,6 +140,9 @@ final class NotchHUDModel: ObservableObject {
 
     /// Open the HUD for a new turn and clear the previous reply.
     func beginListening() {
+        // A reply is replaced by the next press, which is correct but was indistinguishable from
+        // the card vanishing on its own. Logged so the two can be told apart after the fact.
+        if case .result = phase { Log.write("hud: a new press replaced the previous reply") }
         clearContent()
         phase = .listening
     }
@@ -169,7 +172,7 @@ final class NotchHUDModel: ObservableObject {
         hintTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             guard let self, !Task.isCancelled else { return }
-            if case .status = self.phase { self.dismiss() }
+            if case .status = self.phase { self.dismiss(reason: "hint expired") }
         }
     }
 
@@ -248,11 +251,17 @@ final class NotchHUDModel: ObservableObject {
                                                      budget: AnswerPanelLayout.noteCharacterBudget)
     }
 
-    func dismiss() {
+    /// Close the card.
+    ///
+    /// Every route that can empty the notch passes a reason, because "the answer vanished" was
+    /// reported while nothing in the log said who closed it — the dismissal itself was invisible.
+    func dismiss(reason: String = "unspecified") {
+        let leaving = phase
         phase = .idle
         hintTask?.cancel()
         hintTask = nil
         clearContent()
+        Log.write("hud: dismissed (from \(leaving), reason: \(reason))")
     }
 
     // MARK: - Asking about a press

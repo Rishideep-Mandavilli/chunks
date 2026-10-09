@@ -116,6 +116,20 @@ final class BrainGateway {
     ) async throws -> (text: String, duration: TimeInterval) {
 
         let started = Date()
+
+        // Offline goes first, and goes before the Keychain read: a Mac with no Gemini key stored
+        // at all must still be able to answer from a model on this machine. Returns nil when the
+        // cloud is chosen, which keeps the Gemini path below exactly as it was — the surest way
+        // to break a working provider while adding a second one is to refactor the first.
+        if let local = try await localTurnIfNeeded(images: images,
+                                                   systemPrompt: systemPrompt,
+                                                   history: conversationHistory,
+                                                   userPrompt: userPrompt,
+                                                   started: started,
+                                                   onTextChunk: onTextChunk) {
+            return local
+        }
+
         let key = try KeychainStore.geminiKey()
         let registry = ProviderRegistry()
 
@@ -218,6 +232,122 @@ final class BrainGateway {
     }
 
     // MARK: - Wire
+
+    // MARK: - A brain on this Mac
+
+    /// Run the turn against a local server, or return nil when the user has not chosen one.
+    ///
+    /// `nil` rather than a shared code path: the Gemini branch below has a measured fallback chain,
+    /// per-model rate limits and retries tuned against a free tier that throttles half the time.
+    /// None of that applies to a server on loopback, and pretending it does would either rate-limit
+    /// a turn that cannot be rate-limited or fall back to the cloud behind the user's back.
+    private func localTurnIfNeeded(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        history: [(userPlaceholder: String, assistantResponse: String)],
+        userPrompt: String,
+        started: Date,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval)? {
+        let storedID = UserDefaults.standard.string(forKey: BrainSettings.providerKey)?
+            .trimmingCharacters(in: .whitespaces)
+        guard let storedID, !storedID.isEmpty, storedID != ProviderRegistry.gemini.id else { return nil }
+
+        guard let provider = ProviderRegistry.all.first(where: { $0.id == storedID }) else {
+            Log.write("brain: \"\(storedID)\" is not a brain Chunks knows — asking Google Gemini instead.")
+            return nil
+        }
+        guard provider.isLoopback else { return nil }
+
+        let discovered = await LocalBrainDiscovery.descriptors(for: provider)
+        let resolution = BrainSelection.resolve(
+            storedProviderID: storedID,
+            storedModelID: UserDefaults.standard.string(forKey: BrainSettings.modelKey),
+            discoveredModels: [provider.id: discovered],
+            needsVision: !images.isEmpty)
+        if let notice = resolution.notice {
+            Log.write("brain: \(notice)")
+        }
+        guard !resolution.isBlocked, let chosen = resolution.model else {
+            throw BrainError.noCapableModel(
+                resolution.notice ?? "\(provider.displayName) has no model that can answer this.")
+        }
+
+        let body = OpenAICompatibleTransport.body(model: chosen.id, systemPrompt: systemPrompt,
+                                                  userPrompt: userPrompt, images: images,
+                                                  history: history, stream: true)
+        var request = URLRequest(url: OpenAICompatibleTransport.chatCompletionsURL(baseURL: provider.baseURL))
+        request.httpMethod = "POST"
+        for (field, value) in OpenAICompatibleTransport.headers(apiKey: nil) {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Longer than the cloud timeout on purpose: a local model that has been evicted from RAM
+        // spends the first minute loading weights, and a 90-second timeout would fail exactly the
+        // turn that was most expensive to run.
+        request.timeoutInterval = 180
+
+        Log.write("brain: local turn → \(provider.displayName)/\(chosen.id)"
+            + " · \(images.count) image(s), \(images.reduce(0) { $0 + $1.data.count } / 1024) KB")
+
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: request)
+        } catch {
+            throw BrainError.transport("cannot reach \(provider.baseURL.host ?? "the local server")"
+                + " — is it running? (\(error.localizedDescription))")
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw BrainError.transport("no HTTP response from \(provider.displayName)")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            var detail = ""
+            for try await line in bytes.lines {
+                detail += line + "\n"
+                if detail.count > 4_000 { break }
+            }
+            throw BrainError.http(statusCode: http.statusCode, body: detail)
+        }
+
+        var accumulated = ""
+        var streamFailure: String?
+        for try await line in bytes.lines {
+            for event in OpenAIStreamParser.parse(line: String(line)) {
+                switch event {
+                case .textDelta(let delta):
+                    accumulated += delta
+                    await onTextChunk(delta)
+                case .error(let message):
+                    streamFailure = message
+                case .completed:
+                    break
+                }
+            }
+        }
+        // An error with no text is a failure; an error after some text is a reply that stopped
+        // early, and the user gets what arrived with the reason in the log.
+        if accumulated.isEmpty {
+            throw BrainError.transport(streamFailure ?? "\(provider.displayName) returned nothing")
+        }
+        if let streamFailure {
+            Log.write("brain: local stream ended early — \(streamFailure)")
+        }
+        // A small local model answers the question and ignores the reply protocol, and a reply
+        // with no `<SAY>` is silently all detail: the card fills and nothing is spoken. That is a
+        // real difference the user cannot see the cause of, so it is said out loud rather than
+        // left as a voice that has gone quiet.
+        if !accumulated.contains("<SAY>") {
+            Log.write("brain: this reply carried no spoken line, so nothing will be said — "
+                + "\(chosen.id) answers in plain text instead of Chunks' reply format.")
+        }
+
+        let total = Date().timeIntervalSince(started)
+        Log.write("turn: served locally by \(chosen.id) in \(String(format: "%.1f", total))s")
+        let tail = accumulated.count > 160 ? "…" + String(accumulated.suffix(160)) : accumulated
+        Log.write("turn: reply ends ‣ " + tail.replacingOccurrences(of: "\n", with: " ⏎ "))
+        return (accumulated, total)
+    }
 
     private func stream(
         key: String,

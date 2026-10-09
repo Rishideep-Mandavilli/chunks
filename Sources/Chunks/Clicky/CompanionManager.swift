@@ -569,7 +569,7 @@ final class CompanionManager: ObservableObject {
                         // heard, and no turn will arrive to replace it. Guarded on the phase
                         // so a card from the previous answer survives a silent press.
                         if self.hud.phase == .listening {
-                            self.hud.dismiss()
+                            self.hud.dismiss(reason: "press heard nothing")
                         }
                     }
                 }

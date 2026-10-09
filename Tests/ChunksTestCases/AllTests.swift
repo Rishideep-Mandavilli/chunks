@@ -22,5 +22,6 @@ public func runAllChunksTests() -> Bool {
     SpeechVoiceTests.register()
     SpeechEngineChoiceTests.register()
     TalkArmerTests.register()
+    LocalBrainTests.register()
     return TestRunner.run()
 }

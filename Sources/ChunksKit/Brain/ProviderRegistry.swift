@@ -143,7 +143,101 @@ public struct ProviderRegistry: Sendable {
         notes: "Needs credits. 30+ models on one key — useful when you want to switch brains. The *-free* models are client-locked to the OpenCode app and cannot be reached from Chunks."
     )
 
-    public static let all: [BrainProvider] = [gemini, openCodeZen]
+    // MARK: - Local, offline brains
+
+    /// Ollama on this Mac. No key, no network.
+    ///
+    /// `models` is empty on purpose: what a local server can do depends entirely on which
+    /// weights the user has pulled, so the list is discovered from the server itself at run
+    /// time (`/v1/models`) rather than guessed from a catalogue. A provider with no models
+    /// means "not running", and `BrainSelection` says so instead of failing as an empty chain.
+    public static let ollama = BrainProvider(
+        id: "ollama",
+        displayName: "Ollama (this Mac)",
+        transport: .openAICompatible,
+        baseURL: URL(string: "http://localhost:11434/v1")!,
+        models: [],
+        isFree: true,
+        notes: "Works with no internet. Needs a vision model pulled for screen answers, e.g. llava, qwen2.5vl, minicpm-v or gemma3."
+    )
+
+    public static let lmStudio = BrainProvider(
+        id: "lm-studio",
+        displayName: "LM Studio (this Mac)",
+        transport: .openAICompatible,
+        baseURL: URL(string: "http://localhost:1234/v1")!,
+        models: [],
+        isFree: true,
+        notes: "Works with no internet. Start the server with CORS enabled and a vision model loaded, or Chunks can read the screen at all."
+    )
+
+    /// Names that are known to read images, matched against what a local server advertises.
+    ///
+    /// This is a *guess with a source*, not a capability claim: local servers publish model names
+    /// and nothing about their modalities. A match means Chunks will send the screenshot without a
+    /// warning; no match means `nil` — unknown — and the turn still runs, but says out loud that
+    /// the model has not been verified to see. Assuming `false` here would disable the product's
+    /// core feature for every local model, which is the failure invariant 5 was written to avoid.
+    public static let localVisionNameMarkers = [
+        "llava", "vision", "-vl", "minicpm-v", "gemma3", "phi4-multimodal", "moondream",
+        "qwen-vl", "pixtral", "glm-4v", "internvl", "molmo", "skywork-vi", "llama4",
+        "apriel", "nanobanana", "coca", "janus",
+    ]
+
+    public static func localVisionGuess(modelID: String) -> Bool? {
+        let lowered = modelID.lowercased()
+        return localVisionNameMarkers.contains { lowered.contains($0) } ? true : nil
+    }
+
+    /// Turn a server's advertised model names into a usable list, ordered so that anything known
+    /// to read images comes first — a vision turn should not have to fail its way down the list.
+/// A model a local server advertised, with whatever the server itself said about it.
+    ///
+    /// Ollama's `/api/tags` answers with a `capabilities` array that includes `vision`, which is
+    /// authoritative in a way a name never is: `gemma4:e2b-it-qat` on this Mac sees images, and
+    /// `qwen3:14b` does not, and no marker list could have told Chunks that. The name heuristic
+    /// stays as the fallback for servers that report nothing.
+    public struct LocalModelDescriptor: Equatable, Sendable {
+        public let name: String
+        /// What the server reported. nil means the server did not say.
+        public let reportsVision: Bool?
+
+        public init(name: String, reportsVision: Bool?) {
+            self.name = name
+            self.reportsVision = reportsVision
+        }
+    }
+
+    public static func localModels(from descriptors: [LocalModelDescriptor]) -> [BrainModel] {
+        let models = descriptors.map { descriptor in
+            BrainModel(id: descriptor.name, displayName: descriptor.name,
+                       visionCapable: descriptor.reportsVision
+                        ?? localVisionGuess(modelID: descriptor.name))
+        }
+        let visionFirst = models.filter { $0.visionCapable == true }
+        let rest = models.filter { $0.visionCapable != true }
+        return visionFirst + rest
+    }
+    public static func localModels(discovered names: [String]) -> [BrainModel] {
+        let models = names.map { name in
+            BrainModel(id: name, displayName: name,
+                       visionCapable: localVisionGuess(modelID: name))
+        }
+        // Stable partition: verified-looking first, everything else in the server's own order.
+        let visionFirst = models.filter { $0.visionCapable == true }
+        let rest = models.filter { $0.visionCapable != true }
+        return visionFirst + rest
+    }
+
+    /// A local provider with its models discovered. Keeps the registry's identity (id, base URL,
+    /// display name) and replaces only the model list.
+    public static func localProvider(_ base: BrainProvider, discovered names: [String]) -> BrainProvider {
+        BrainProvider(id: base.id, displayName: base.displayName, transport: base.transport,
+                      baseURL: base.baseURL, models: localModels(discovered: names),
+                      isFree: base.isFree, notes: base.notes)
+    }
+
+    public static let all: [BrainProvider] = [gemini, openCodeZen, ollama, lmStudio]
 
     public init() {}
 

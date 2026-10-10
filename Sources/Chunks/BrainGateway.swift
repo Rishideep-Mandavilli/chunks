@@ -36,6 +36,10 @@ enum BrainError: Error, CustomStringConvertible {
     case noCapableModel(String)
     case http(statusCode: Int, body: String)
     case transport(String)
+    /// A model that answered with a well-formed, empty reply. Distinct from a transport failure:
+    /// the server is healthy and another model on it may answer fine, which is the difference
+    /// between trying the next one and giving up.
+    case localModelWasSilent(String)
     case keychain(OSStatus)
 
     var description: String {
@@ -51,6 +55,11 @@ enum BrainError: Error, CustomStringConvertible {
             return trimmed.isEmpty ? summary : "\(summary) — server said: \(trimmed.prefix(300))"
         case .transport(let detail):
             return "Couldn't reach the model: \(detail)"
+        case .localModelWasSilent(let model):
+            // Wording matters: the server answered perfectly well, so "couldn't reach" would send
+            // the user off to check Ollama is running when the real problem is one model's output
+            // format.
+            return "\(model) answered with nothing to show. Chunks tried the other models on this Mac."
         case .keychain(let status):
             let detail = SecCopyErrorMessageString(status, nil) as String? ?? "status \(status)"
             return "Could not read the API key from the Keychain: \(detail)."
@@ -273,21 +282,71 @@ final class BrainGateway {
                 resolution.notice ?? "\(provider.displayName) has no model that can answer this.")
         }
 
-        let body = OpenAICompatibleTransport.body(model: chosen.id, systemPrompt: systemPrompt,
+        var candidates: [BrainModel] = [chosen]
+        candidates += resolution.provider.models.filter { model in model.id != chosen.id }
+        var lastFailure: Error?
+        for candidate in candidates {
+            do {
+                return try await runLocalTurn(provider: resolution.provider, model: candidate,
+                                              systemPrompt: systemPrompt, history: history,
+                                              userPrompt: userPrompt, images: images,
+                                              silenceIsRetryable: true,
+                                              started: started, onTextChunk: onTextChunk)
+            } catch {
+                lastFailure = error
+                // One model refusing is not the server failing: `qwen3-vl:8b` here has a
+                // 4,096-token context and rejects a screen turn that `gemma4:e2b-it-qat` answers.
+                // Try the other local models, but stay on this Mac either way — a turn the user
+                // asked to run offline never leaves the machine because one model declined it.
+                let cause = Self.localCause(of: error)
+                if LocalBrainError.isPerModel(cause) {
+                    if let explained = Self.localExplanation(of: error) {
+                        Log.write("brain: \(candidate.id) — \(explained)")
+                    }
+                    if candidates.count > 1 { Log.write("brain: trying the next model on this Mac") }
+                    continue
+                }
+                throw error
+            }
+        }
+        throw lastFailure ?? BrainError.noCapableModel(
+            "\(resolution.provider.displayName) could not answer this turn.")
+    }
+
+    /// The request itself, against one named local model.
+    private func runLocalTurn(
+        provider: BrainProvider,
+        model: BrainModel,
+        systemPrompt: String,
+        history: [(userPlaceholder: String, assistantResponse: String)],
+        userPrompt: String,
+        images: [(data: Data, label: String)],
+        silenceIsRetryable: Bool,
+        started: Date,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval) {
+        // Ollama streams thinking models into `delta.reasoning` and leaves `content` empty —
+        // measured on `qwen3-vl:8b`: 176 characters of reasoning, 0 of content. Chunks must not
+        // surface reasoning text, so the only correct move is to ask the server not to think,
+        // which puts the answer back in `content`. Sent for Ollama alone, because `think` is its
+        // extension and not part of the OpenAI shape every other server parses.
+        let thinking: Bool? = provider.id == "ollama" ? false : nil
+        let body = OpenAICompatibleTransport.body(model: model.id, systemPrompt: systemPrompt,
                                                   userPrompt: userPrompt, images: images,
-                                                  history: history, stream: true)
+                                                  history: history, stream: true,
+                                                  thinking: thinking)
         var request = URLRequest(url: OpenAICompatibleTransport.chatCompletionsURL(baseURL: provider.baseURL))
         request.httpMethod = "POST"
         for (field, value) in OpenAICompatibleTransport.headers(apiKey: nil) {
             request.setValue(value, forHTTPHeaderField: field)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        // Longer than the cloud timeout on purpose: a local model that has been evicted from RAM
-        // spends the first minute loading weights, and a 90-second timeout would fail exactly the
-        // turn that was most expensive to run.
-        request.timeoutInterval = 180
+        // Generous, because a local model evicted from RAM spends the first minute loading
+        // weights — but bounded, because a model slower than this is not the answer the user is
+        // waiting for and the next local model gets its turn instead.
+        request.timeoutInterval = 75
 
-        Log.write("brain: local turn → \(provider.displayName)/\(chosen.id)"
+        Log.write("brain: local turn → \(provider.displayName)/\(model.id)"
             + " · \(images.count) image(s), \(images.reduce(0) { $0 + $1.data.count } / 1024) KB")
 
         let bytes: URLSession.AsyncBytes
@@ -307,6 +366,11 @@ final class BrainGateway {
                 detail += line + "\n"
                 if detail.count > 4_000 { break }
             }
+            // Logged, not just thrown: `--self-test` started a local turn, never finished it, and
+            // the reason was only ever printed to stdout — which is unreadable for a process
+            // started with `open`. A failure nobody can see is a failure nobody can fix.
+            Log.write("brain: \(provider.displayName) answered \(http.statusCode) — "
+                + detail.prefix(300).replacingOccurrences(of: "\n", with: " "))
             throw BrainError.http(statusCode: http.statusCode, body: detail)
         }
 
@@ -328,25 +392,48 @@ final class BrainGateway {
         // An error with no text is a failure; an error after some text is a reply that stopped
         // early, and the user gets what arrived with the reason in the log.
         if accumulated.isEmpty {
-            throw BrainError.transport(streamFailure ?? "\(provider.displayName) returned nothing")
+            let reason = streamFailure ?? "\(model.id) answered with no text"
+            Log.write("brain: local turn produced no text — \(reason)")
+            throw BrainError.localModelWasSilent(model.id)
         }
         if let streamFailure {
             Log.write("brain: local stream ended early — \(streamFailure)")
         }
-        // A small local model answers the question and ignores the reply protocol, and a reply
-        // with no `<SAY>` is silently all detail: the card fills and nothing is spoken. That is a
-        // real difference the user cannot see the cause of, so it is said out loud rather than
-        // left as a voice that has gone quiet.
+        // A reply with no `<SAY>` is all detail: the card fills and nothing is spoken. Several
+        // small local models do this even when asked properly — measured with the production
+        // prompt, not the terse diagnostic one that forbids tags — and the silence has to be
+        // attributed to the model rather than left to look like a broken voice.
         if !accumulated.contains("<SAY>") {
-            Log.write("brain: this reply carried no spoken line, so nothing will be said — "
-                + "\(chosen.id) answers in plain text instead of Chunks' reply format.")
+            Log.write("brain: \(model.id) returned no spoken line for this reply, "
+                + "so nothing will be said out loud.")
         }
 
         let total = Date().timeIntervalSince(started)
-        Log.write("turn: served locally by \(chosen.id) in \(String(format: "%.1f", total))s")
+        Log.write("turn: served locally by \(model.id) in \(String(format: "%.1f", total))s")
         let tail = accumulated.count > 160 ? "…" + String(accumulated.suffix(160)) : accumulated
         Log.write("turn: reply ends ‣ " + tail.replacingOccurrences(of: "\n", with: " ⏎ "))
         return (accumulated, total)
+    }
+
+    /// The human sentence for a thrown error, when one is known.
+    private static func localExplanation(of error: Error) -> String? {
+        guard case BrainError.http(let status, let body) = error else { return nil }
+        return LocalBrainError.explain(statusCode: status, body: body)
+    }
+
+    /// Map a thrown error onto the local-server failure it represents.
+    private static func localCause(of error: Error) -> LocalBrainError.Cause {
+        if case BrainError.http(let status, let body) = error {
+            return LocalBrainError.classify(statusCode: status, body: body)
+        }
+        if case BrainError.localModelWasSilent = error { return .emptyAnswer }
+        // A timeout is this model's slowness, not the server's death: the connection was made and
+        // the answer never came. `qwen3-vl-16k` measured 91s for one screen turn on a 16 GB Mac
+        // while `gemma4` answers the same turn in 14s, so the useful move is the next model.
+        if let urlError = error as? URLError, urlError.code == .timedOut {
+            return .timedOut
+        }
+        return .other
     }
 
     private func stream(
@@ -472,6 +559,8 @@ final class BrainGateway {
             return RetryPolicy.classify(statusCode: code, body: body)
         case .transport:
             return .network(detail: brainError.description)
+        case .localModelWasSilent:
+            return .unknown(statusCode: nil, detail: brainError.description)
         case .missingKey, .noCapableModel, .keychain:
             return .unauthorised
         }

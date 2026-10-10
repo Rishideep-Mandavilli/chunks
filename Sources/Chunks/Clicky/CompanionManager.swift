@@ -176,6 +176,59 @@ final class CompanionManager: ObservableObject {
         Log.write("acting: ask before acting = \(enabled)")
     }
 
+    /// Where Chunks does its thinking: this Mac, or Google.
+    ///
+    /// Reads the same `UserDefaults` key `BrainGateway` routes on, so the switch in the panel and
+    /// the turn that follows it cannot disagree — the failure this avoids is a UI that says
+    /// "offline" while the screenshots go to a cloud anyway.
+    @Published var isOfflineBrainOn: Bool = UserDefaults.standard.string(
+        forKey: BrainSettings.providerKey) == ProviderRegistry.ollama.id
+
+    /// What the machine would actually use, once discovered. Shown under the switch, because
+    /// "offline" means nothing if there is no model here that can see the screen.
+    @Published private(set) var offlineBrainSummary = "checking this Mac\u{2026}"
+
+    func setOfflineBrain(_ enabled: Bool) {
+        isOfflineBrainOn = enabled
+        UserDefaults.standard.set(enabled ? ProviderRegistry.ollama.id : ProviderRegistry.gemini.id,
+                                  forKey: BrainSettings.providerKey)
+        // The model preference is dropped rather than remembered: the point of the switch is to
+        // pick whatever is loaded and able to see, and a stale name from a previous pull would
+        // resolve to "no model called X" on a machine that has one.
+        if enabled { UserDefaults.standard.removeObject(forKey: BrainSettings.modelKey) }
+        LocalBrainDiscovery.invalidate()
+        Log.write("brain: offline switched \(enabled ? "on" : "off")")
+        refreshOfflineBrainSummary()
+    }
+
+    /// Ask the local servers what they have, and say what would be used.
+    ///
+    /// Called when the panel appears and whenever the switch moves, so a model pulled five minutes
+    /// ago shows up without restarting the app.
+    func refreshOfflineBrainSummary() {
+        Task { @MainActor in
+            var sawAny = false
+            for candidate in [ProviderRegistry.ollama, ProviderRegistry.lmStudio] {
+                let descriptors = await LocalBrainDiscovery.descriptors(for: candidate)
+                guard !descriptors.isEmpty else { continue }
+                sawAny = true
+                let models = ProviderRegistry.localModels(from: descriptors)
+                if let vision = models.first(where: { $0.visionCapable == true }) {
+                    offlineBrainSummary = "\(candidate.displayName) \u{2014} \(vision.id). Nothing leaves this Mac."
+                    return
+                }
+                if let first = models.first {
+                    offlineBrainSummary = "no model in \(candidate.displayName) can see images "
+                        + "(\(first.id) is text-only). Pull a vision model."
+                    return
+                }
+            }
+            offlineBrainSummary = sawAny
+                ? "a local server answered but listed no models."
+                : "no local server answering \u{2014} start Ollama, or switch back."
+        }
+    }
+
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
@@ -702,7 +755,11 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Companion Prompt
 
-    private static let companionVoiceResponseSystemPrompt = """
+    /// Internal, not private, so `--self-test --prompt-production` can measure a brain against the
+    /// prompt Chunks actually sends. The default self-test prompt says "no tags", and a model that
+    /// obeys it correctly looks like one that cannot follow the reply protocol — which is exactly
+    /// the wrong conclusion I drew about the local models on 2026-10-09.
+    static let companionVoiceResponseSystemPrompt = """
     you're chunks, a friendly always-on companion that lives in the notch of the user's mac. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech and shown on a small card under the notch, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     rules:

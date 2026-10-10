@@ -42,6 +42,19 @@ enum SelfTest {
     ///
     /// A deliberately smaller contract than the app's own prompt, so a failure here means
     /// the transport is broken rather than that the model is being difficult.
+    /// Which prompt the diagnostic sends.
+    ///
+    /// The default one is deliberately terse so a network failure is easy to read. Comparing
+    /// *brains* needs the prompt a real turn uses, because that is the only one that asks for
+    /// `<SAY>`, `<DONE_TITLE>` and `[POINT:…]` — and a model judged on a prompt that forbids tags
+    /// will always look like it cannot produce them.
+    @MainActor
+    static func selectedPrompt() -> String {
+        CommandLine.arguments.contains("--prompt-production")
+            ? CompanionManager.companionVoiceResponseSystemPrompt
+            : systemPrompt
+    }
+
     static let systemPrompt = """
     You are Chunks, a Mac companion that explains what is on the user's screen.
     Reply in one or two plain sentences. No tags, no lists, no preamble.
@@ -84,7 +97,7 @@ enum SelfTest {
         }
 
         guard let display = CaptureEngine.mainDisplay() else {
-            say("FAIL: no display")
+            Log.write("FAIL: no display"); say("FAIL: no display")
             Log.flush()
 
             exit(1)
@@ -99,7 +112,7 @@ enum SelfTest {
                     + String(format: "%.0fms", Date().timeIntervalSince(started) * 1000))
 
                 guard let png = ScreenCapture(image: image, globalRect: captured.globalRect).png() else {
-                    say("FAIL: could not encode PNG")
+                    Log.write("FAIL: could not encode PNG"); say("FAIL: could not encode PNG")
                     Log.flush()
 
                     exit(1)
@@ -114,7 +127,7 @@ enum SelfTest {
                     images: [(data: png,
                               label: "The user's whole screen "
                                     + "(\(captured.pixelSize.width)x\(captured.pixelSize.height) pixels)")],
-                    systemPrompt: SelfTest.systemPrompt,
+                    systemPrompt: SelfTest.selectedPrompt(),
                     userPrompt: question,
                     onTextChunk: { delta in raw += delta })
                 let elapsed = Date().timeIntervalSince(replied)
@@ -153,7 +166,7 @@ enum SelfTest {
                 }
 
                 if parsed.speech.isEmpty && parsed.detail.isEmpty && streamer.utterance.isEmpty {
-                    say("FAIL: the reply parsed to nothing")
+                    Log.write("FAIL: the reply parsed to nothing"); say("FAIL: the reply parsed to nothing")
                     Log.flush()
 
                     exit(1)
@@ -163,7 +176,7 @@ enum SelfTest {
 
                 exit(0)
             } catch {
-                say("FAIL: \(error)")
+                Log.write("FAIL: \(error)"); say("FAIL: \(error)")
                 if let chunksError = error as? ChunksError {
                     say("  detail: \(chunksError.description)")
                 }

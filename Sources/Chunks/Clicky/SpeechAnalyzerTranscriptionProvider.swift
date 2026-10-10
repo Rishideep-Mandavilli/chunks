@@ -264,10 +264,11 @@ private final class SpeechAnalyzerSession: BuddyStreamingTranscriptionSession {
         }
 
         Task { [weak self] in
+            guard let self else { return }
             do {
-                try await analyzer.start(inputSequence: inputStream)
+                try await self.analyzer.start(inputSequence: inputStream)
             } catch {
-                self?.noteFailure(error)
+                self.noteFailure(error)
             }
         }
     }

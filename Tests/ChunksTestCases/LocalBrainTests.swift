@@ -52,6 +52,22 @@ public enum LocalBrainTests {
                         "a doubled slash is a 404, and a 404 looks exactly like a server that is not running")
         }
 
+        test("an Ollama request asks the model not to think") {
+            let body = OpenAICompatibleTransport.body(model: "qwen3-vl:8b", systemPrompt: "s",
+                                                      userPrompt: "u", images: [], history: [],
+                                                      stream: true, thinking: false)
+            expectEqual(body["think"] as? Bool, false,
+                        "measured on this Mac: qwen3-vl put 176 characters in delta.reasoning and 0 in content, so a thinking model leaves Chunks with an empty card")
+        }
+
+        test("a server that is not Ollama is not sent Ollama's private key") {
+            let body = OpenAICompatibleTransport.body(model: "gpt-4o", systemPrompt: "s",
+                                                      userPrompt: "u", images: [], history: [],
+                                                      stream: true)
+            expect(body["think"] == nil,
+                   "\"think\" is an Ollama extension; a strict OpenAI parser rejects unknown top-level keys with a 400 that names nothing")
+        }
+
         test("no key means no Authorization header at all") {
             let headers = OpenAICompatibleTransport.headers(apiKey: nil)
             expect(headers["Authorization"] == nil,

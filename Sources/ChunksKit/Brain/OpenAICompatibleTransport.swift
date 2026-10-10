@@ -80,7 +80,8 @@ public enum OpenAICompatibleTransport {
                             userPrompt: String,
                             images: [(data: Data, label: String)],
                             history: [(userPlaceholder: String, assistantResponse: String)],
-                            stream: Bool) -> [String: Any] {
+                            stream: Bool,
+                            thinking: Bool? = nil) -> [String: Any] {
         var messages: [[String: Any]] = []
         if !systemPrompt.isEmpty {
             messages.append(["role": "system", "content": systemPrompt])
@@ -104,7 +105,11 @@ public enum OpenAICompatibleTransport {
         userContent.append(["type": "text", "text": userPrompt])
         messages.append(["role": "user", "content": userContent])
 
-        return ["model": model, "messages": messages, "stream": stream]
+        var body: [String: Any] = ["model": model, "messages": messages, "stream": stream]
+        // Ollama's switch for thinking models. `nil` means "say nothing about it" — only Ollama
+        // understands the key, and a server that parses strictly would reject it.
+        if thinking == false { body["think"] = false }
+        return body
     }
 
     public static func encode(body: [String: Any]) throws -> Data {

@@ -36,6 +36,7 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
 
                 actingRow
+                brainRow
                     .padding(.horizontal, 16)
             }
 
@@ -783,6 +784,41 @@ struct CompanionPanelView: View {
                 .controlSize(.small)
         }
         .padding(.vertical, 4)
+    }
+
+
+    /// Whether the answer comes from this Mac or from Google.
+    ///
+    /// A single switch rather than a provider list, because the question the user is asking is
+    /// "can it work without internet", not "which endpoint". The line under it names what was
+    /// actually found locally — offline is only useful if some model here can read a screenshot,
+    /// and being told "offline" while the only loaded model is text-only is how you get a confident
+    /// description of a screen nobody sent.
+    private var brainRow: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Think on this Mac")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Text(companionManager.isOfflineBrainOn
+                        ? companionManager.offlineBrainSummary
+                        : "Asking Google Gemini. Needs internet, better answers, and it speaks.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isOfflineBrainOn },
+                set: { companionManager.setOfflineBrain($0) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
+        .padding(.vertical, 4)
+        .onAppear { companionManager.refreshOfflineBrainSummary() }
     }
 
     // MARK: - Footer

@@ -437,6 +437,40 @@ How it works, and why it is shaped this way:
   transports, one shared reply event vocabulary, so `[POINT]`, act tags and `<SUMMARY>` stay
   provider-blind.
 
+### The two local models, re-measured with the real prompt
+
+`--self-test --prompt-production` sends the prompt a live turn sends; the earlier diagnostic
+prompt literally says *"no tags"*, so nothing measured with it could say anything about the reply
+format. Corrected results, same question:
+
+- **`qwen3-vl:8b` does not work here as configured.** Ollama gives it a **4096-token context** and a
+  screen turn needs **8063**, so the server refuses before answering: `request (8063 tokens)
+  exceeds the available context size (4096 tokens)`. The fix is server-side —
+  `OLLAMA_CONTEXT_LENGTH=16384 ollama serve`. Note the diagnostic path sends a PNG (5.3 MB, more
+  image tokens) where a live turn sends a JPEG (~700 KB), so it may already work in real use;
+  untested, and that distinction matters before blaming the model.
+- **`gemma4:e2b-it-qat` answers in 14–15s** and is correct about the screen, but returned **no
+  `<SAY>`** even when asked properly — offline with this model means **no voice**. That is now said
+  in the log instead of leaving a silent companion to look broken.
+- **Why `qwen3-vl:8b` said nothing, in the end:** it is a *thinking* model, and Ollama's
+  OpenAI-compatible endpoint streams the whole answer into `delta.reasoning` with `content` empty —
+  measured 176 characters of reasoning, 0 of content. Chunks must not surface reasoning text, so the
+  request now sends Ollama's `think: false` (that key only, because a strict OpenAI parser rejects
+  unknown top-level keys with a 400 that names nothing).
+- **`qwen3-vl-16k` works, and it was the slowest thing to get right.** With thinking on it timed out
+  at 91s; with `think: false` and a 16k context it answered a 7.9 MB screenshot turn in **67.4s** and
+  followed Chunks' reply protocol properly — `<SAY>`, `<DONE_TITLE>`, `<SUMMARY>`, `<NEXT_ACTIONS>`
+  and `[POINT:640,29:play button]`. So offline **can** keep the voice, at four times the wait.
+- **The two local brains are a trade, not a winner.** `gemma4:e2b-it-qat`: 14s, reads the screen,
+  plain prose → no voice. `qwen3-vl-16k`: 67s, reads the screen, full protocol → speaks. Which one
+  should be picked automatically is the user's call, not a default to invent.
+
+- **Local turns fall back between local models.** A model refusing is that model's problem, not the
+  server's, so Chunks tries the next one and says why. It never leaves the Mac: a turn asked for
+  offline does not go to the cloud because one model declined. `LocalBrainError` separates the two
+  cases (context / missing model / unreadable image, versus out-of-memory / wrong URL), and a
+  refusal it cannot explain produces no advice rather than a guess.
+
 Switch from a terminal (`UserDefaults`, like `askBeforeActing` — it is a switch, not a secret):
 ```
 defaults write app.chunks.mac app.chunks.brainProvider ollama

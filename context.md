@@ -483,6 +483,46 @@ back" rule does not forbid, and the one that would make offline actually useful 
 `--self-test` also needed `Log.flush()`: the async log was eating its last lines, including the
 reply tail.
 
+## 2026-10-11: the circle-to-explain overlay locked the user's Mac. Removed.
+
+I wrote an annotation overlay from scratch, shipped it in a build, and it took over the screen so
+completely that the user could not use the Mac until he fought his way out. It is removed — the
+three wiring files were reverted and `Sources/Chunks/Annotate/` deleted; build clean, 387 tests
+green, nothing of it committed.
+
+**Four decisions that combined into a lockup.** Any two of them would have been survivable:
+
+1. `window.level = .screenSaver` — above every app **and above the menu bar**. The buddy cursor
+   uses this level too (`OverlayWindow.swift:27`) and is harmless only because of decision 2.
+2. `ignoresMouseEvents = false` on a **display-sized** window. The buddy sets it to `true`
+   (`OverlayWindow.swift:28`, "Click-through"). Mine swallowed every click on the machine,
+   including clicks meant for the menu bar and the Dock.
+3. Escape and Return were the only exits, handled in the view's `keyDown` — which requires the
+   window to be key. An `LSUIElement` accessory app calling `NSApp.activate(ignoringOtherApps:)`
+   is not guaranteed key focus. No focus, no keyboard, therefore **no exit**.
+4. No timeout, no click-outside-to-dismiss, no watchdog, and no warning to the user. I then
+   launched it from a diagnostic harness (`--annotate`) on his running machine to measure a
+   screenshot, which is when it first grabbed his screen.
+
+The log records both grabs: `annotate: overlay open on 1710x1107pt display` at
+2026-10-10T14:29:36Z (my harness) and 2026-10-11T11:30:28Z (him clicking the new panel button).
+
+**The safety contract for anything that covers the screen, before it is written again:**
+- Click-through unless capturing is the entire point; if it captures, it must also **release**.
+- A hard auto-dismiss timer (a few seconds), started before the window is ordered front.
+- An exit that does not depend on key focus: a click outside, a second invocation of the trigger,
+  and the app's own menu-bar Quit all cancel it.
+- Never `NSApp.activate(ignoringOtherApps:)` from an accessory app to force focus.
+- Never launch a screen-grabbing mode on the user's machine as part of a measurement without
+  saying so first. A harness that can lock his Mac is not a read-only probe, whatever it logs.
+
+**Do not rebuild this from scratch.** The upstream implementation is already in this repo's
+history — `git show 10bd07e^:Sources/Chunks/AppShell.swift`, `AnnotationOverlayWindow` (line 987)
+and `AnnotationCanvas` (line 1045), with `mouseDown`/`keyDown` handling that shipped in
+farzaa/clicky under MIT. Import it, read how it dismisses itself, and apply the contract above.
+`AnnotationShape`, `RegionResolver` and `CaptureEngine.composited(with:shapes:)` all still exist
+and stay tested, so only the surface is missing.
+
 ## Where it stands, and what's next
 
 

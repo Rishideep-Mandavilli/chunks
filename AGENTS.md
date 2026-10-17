@@ -364,7 +364,7 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-**The app runs. 360 tests green across 18 suites.**
+**The app runs. 411 tests green across 23 suites.**
 
 Done and tested:
 
@@ -375,7 +375,7 @@ Done and tested:
 | Secret rejection | `Memory/SecretSweeper.swift` | 12 provider prefixes + entropy heuristic |
 | Memory store | `Memory/MemoryStore.swift` | Plain markdown, 2 KB cap, never truncated |
 | Memory write-back | `Memory/MemoryReport.swift` | `<MEMORY>` proposal → store → one-line footnote on the card |
-| Reply protocol | `Brain/ResponseParser.swift` | Streaming `[POINT]` / `[ACT]` / `[TYPE]` / `[DO]` / `<SAY>` / `<MEMORY>` / `<NOTE>` / `<SUMMARY>` / `<DONE_TITLE>` / `<NEXT_ACTIONS>` / `<CONTINUE>` |
+| Reply protocol | `Brain/ResponseParser.swift` | Streaming `[POINT]` / `[ACT]` / `[TYPE]` / `[DO]` / `<SAY>` / `<MEMORY>` / `<NOTE>` / `<SUMMARY>` / `<DONE_TITLE>` / `<NEXT_ACTIONS>` / `<CONTINUE>` / `[READ]` |
 | Provider registry | `Brain/ProviderRegistry.swift` | Capability profiles, `visionCapable: Bool?` |
 | Retry + rate limit | `Brain/RetryPolicy.swift` | Backoff with jitter, token bucket |
 | Request/SSE | `Brain/GeminiTransport.swift` | Pure builders; `store:false` enforced by test |
@@ -388,12 +388,17 @@ Done and tested:
 | Consent state machine | `Action/ConsentGate.swift` | One outstanding question; double answers are inert; displacement counts as denial |
 | Accessibility press | `Action/AXTDriver.swift` | Window hit test (layer 0, desktop on request) → `AXUIElementCopyElementAtPosition` → walk to a pressable ancestor → `AXPress`/`AXPick`/`AXOpen` (icons are selected first); name search when the pixel misses, then Finder's desktop list when that misses, and an app that answers badly is believed only from a before/after snapshot of what is running and focused. Typing goes through `typeTarget`/`type`: editable-role hit test and name search, `AXManualAccessibility` for Chromium surfaces, focus read back and compared before the first character, unicode `CGEvent` keystrokes that never warp the pointer. Never moves the cursor |
 | Tool requests | `Action/DoRequest.swift` | `[DO:open_app:X]` / `[DO:open_url:host\|Chrome]` / `[DO:set_volume:N]`, parsed only into effects that fit one sentence; paths, non-http schemes and unknown tools return `nil` |
+| File read policy | `Action/ReadRequest.swift` | `[READ:~/path|question]`: allow-listed roots, a credential deny-list matched on the **resolved** path so a symlink into `~/.ssh` is refused, 24 KB cap sliced by file kind (tail for logs, head for code) |
 | Tool runner | `Action/ToolRunner.swift` | `NSWorkspace` launch from a fixed directory list; a URL handed to the named browser or the default one; CoreAudio output volume. Performs only what the gate released |
 
 Running: menu bar item, ⌃⌥ **tap-to-arm** dictation (a tap arms the microphone and a second tap
 sends it; holding past 350 ms still behaves as push-to-talk — `TalkArmer.swift`), ⌃⌘C to open and
 close the panel (`PanelShortcut.swift`, matched on the event tap's own `CGEventFlags`), whole-screen
 turns, cursor move to a pointed-at control, an API-key field in the panel that writes to the Keychain,
+and **file reading**: `[READ:~/Downloads/build.log|why did it fail]` puts a file in front of the model
+on the next turn, which is the only way Chunks can answer what the screen does not show. The policy
+lives in `ReadRequest` and the disk in `FileRead`; `--probe-read <path>…` runs the whole path against
+the real file system and logs the verdict,
 and the **notch HUD** (`Sources/Chunks/HUD/`) — a non-activating card
 that grows out of the cutout: streamed answer, `<DONE_TITLE>` as its label, point and
 `<NEXT_ACTIONS>` chips, `<SUMMARY>` spoken on completion. Every prompt carries

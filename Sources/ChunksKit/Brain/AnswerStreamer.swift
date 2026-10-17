@@ -35,6 +35,10 @@ public final class AnswerStreamer {
     /// open yet — so the caller takes a fresh look and continues the same request unasked.
     public private(set) var continuation: String?
 
+    /// The file the model asked to read, if it asked. One per reply: a turn that wants three
+    /// files is a turn that should be asked again after the first is in.
+    public private(set) var fileRead: ReadRequest?
+
     /// `[ACT:…]` proposals, in order. Not executed here: the caller runs each through
     /// `PolicyGate` and then asks the user. Deliberately an array rather than one slot — a
     /// model that proposes two presses in one turn should not have the first silently
@@ -149,6 +153,9 @@ public final class AnswerStreamer {
                 // Replace, not append: a model that emits the block twice should not
                 // double the chip row.
                 nextActions = actions
+
+            case .fileRead(let request):
+                fileRead = request
 
             case .continuation(let line):
                 // Last one wins, for the same reason as the chips: a repeated block is the model

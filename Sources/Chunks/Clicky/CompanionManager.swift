@@ -873,6 +873,7 @@ final class CompanionManager: ObservableObject {
     - anything you write OUTSIDE those tags is shown on the card but never spoken. put the longer expansion there: the exact steps, the shortcut, the names of the menus, the code. this is where a thorough explanation belongs, so going deep does not mean talking for two minutes.
     - <DONE_TITLE>three words max</DONE_TITLE> names what you just found or did, in the past tense ("Found color inspector", "Fixed the comma"). it labels the card. when the reply ends in an act request, name the readiness instead of a result — "Ready to send", never "Message sent".
     - <SUMMARY>one short line</SUMMARY> is the last thing said aloud when you finish — the completion line, not a recap of the whole answer.
+    - [READ:~/path/to/file|what you need from it] asks Chunks to put a file in front of you on the next turn. You cannot see file contents yet, so never describe a file you have not been given — ask for it and answer from the copy that comes back. Use it when the answer is not on the screen and cannot be: a build log whose tail is cut off, a config file, a script he is pointing at. One file per turn. Chunks refuses anything outside his folders and anything that holds credentials, and says so out loud when it does — a refusal is an answer, not a failure to retry.
     - <NEXT_ACTIONS> holds up to three follow-ups the user can tap, one per line starting with "- ". only real next steps that you can actually act on. if there is nothing worth offering, leave the block out entirely.
 
     order: <SAY> first, then any shown detail, then <DONE_TITLE>, <SUMMARY>, <NEXT_ACTIONS>, <MEMORY>, then the act tags — [POINT:…], [ACT:…], [TYPE:…], [SCROLL:…] or [DO:…] — in the order they should happen, and <CONTINUE> last of all.
@@ -936,6 +937,11 @@ final class CompanionManager: ObservableObject {
       <DONE_TITLE>Ready to lower volume</DONE_TITLE>
       <SUMMARY>Volume is on its way down.</SUMMARY>
       [DO:set_volume:30]
+    - user says "why did my build fail" while the terminal shows only the last few lines:
+      <SAY>the tail on screen is cut off — let me read the whole log.</SAY>
+      <DONE_TITLE>Reading build log</DONE_TITLE>
+      <SUMMARY>Give me a second with the log.</SUMMARY>
+      [READ:~/Downloads/build.log|the first error and what caused it]
     - user asks what html is, nothing on screen to point at:
       <SAY>html is the skeleton of every web page — it marks up what each bit of content actually is.</SAY>
       headings, paragraphs, links, images. css then styles that structure and javascript makes it react.
@@ -967,10 +973,49 @@ final class CompanionManager: ObservableObject {
     private func companionPromptWithMemory() -> String {
         memoryStore.load()
         let known = memoryStore.injectedBlock()
-        return Self.companionVoiceResponseSystemPrompt
+        var prompt = Self.companionVoiceResponseSystemPrompt
             + "\n\n" + Self.actingRules(askBeforeActing: askBeforeActing)
             + "\n\nwhat i know about this user (from earlier turns):\n"
             + (known.isEmpty ? "(nothing yet)" : known)
+        if let file = consumePendingFileContext() {
+            // The contents arrive as a separate turn precisely because the model could not have
+            // had them when it asked. Labelling the block, the path and the limit keeps an answer
+            // from claiming something the file does not actually say.
+            prompt += "\n\nfile the user asked you to read — \(file.path)"
+                + (file.slice.map { " (\($0))" } ?? "") + ":\n\"\"\"\n\(file.text)\n\"\"\"\n"
+                + "answer from this file only. if what he asked needs something the file does not "
+                + "contain, say so and name the file you would need next."
+        }
+        return prompt
+    }
+
+    /// The file contents waiting for the one turn that spends them.
+    ///
+    /// Consumed once, for the same reason a circled crop is: a stale file would make the next
+    /// three questions all be about a log the user stopped caring about a minute ago.
+    private var pendingFileContext: FileRead.Content?
+
+    private func consumePendingFileContext() -> FileRead.Content? {
+        defer { pendingFileContext = nil }
+        return pendingFileContext
+    }
+
+    /// Read a file and hand back what the next turn should be about, or nil when nothing was read.
+    ///
+    /// A refusal is said out loud rather than swallowed: the difference between "I won't read
+    /// ~/.ssh" and "I asked for the file and nothing happened" is the whole difference between a
+    /// policy working and a feature looking broken.
+    private func offerFileRead(_ request: ReadRequest) -> String? {
+        switch FileRead.perform(request) {
+        case .failure(let failure):
+            Log.write("read: refused \(request.path) — \(failure.description)")
+            hud.fail(failure.description)
+            return nil
+        case .success(let content):
+            Log.write("read: \(content.path) into the next turn (\(content.text.utf8.count) bytes)")
+            pendingFileContext = content
+            return "answer what he asked using \(content.path)"
+        }
     }
 
     /// The paragraph that tells the model what happens to an `[ACT]`, `[TYPE]` or `[DO]` after it replies.
@@ -1992,7 +2037,16 @@ final class CompanionManager: ObservableObject {
                     planAdvanced = !consentGate.isPending
                     logUnaskedProposals(streamer: streamer, ranSteps: 1)
                 }
-                pendingContinuation = streamer.continuation
+                // A file read spends the round it asked for: the model cannot have had the
+                // contents when it wrote this answer, so the answer comes in the next turn with
+                // them attached. Folded into the same continuation channel the plan uses, rather
+                // than starting its own turn here — this is the point in the task where the
+                // previous answer is still being spoken.
+                if let read = streamer.fileRead {
+                    pendingContinuation = offerFileRead(read) ?? streamer.continuation
+                } else {
+                    pendingContinuation = streamer.continuation
+                }
                 // A round that asked for nothing to happen is not a failed step — it is a look that
                 // found nothing yet. Once a plan is genuinely under way, that deserves another look
                 // instead of an apology, because a cold launch can beat even the recapture delay.

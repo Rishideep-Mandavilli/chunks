@@ -189,6 +189,27 @@ public enum AnswerPanelTests {
                    "an absent tag must not schedule another turn and burn a plan round")
         }
 
+        test("READ puts a file request on the streamer and stays off the card") {
+            let streamer = AnswerStreamer()
+            streamer.push("<SAY>let me look at that log.</SAY> "
+                + "[READ:~/Downloads/build.log|why did it fail]")
+            let result = streamer.finish()
+            expectEqual(streamer.fileRead?.path, "~/Downloads/build.log",
+                        "the file he asked about has to survive to the reader")
+            expectEqual(streamer.fileRead?.question, "why did it fail")
+            expect(!result.detail.contains("READ:"),
+                   "the tag leaked onto the card the user reads: \(result.detail)")
+        }
+
+        test("a malformed READ is shown as text rather than swallowed") {
+            let streamer = AnswerStreamer()
+            streamer.push("[READ:]")
+            let result = streamer.finish()
+            expect(streamer.fileRead == nil, "an empty path must not become a read request")
+            expect(result.detail.contains("[READ:]"),
+                   "fail open: the user should see what was asked, not silence: \(result.detail)")
+        }
+
         test("an unterminated tag at the end of the stream is still shown") {
             let streamer = AnswerStreamer()
             streamer.push("The answer is 42.")

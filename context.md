@@ -700,6 +700,34 @@ opens. The only honest fix was a loop:
 
 395/395 tests pass. Not yet watched on the real machine: a spoken three-step request end to end.
 
+## 2026-10-17: it can read files now, and the probe said so before the user did
+
+`[READ:~/path|question]` gives the model a file it could not see. The capability was already in
+scope — "the agent reads files and screen content as *context*" — and it is the one thing that makes
+"why did my build fail" answerable when the terminal shows only the last four lines.
+
+Design decisions, each forced by a measurement rather than chosen:
+
+- **The policy is in ChunksKit and does no I/O**, so the cases that matter are testable: a `..` that
+  escapes every allowed root, a symlink from `~/Documents` into `~/.ssh`, a key-shaped filename in a
+  folder that is otherwise fine. All three are asserted in `ReadRequestTests`.
+- **The deny-list is matched against the resolved path**, not the typed one, and as whole directory
+  fragments rather than components — `~/.config/gcloud` has no single component that is on any list,
+  which is exactly how a component check would have let it through.
+- **24 KB is sliced, not refused.** The first probe run refused `context.md` outright, and that is
+  the same as refusing the question: a build log's failure is at the *bottom*. So logs, `.out`,
+  `.txt` and `.csv` give up their tail and everything else its head, and the block handed to the
+  model says which slice it is looking at — an unlabelled excerpt invites an answer that confidently
+  describes half a file.
+- **A probe, not a code review.** `--probe-read <path>…` runs the real read path and logs the
+  verdict, because the last feature that looked correct in review failed on its first byte read. On
+  the user's Mac it read `~/.zshrc` (811 bytes) and `README.md` (5,172), sliced `context.md` to the
+  cap, refused `/etc/hosts` as outside the roots, refused a credential store before touching disk,
+  and — after the first run exposed the wording — says "that is a folder, not a file" instead of
+  claiming the file is missing.
+
+411/411 tests pass across 23 suites.
+
 ## Where it stands, and what's next
 
 

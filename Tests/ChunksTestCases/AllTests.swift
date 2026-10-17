@@ -19,6 +19,7 @@ public func runAllChunksTests() -> Bool {
     NotchGeometryTests.register()
     PanelShortcutTests.register()
     CircleShortcutTests.register()
+    ReadRequestTests.register()
     ActionTests.register()
     SpeechVoiceTests.register()
     SpeechEngineChoiceTests.register()

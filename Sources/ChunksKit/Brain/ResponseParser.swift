@@ -109,6 +109,9 @@ public enum ReplyEvent: Equatable, Sendable {
     /// The model is asking to act on a control. A proposal only — `PolicyGate` decides
     /// whether it happens, and the user says yes.
     case act(ActionRequest)
+    /// The model wants a file read. Refused or granted by `ReadRequest`'s policy before anything
+    /// touches the disk, and the contents come back as context for the next turn.
+    case fileRead(ReadRequest)
     /// The model is asking for a tool to run: an app opened, the volume changed. Also a
     /// proposal only, and it goes through the same one-question gate as `.act`.
     ///
@@ -134,7 +137,8 @@ public final class ResponseParser {
         let start: String        // literal that opens it
         let end: String?         // literal that closes it, nil if self-closing (e.g. [POINT:…])
         let kind: Kind
-        enum Kind { case say, memory, note, point, act, type, scroll, tool, summary, doneTitle, nextActions, continuation }
+        enum Kind { case say, memory, note, point, act, type, scroll, tool, summary,
+                   doneTitle, nextActions, continuation, read }
     }
 
     private static let constructs: [Construct] = [
@@ -166,6 +170,11 @@ public final class ResponseParser {
         // Not `<NEXT>`, which would be a prefix of `<NEXT_ACTIONS>` and get eaten by whichever
         // construct is tried first.
         Construct(start: "<CONTINUE>", end: "</CONTINUE>", kind: .continuation),
+        // A file the model needs in front of it to answer at all: `[READ:~/Downloads/build.log|why
+        // did it fail]`. Its own tag rather than a `[DO:]` because reading is not an act on the
+        // user's behalf — it changes nothing on screen — and because the answer comes back in the
+        // *next* turn, with the contents attached, which no other construct does.
+        Construct(start: "[READ:", end: "]", kind: .read),
     ]
 
     private var buffer = ""
@@ -223,6 +232,14 @@ public final class ResponseParser {
                 if !actions.isEmpty { events.append(.nextActions(actions)) }
             case .continuation:
                 if let line = ResponseParser.singleLine(hit.inner) { events.append(.continuation(line)) }
+            case .read:
+                if let request = ReadRequest.parse(hit.inner ?? "") {
+                    events.append(.fileRead(request))
+                } else {
+                    // Fail open, as every other tag does: a malformed READ shown as text beats a
+                    // silent nothing, which the user reads as the question being ignored.
+                    events.append(.text(String(buffer[hit.range])))
+                }
             case .point:
                 let inner = hit.inner ?? ""
                 if ResponseParser.isNoPoint(inner) {

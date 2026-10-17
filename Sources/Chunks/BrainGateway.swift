@@ -41,6 +41,10 @@ enum BrainError: Error, CustomStringConvertible {
     /// between trying the next one and giving up.
     case localModelWasSilent(String)
     case keychain(OSStatus)
+    /// The chain spent its whole budget without an answer. Kept separate from a model failure
+    /// because the honest statement differs: nothing refused, everything was slow, and Chunks
+    /// stopped deliberately rather than making him wait out the rest of the list.
+    case turnBudgetExceeded(used: Double, models: Int)
 
     var description: String {
         switch self {
@@ -63,6 +67,9 @@ enum BrainError: Error, CustomStringConvertible {
         case .keychain(let status):
             let detail = SecCopyErrorMessageString(status, nil) as String? ?? "status \(status)"
             return "Could not read the API key from the Keychain: \(detail)."
+        case .turnBudgetExceeded(let used, let models):
+            return "The model gave nothing in \(Int(used))s across \(models) attempt"
+                + "\(models == 1 ? "" : "s"). Ask again in a moment, or switch to a model on this Mac."
         }
     }
 }
@@ -97,6 +104,10 @@ final class BrainGateway {
         rateLimiters[modelID] = fresh
         return fresh
     }
+
+    /// Wall-clock ceiling for walking the whole fallback chain. A healthy free-tier turn on this
+    /// account measures 6.6–12.7s, so this only ever fires on the pathological case.
+    static let turnBudgetSeconds: Double = 60
 
     init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -161,6 +172,17 @@ final class BrainGateway {
             + " · text \(userPrompt.count + systemPrompt.count) chars")
         modelLoop: for (index, candidate) in chain.enumerated() {
             attempts = index + 1
+            // Stop before the wait outruns the person waiting. Measured 2026-10-15: a turn spent
+            // 281s because one model was allowed to run its full timeout three times, and answered
+            // in the last 6 of them. Anything still untried at the budget is a model that was not
+            // going to reply in time either, and an honest failure at 60s beats an answer he has
+            // walked away from.
+            let spentSoFar = Date().timeIntervalSince(chainStarted)
+            if index > 0, spentSoFar > Self.turnBudgetSeconds {
+                Log.write("turn: budget spent after \(String(format: "%.0f", spentSoFar))s — "
+                    + "\(chain.count - index) model(s) left untried")
+                throw BrainError.turnBudgetExceeded(used: spentSoFar, models: index)
+            }
             let attemptStarted = Date()
             for attempt in 0..<3 {
                 // Stay under the free tier's per-model cap rather than walking into it.
@@ -478,7 +500,12 @@ final class BrainGateway {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue(GeminiRequestBuilder.apiRevision, forHTTPHeaderField: "Api-Revision")
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
-        urlRequest.timeoutInterval = 90
+        // 20, not the 90 this line used to carry. `URLRequest.timeoutInterval` *overrides* the
+        // session's `timeoutIntervalForRequest`, so the idle bound reasoned out in `init()` — "at
+        // 90s a contended model could hold the user silent for a minute and a half" — was silently
+        // replaced by exactly that 90s on every Gemini request. It is why one model was able to
+        // stall three times for 90s inside a single turn.
+        urlRequest.timeoutInterval = 20
 
         let (bytes, response) = try await session.bytes(for: urlRequest)
         guard let http = response as? HTTPURLResponse else {
@@ -561,7 +588,9 @@ final class BrainGateway {
             return .network(detail: brainError.description)
         case .localModelWasSilent:
             return .unknown(statusCode: nil, detail: brainError.description)
-        case .missingKey, .noCapableModel, .keychain:
+        case .missingKey, .noCapableModel, .keychain, .turnBudgetExceeded:
+            // Everything here is terminal: `.unauthorised` is the failure the policy answers with
+            // `.fail`, and a spent budget must not start walking the chain again.
             return .unauthorised
         }
     }

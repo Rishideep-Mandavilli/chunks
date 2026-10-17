@@ -117,9 +117,12 @@ bug.
 - **Never write an API key to a file, a plist, or the repo.** The login Keychain only.
   Both keys pasted into earlier conversation are exposed and should be rotated.
 - Commands: `swift build`, `swift run chunks-test` (**not** `swift test`).
-- `swift build -c release && ./scripts/make-app.sh release` then `open build/Chunks.app`.
+- `swift build -c release && ./scripts/make-app.sh release` then `./scripts/install.sh`, and run
+  `open ~/Applications/Chunks.app`. The staged bundle lives in `~/.chunks-build/Chunks.app` —
+  outside the repo, because this folder is iCloud-synced and rewrote `build/Chunks.app` in place
+  into `Chunks 2.app` … `Chunks 7.app`, seven extra `app.chunks.mac` registrations in the switcher.
 - **Log:** `~/Library/Logs/Chunks/chunks.log` (override with `$CHUNKS_LOG`).
-- **Diagnostics:** `build/Chunks.app/Contents/MacOS/Chunks --self-test` runs one real turn
+- **Diagnostics:** `~/.chunks-build/Chunks.app/Contents/MacOS/Chunks --self-test` runs one real turn
   and prints the raw reply, the parse, the point resolution and timings.
   `--ask "question"` runs a turn in the real GUI.
 - To see what the app draws, capture the screen and read the image. Several bugs were
@@ -282,7 +285,7 @@ converter and 26.0 for the analyzer, with a raw-`AnalyzerInput(buffer:)` fallbac
 **3. Exec'ing the bundle binary from an agent shell aborts with a TCC privacy violation.** The
 crash names `NSSpeechRecognitionUsageDescription` even though the key is present and the bundle
 verifies, because TCC attributes the request to the *responsible process* — the shell that spawned
-it. Run bundle diagnostics as their own app: `open -n -W build/Chunks.app --args --probe-stt 5`
+it. Run bundle diagnostics as their own app: `open -n -W ~/.chunks-build/Chunks.app --args --probe-stt 5`
 and read `~/Library/Logs/Chunks/chunks.log`. This is invariant 7's lesson restated for the
 microphone.
 
@@ -305,7 +308,7 @@ terminal (`defaults write app.chunks.mac app.chunks.sttEngine dictation`); the u
 decided it, and the default moved. See the verdict below for what that measurement actually said.
 
 **6. `make-app.sh` does not compile, and `swift run chunks-test` does not build the app target.**
-The script assembles `build/Chunks.app` from `.build/debug/chunks` (or `.build/release` with the
+The script assembles `~/.chunks-build/Chunks.app` from `.build/debug/chunks` (or `.build/release` with the
 `release` argument) and exits 0 whether or not that binary is current. So the sequence must be
 `swift build && ./scripts/make-app.sh` — skipping the build ships yesterday's binary *silently*,
 and the app then behaves like the change was never made. This cost a full detour on 2026-10-09:
@@ -523,7 +526,182 @@ farzaa/clicky under MIT. Import it, read how it dismisses itself, and apply the 
 `AnnotationShape`, `RegionResolver` and `CaptureEngine.composited(with:shapes:)` all still exist
 and stay tested, so only the surface is missing.
 
+**Done 2026-10-12, as an import.** `Sources/Chunks/Annotate/AnnotationOverlay.swift` is upstream's
+`AnnotationOverlayWindow` + `AnnotationCanvas`, unchanged in the part that matters — a
+`.nonactivatingPanel` that never becomes key — plus three exits upstream did not have: right-click
+anywhere, `idleLimitSeconds = 30` without input, and `absoluteLimitSeconds = 120`. It is wired to
+⌃⌥⌘D (`CircleShortcut`) through the existing event tap. **No live turn has used it yet**: the tap
+has logged every keystroke since, all with `flags=0x100` and `circle=false`, so the chord itself has
+still never been seen arriving.
+
+## 2026-10-12: eight Chunks in the app switcher
+
+The ⌘Tab list showed `Chunks`, `Chunks`, `Chunks 2` … `Chunks 7`. Not eight running processes —
+eight registered bundles, all with `CFBundleIdentifier = app.chunks.mac`:
+
+- `/Users/rishideep/Applications/Chunks.app` (the one install path, by design)
+- `<repo>/build/Chunks.app` (`make-app.sh` staging)
+- `<repo>/build/Chunks 2.app` … `Chunks 7.app`
+
+The numbered ones are iCloud conflict copies, and the mechanism is the one this project already
+knows: the repo lives under `~/Documents`, which Desktop & Documents syncs, and `make-app.sh` does
+`rm -rf` + rewrite of a whole `.app` in place. The daemon saved each earlier revision as a sibling
+bundle. Six of them, timestamped 03:28–03:51 on 2026-10-09 — one night of rebuilds.
+
+Fixed at the root, not by hand:
+
+1. **Staging left the synced folder.** `make-app.sh` and `install.sh` now use
+   `${CHUNKS_STAGING_DIR:-$HOME/.chunks-build}/Chunks.app`, so a rebuild can no longer mint a
+   conflict copy. `build/` is gone from the repo.
+2. **Rollback copies are pruned.** `install.sh` moves the previous install aside on every run and
+   never deleted one: 47 `Chunks.app.previous-*` bundles, ~270 MB. It now keeps the newest only.
+3. **One instance, verified.** `open -n` a second copy and exactly one `MacOS/Chunks` process
+   survives; the loser logs `chunks: already running as pid N … this copy is standing down`. The
+   guard needed `Log.flush()` before `NSApp.terminate` — the same lost-last-line trap as the
+   `exit()` paths, and it bit again in exactly the place where the proof is the log line.
+
+Two things worth writing down because they cost a wrong turn each:
+
+- **`lsregister -u` names a path, not a bundle.** Un-registering `build/Chunks 2.app` and then
+  moving that folder to the Trash re-registered it as `~/.Trash/chunks-conflict-2.app`. A bundle
+  has to be gone *and* un-registered, or the dump will keep listing it from wherever it landed.
+- **`LSUIElement` does not guarantee absence from the switcher.** An accessory app that calls
+  `NSApp.activate` — which the cursor overlay does — can still appear. So a duplicate registration
+  is visible, not merely theoretical.
+
+## 2026-10-12: circle-to-explain opened and took no input at all
+
+The chord was finally seen firing (`event tap: circle chord matched` → `annotate: overlay open`), and
+the user's drawing produced nothing. The log answered *why* in one line: a 30 s session ended in
+`dismissed — no input for 30s` with **zero** `annotate: mouse down` lines and zero lines from an
+`NSEvent.addLocalMonitorForEvents` that was watching every window of the app. Not one mouse or key
+event reached Chunks. That rules out the stroke colour, `acceptsFirstMouse` and the hint placement —
+the window was simply outside the input path.
+
+What the parallel audit convicted, in order, each with the evidence that made it the verdict:
+
+1. **No `collectionBehavior`.** The annotation panel was the *only* window in the app without
+   `[.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]` — the buddy overlay, the menu panel, the
+   notch card and the response overlay all set it. In the user's own session the on-screen list read
+   `Chunks#1000/892 → Qoder#0/602`: the buddy (which has it) was there, the annotation panel (which
+   does not) was not, while AppKit reported `isVisible == true`. `.optionOnScreenOnly` is per-Space,
+   so this is exactly the signature of a window that never joined the Space.
+2. **A plain borderless `NSPanel` cannot become key.** `key=false` for the whole session, so
+   `AnnotationCanvas.keyDown` — Escape, Return, Space — was unreachable code. The repo already had
+   the answer twice over: `MenuBarPanelManager` and `NotchPanelManager` each hold a private
+   three-line `KeyablePanel`, and those surfaces take clicks today. Now `AnnotationPanel` does the
+   same, with `isFloatingPanel = true` and `makeKeyAndOrderFront(nil)` *then*
+   `orderFrontRegardless(nil)` — the menu panel's exact order. Being key is not being active:
+   `.nonactivatingPanel` stays, and `NSApp.activate` is still nowhere in the file.
+3. **The probe ran AppKit off the main thread.** `App.init` is not on main, and
+   `MainActor.assumeIsolated` there is a lie: every probe line logged `[bg]`, and a window built
+   off-main never enters the window server's list — so the probe was reporting its own bug.
+   `AnnotationSafetyProbe.start()` now hops to main.
+4. **`DisplayInfo.frame` is `CGDisplayBounds`** (top-left) and was fed straight into
+   `NSPanel(contentRect:)` (bottom-left). Invisible on the display at (0,0), wrong everywhere else —
+   invariant 1 again. Now `appKitFrame()` matches `NSScreen.deviceDescription["NSScreenNumber"]`
+   against `display.displayID` and refuses with a log line when no screen matches.
+
+**A probe launched by an agent shell cannot measure on-screen state.** After the thread fix, the
+probe's own window list still read `loginwindow#2004 → loginwindow#2001 → Qoder#0`, with
+`asleep=false active=true` — that process is not in the user's Aqua session, so *its* answer about
+who covers the screen is worthless. Verdicts about the overlay's input path must come from the app
+the user launched. Related: the probe printed `FAIL` unconditionally after its absolute limit,
+whether or not the overlay had already dismissed itself; it now exits through `onDismissed`.
+
+Every window-list line now starts with `display N asleep=… active=… screens=…`, because an asleep
+display already produced one false reading here (same class of lie as a sleeping display capturing
+black).
+
+## 2026-10-14: circle-to-explain shipped on Apple's selector; our window parked
+
+Two more sessions on the real machine, and the two measurements finally contradict each other in a way
+that names the culprit:
+
+```
+18:18:27  frontmost over that point is Chunks#1000/43 — the overlay takes clicks: false
+18:18:52  annotate: click watch — leftMouseDown → window #4294967296 inCanvas=false
+```
+
+At `.screenSaver` the annotation panel was frontmost, was key, received `keyDown` (Escape closed it —
+the first input this surface ever took) and received **no mouse event at all**. At `.statusBar` the
+mouse event *did* reach the app and was routed to a window that is not the canvas — the cursor buddy's
+full-screen `OverlayWindow`, which sits at level 1000 and is therefore above the panel at 25. Same
+gesture, two different failures, both inside Chunks' own window stack.
+
+So the feature stopped depending on that stack. `Sources/Chunks/Annotate/RegionSelector.swift` runs
+`/usr/sbin/screencapture -x -i`, the crosshair macOS draws for ⌘⇧4, and hands the PNG straight to
+`pendingRegionCapture` → `ask(text:)`. The system owns the pointer, so no level, ordering,
+`collectionBehavior` or first-mouse question applies; nothing of ours covers the screen afterwards;
+and Escape in Apple's UI cancels. A file path rather than `-c`, because the user's clipboard is his,
+not a transport.
+
+**What was given up:** a freehand circle, arrow or box — the answer is a rectangle. `AnnotationShape`,
+`RegionResolver` and `CaptureEngine.composited(with:shapes:)` stay and stay tested; `AnnotationOverlay`
+stays in the tree but is **parked** — no chord, menu item or gesture launches it, and
+`--annotate-safety` is its only door. `explainCircledRegion` was deleted rather than left stranded,
+and `activeOverlay` became `isSelectingRegion` (one selection at a time; a second chord is ignored
+rather than queueing a second question).
+
+**The lesson, since it cost eleven rounds:** the diagnostics that finally worked were the ones that
+described *what the window server sees* — who is frontmost over the point, which window an event was
+routed to — not the ones that described what the code intended. Two earlier fixes (`acceptsFirstMouse`,
+the stroke colour) were plausible readings of the source and were both wrong.
+
+## 2026-10-17: the overlay took the mouse, and two rules came out of it
+
+The user confirmed circle-to-explain works on the live screen. What unlocked it was not a Chunks
+insight but an import: Capso's `CaptureOverlayWindow` (MIT, same `LSUIElement` app type, same
+feature) sets **`_setPreventsActivation:` to true**, `.transient`, `isMovable = false`,
+`canBecomeKey` true with `canBecomeMain` false, and shows with `orderFrontRegardless()` **then**
+`makeKey()`. The rule that explains eleven rounds of failure in one line: **keyboard follows
+key-window status, mouse follows app activation.** Every measurement was consistent with that and
+none of them named it — the panel was key, was frontmost over the point, took Escape, and could not
+take a click, at three different window levels.
+
+Two follow-ups from the same conversation, both his calls:
+
+- **The surface announces itself.** A transparent full-screen window is invisible, so "is it even
+  listening?" had no answer. The canvas now fills its bounds with 18% black while drawing mode is
+  on, and the hint strip moved to notch depth + 22 pt so it clears the menu-bar row as well as the
+  cutout. The dim cannot reach the screenshot: the capture happens after the surface closes.
+- **Click-away is per-phase.** It closes `.result`, `.failed` and `.status`; it is ignored during
+  `.thinking` and `.listening`, and says so in the log. This is not the 2026-10-09 revert coming
+  back — the answer still closes on click, so a card can never become furniture; only the *wait* is
+  protected, because it is the sole proof anything is happening.
+
+Also fixed the same day, after an 8-minute turn: `URLRequest.timeoutInterval` **overrides**
+`URLSessionConfiguration.timeoutIntervalForRequest`, so the request's 90s had silently cancelled the
+session's 20s idle bound on every Gemini call — and the retry policy answered a timeout by retrying
+the same model three times. 271 of that turn's 281 seconds were one silent model being asked three
+times to speak. Both are in invariant 6 now.
+
+## 2026-10-17: one spoken request now runs several turns
+
+"Open whatsapp, search for dad, and message him HI" took three commands, because the reply protocol
+said **"one act tag … last"** while the executor was built for a plan. Worse, the prompt contradicted
+itself: `actingRules` already told the model to "emit your tags in order and Chunks runs them as a
+plan". So the model obeyed the stricter line and stopped after the open.
+
+Allowing several tags would not have fixed it either. `[ACT:x,y:label]` needs a coordinate, and
+WhatsApp's search box is not in the screenshot the model was shown — it does not exist until the app
+opens. The only honest fix was a loop:
+
+- New tag, `<CONTINUE>what still has to happen</CONTINUE>`, parsed into `ReplyEvent.continuation`
+  and collected on `AnswerStreamer.continuation`. Consumed, never shown, never spoken.
+- `continuePlanIfNeeded` runs another full turn — fresh capture, same pipeline, same gates — after
+  the previous turn's **speech has finished**. Continuing at the end of the reply instead cut the
+  voice off mid-sentence.
+- Bounded by `maxPlanRounds = 4`, reset by anything the user actually said, and taken only when the
+  step really happened: a stopped plan or an unanswered card does not continue, because the next
+  step would be aimed at a screen that never arrived.
+- Deliberately not `<NEXT>`: it is a prefix of `<NEXT_ACTIONS>`, and whichever construct is tried
+  first eats the other. There is a test that pins both tags surviving one reply.
+
+395/395 tests pass. Not yet watched on the real machine: a spoken three-step request end to end.
+
 ## Where it stands, and what's next
+
 
 
 Verified working on the user's machine: press, launch-and-believe-the-effect, type into WhatsApp's

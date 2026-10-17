@@ -70,8 +70,13 @@ public enum RetryPolicy: Sendable {
             return .fallBackToNextModel
 
         case .network:
-            if attempt >= maxAttemptsPerModel - 1 { return .fallBackToNextModel }
-            return .retrySameModel(afterSeconds: backoff(attempt: attempt, base: 1.0, cap: 8.0))
+            // Switch, do not retry. A network failure here is the idle timeout firing — the
+            // connection was made and no byte arrived — and a model that has already spent 20
+            // seconds saying nothing will not find its voice on a second attempt. Retrying it is
+            // what cost a real turn 271 of its 281 seconds on 2026-10-15: three attempts on
+            // `gemini-3.8-flash`, each allowed to run its full timeout, while the model that
+            // eventually answered needed 6 seconds.
+            return .fallBackToNextModel
 
         case .unauthorised, .badRequest:
             return .fail

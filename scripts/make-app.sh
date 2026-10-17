@@ -12,7 +12,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-debug}"
-APP="build/Chunks.app"
+
+# Staged outside the repo on purpose. This project lives under ~/Documents, which iCloud syncs,
+# and a bundle rewritten in place inside a synced folder gets conflict copies — `Chunks 2.app`,
+# `Chunks 3.app` and so on. Each one is a real `.app` with `CFBundleIdentifier = app.chunks.mac`,
+# so LaunchServices registers it, and seven copies of Chunks ended up in the app switcher next to
+# the one installed app. `install.sh` reads the same path.
+APP="${CHUNKS_STAGING_DIR:-$HOME/.chunks-build}/Chunks.app"
 
 if [ "$CONFIG" = "release" ]; then
   BIN_DIR=".build/release"

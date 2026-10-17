@@ -15,7 +15,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP_SRC="build/Chunks.app"
+APP_SRC="${CHUNKS_STAGING_DIR:-$HOME/.chunks-build}/Chunks.app"
 APP_DEST="$HOME/Applications/Chunks.app"
 
 if [ ! -d "$APP_SRC" ]; then
@@ -67,6 +67,16 @@ if ! codesign --verify --deep --strict "$APP_DEST" >/dev/null 2>&1; then
   echo "warning: the installed bundle does not verify — permissions will not stick" >&2
 fi
 echo "==> installed $APP_DEST"
+
+# Keep exactly one rollback copy. Every install moves the running bundle aside, so without this
+# the folder grows without bound — 47 stale `Chunks.app.previous-*` bundles after eight days,
+# ~270 MB of apps that all look like a Chunks worth keeping to anyone clearing space. The newest
+# is the one the current grants were earned against, which is the only rollback worth having.
+rollback=$(ls -1dt "$APP_DEST".previous-* 2>/dev/null | head -1 || true)
+for previous in "$APP_DEST".previous-*; do
+  [ -e "$previous" ] || continue
+  [ "$previous" = "$rollback" ] || rm -rf "$previous"
+done
 
 # Judge the bundle on disk, not the environment: `make-app.sh` now finds "Chunks Local" by
 # itself, so the honest statement about a build is the one read off its signature.

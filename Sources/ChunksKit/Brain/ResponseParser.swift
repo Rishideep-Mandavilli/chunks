@@ -99,6 +99,13 @@ public enum ReplyEvent: Equatable, Sendable {
     case doneTitle(String)
     /// Follow-up suggestions, rendered as tappable chips.
     case nextActions([String])
+    /// "…and this still has to happen." Emitted when a step of the user's request cannot be aimed
+    /// at the screenshot the model was shown, because the screen that step needs does not exist
+    /// yet — WhatsApp's search box while WhatsApp is still closed. Chunks performs the steps it
+    /// can see, looks at the screen again, and carries on without being asked twice.
+    ///
+    /// One line, and it is never shown or spoken: it is an instruction to the app, not content.
+    case continuation(String)
     /// The model is asking to act on a control. A proposal only — `PolicyGate` decides
     /// whether it happens, and the user says yes.
     case act(ActionRequest)
@@ -127,7 +134,7 @@ public final class ResponseParser {
         let start: String        // literal that opens it
         let end: String?         // literal that closes it, nil if self-closing (e.g. [POINT:…])
         let kind: Kind
-        enum Kind { case say, memory, note, point, act, type, scroll, tool, summary, doneTitle, nextActions }
+        enum Kind { case say, memory, note, point, act, type, scroll, tool, summary, doneTitle, nextActions, continuation }
     }
 
     private static let constructs: [Construct] = [
@@ -156,6 +163,9 @@ public final class ResponseParser {
         Construct(start: "<SUMMARY>",       end: "</SUMMARY>",       kind: .summary),
         Construct(start: "<DONE_TITLE>",    end: "</DONE_TITLE>",    kind: .doneTitle),
         Construct(start: "<NEXT_ACTIONS>",  end: "</NEXT_ACTIONS>",  kind: .nextActions),
+        // Not `<NEXT>`, which would be a prefix of `<NEXT_ACTIONS>` and get eaten by whichever
+        // construct is tried first.
+        Construct(start: "<CONTINUE>", end: "</CONTINUE>", kind: .continuation),
     ]
 
     private var buffer = ""
@@ -211,6 +221,8 @@ public final class ResponseParser {
             case .nextActions:
                 let actions = ResponseParser.parseActions(hit.inner ?? "")
                 if !actions.isEmpty { events.append(.nextActions(actions)) }
+            case .continuation:
+                if let line = ResponseParser.singleLine(hit.inner) { events.append(.continuation(line)) }
             case .point:
                 let inner = hit.inner ?? ""
                 if ResponseParser.isNoPoint(inner) {

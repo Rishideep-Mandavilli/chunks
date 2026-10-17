@@ -54,6 +54,19 @@ public enum RetryPolicyTests {
             expectEqual(RetryPolicy.decide(for: f, attempt: 2), .fallBackToNextModel)
         }
 
+        // A network failure here is the idle timeout firing: the connection was made and no byte
+        // arrived. Asking the same model again is what spent 271 of a real turn's 281 seconds on
+        // 2026-10-15 — three full timeouts on one model, while the next one in the chain answered
+        // the same request in six seconds.
+        test("a model that said nothing is switched away from, not waited on") {
+            for attempt in 0...2 {
+                expectEqual(RetryPolicy.decide(for: .network(detail: "no bytes"),
+                                               attempt: attempt),
+                            .fallBackToNextModel,
+                            "attempt \(attempt) re-waited on a model that had already gone quiet")
+            }
+        }
+
         // The free tier counts five requests a minute *per model*. Backing off on the model
         // that just 429'd means sleeping for eight seconds against a sixty-second window, then
         // hitting the same wall — while the next model in the chain sat there unused.

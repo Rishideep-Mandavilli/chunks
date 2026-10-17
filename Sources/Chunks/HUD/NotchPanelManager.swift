@@ -199,18 +199,28 @@ final class NotchPanelManager {
     }
 
     private func dismissForClickOutside() {
-        // A click in the menu-bar row next to the notch belongs to the system's own extras,
-        // so dismissal is fine; nothing here needs the onboarding guard the menu panel uses,
-        // because the HUD is never the surface that grants permissions.
+        // A click in the menu-bar row next to the notch belongs to the system's own extras, so
+        // dismissal is fine; nothing here needs the onboarding guard the menu panel uses, because
+        // the HUD is never the surface that grants permissions.
         //
-        // This stays dismiss-everything, and it is NOT because a click ought to erase a reply.
-        // Making `.result` cards click-proof was tried on 2026-10-09 and is worse: the click
-        // outside is currently the ONLY way the user can close the card — there is no close
-        // button, no timeout and no key for it — so protecting it turned every answer into
-        // furniture fixed under the notch until the next press. Keeping a reply on screen needs
-        // an affordance that dismisses it on purpose, not the removal of the only one that exists.
-        model.dismiss(reason: "click outside the card")
-        hide()
+        // Click-away stays the way to close a card that has finished saying something. Making
+        // `.result` click-proof was tried on 2026-10-09 and is worse: the click outside is the ONLY
+        // way to close the card — no close button, no timeout, no key — so protecting it turned
+        // every answer into furniture fixed under the notch.
+        //
+        // A *waiting* card is the opposite case. "Thinking" is the only proof Chunks is still
+        // working, and a stray click that erased it left the user with no card to receive the
+        // reply in and no way to tell whether anything was coming. So the wait survives a click
+        // outside; the answer, the error and the hint all still close.
+        switch model.phase {
+        case .result, .status, .failed:
+            model.dismiss(reason: "click outside the card")
+            hide()
+        case .thinking, .listening:
+            Log.write("hud: click outside ignored while \(model.phase) — the wait stays on screen")
+        case .idle:
+            break
+        }
     }
 
     private func removeClickOutsideMonitor() {

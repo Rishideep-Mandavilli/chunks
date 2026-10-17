@@ -128,7 +128,8 @@ swift run chunks-test             # 142 tests (NOT `swift test`)
 
 swift build -c release            # then assemble the bundle
 ./scripts/make-app.sh release
-open build/Chunks.app
+./scripts/install.sh
+open ~/Applications/Chunks.app
 ```
 
 Requires Xcode. Then grant Screen Recording when prompted, and **quit and reopen Chunks**
@@ -137,7 +138,7 @@ Requires Xcode. Then grant Screen Recording when prompted, and **quit and reopen
 Put a Gemini API key in via the menu (stored in the login Keychain, never in a plist), or:
 
 ```bash
-CHUNKS_GEMINI_KEY=... open build/Chunks.app
+CHUNKS_GEMINI_KEY=... open ~/Applications/Chunks.app
 ```
 
 See `CHUNKS-BUILD-PLAN.md` §6 for the full phase breakdown.

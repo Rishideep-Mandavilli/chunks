@@ -22,6 +22,10 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// monitor would need its own permission story and could desync with this one.
     let panelTogglePublisher = PassthroughSubject<Void, Never>()
 
+    /// Fires on ⌃⌥⌘D. Sent from the same tap, and toggles the overlay: pressing the chord a
+    /// second time is an exit that works even when the window never got key focus.
+    let circleTogglePublisher = PassthroughSubject<Void, Never>()
+
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
     /// Mutated exclusively from the CGEvent tap callback, which runs on
@@ -33,6 +37,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// Bumped by the tap callback for the first few events, then stops. Main-thread only,
     /// for the same reason as the flag above.
     private var eventsSeenLogged = 0
+
+    /// The first dozen key presses, unconditionally. Gating this on "all three modifiers are
+    /// present" was my first attempt and it is useless for the question it was written for: if the
+    /// assumption about the modifier bits is what's wrong, the diagnostic stays as silent as the
+    /// matcher. This prints what the tap actually received. Main-thread only, like the counter
+    /// above.
+    private var keyDownsLogged = 0
 
     deinit {
         stop()
@@ -146,9 +157,29 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         // Matched against the tap's own CGEventFlags, because that is what the pure matcher
         // consumes; converting to NSEvent.ModifierFlags first would add a second mapping to
         // get wrong, and the two raw value sets differ.
-        if eventType == .keyDown, PanelShortcut.matches(keyCode: eventKeyCode, flags: event.flags) {
+        //
+        // A held key auto-repeats, and a toggle that answers every repeat flickers: the
+        // 2026-10-12 19:43:35 log shows one circle chord as `overlay open` immediately followed
+        // by `dismissed — chord pressed again` inside the same second. Only the press itself is
+        // a toggle.
+        let isAutoRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        if eventType == .keyDown, !isAutoRepeat,
+           PanelShortcut.matches(keyCode: eventKeyCode, flags: event.flags) {
             Log.write("event tap: panel chord matched")
             panelTogglePublisher.send(())
+        }
+        if eventType == .keyDown, !isAutoRepeat,
+           CircleShortcut.matches(keyCode: eventKeyCode, flags: event.flags) {
+            Log.write("event tap: circle chord matched")
+            circleTogglePublisher.send(())
+        }
+
+        if eventType == .keyDown, keyDownsLogged < 12 {
+            keyDownsLogged += 1
+            Log.write("event tap: keyDown keyCode=\(eventKeyCode) "
+                + "flags=0x\(String(event.flags.rawValue, radix: 16)) "
+                + "panel=\(PanelShortcut.matches(keyCode: eventKeyCode, flags: event.flags)) "
+                + "circle=\(CircleShortcut.matches(keyCode: eventKeyCode, flags: event.flags))")
         }
 
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(

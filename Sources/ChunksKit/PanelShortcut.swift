@@ -15,9 +15,9 @@ public enum PanelShortcut {
     ///
     /// A superset of the hold-to-talk chord (⌃⌥), so the two can never fire together: hold
     /// ⌃⌥ and Chunks listens, add ⌘ and press C and the panel moves.
-    public static let requiredFlags: CGEventFlags = [.maskControl, .maskAlternate, .maskCommand]
+    public static let requiredFlags: CGEventFlags = [.maskControl, .maskCommand]
 
-    public static let displayText = "ctrl + option + cmd + c"
+    public static let displayText = "ctrl + cmd + c"
 
     /// Exact match, not `contains`.
     ///

@@ -36,6 +36,14 @@ struct leanring_buddyApp: App {
         if STTProbe.isRequested {
             STTProbe.run()
         }
+        if AnnotationSafetyProbe.isRequested {
+            // Hopped to the main thread, not `assumeIsolated`. This `init` is not guaranteed to run
+            // on main and on 2026-10-12 it did not: every probe line was logged `[bg]`, meaning the
+            // overlay was built on a background thread. A window created off-main never enters the
+            // window server's on-screen list, so the probe was measuring its own bug and reporting
+            // the overlay as unreachable by clicks.
+            AnnotationSafetyProbe.start()
+        }
         if ScreenShot.isRequested {
             ScreenShot.run()
         }
@@ -79,6 +87,27 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         Log.write("bundle: \(Bundle.main.bundlePath) "
                   + "id=\(Bundle.main.bundleIdentifier ?? "none") "
                   + "pid=\(ProcessInfo.processInfo.processIdentifier)")
+        // One instance, always. Two Chunks processes is not cosmetic: the event tap that decides
+        // ⌃⌥ and ⌃⌥⌘D belongs to whichever process created it first, so the copy whose menu-bar
+        // icon you can see may not be the copy hearing your keyboard. That is what "the shortcut
+        // does nothing at all" turned out to be worth protecting against — the staged bundle
+        // (`~/.chunks-build`) and the installed one (`~/Applications`) are both `app.chunks.mac`,
+        // so refuse to run twice instead of leaving the ambiguity to be debugged from a log.
+        let alreadyRunning = NSWorkspace.shared.runningApplications.filter {
+            $0.bundleIdentifier == Bundle.main.bundleIdentifier
+                && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        }
+        if let existing = alreadyRunning.first {
+            Log.write("chunks: already running as pid \(existing.processIdentifier) from "
+                + "\(existing.bundleURL?.path ?? "an unknown bundle") — this copy is standing down")
+            // Terminating loses whatever the async writer has not reached the file yet, and the
+            // line lost is precisely the one that proves a second copy refused to run — checked
+            // 2026-10-12: the guard worked, the stand-down was the last line missing.
+            Log.flush()
+            NSApp.terminate(nil)
+            return
+        }
+
         print("🎯 Chunks: Starting...")
         print("🎯 Chunks: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 

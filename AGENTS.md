@@ -143,10 +143,19 @@ map almost 1:1 onto `#expect(...)`.
    `503 high demand` on roughly half of requests against the newest flash models, and caps at
    ~5 req/min **per model**. So `503` backs off and retries the *same* model (it clears in
    seconds), while `429` switches to the *next* model immediately: a minute-long window will not
-   clear inside a turn, and every other model has its own untouched budget. One `RateLimiter` per
+   clear inside a turn, and every other model has its own untouched budget. **A `network` failure
+   switches too**: here that means the idle timeout fired — connected, said nothing — and asking it
+   again is what spent 271 of a real turn's 281 seconds on 2026-10-15 (three full timeouts on
+   `gemini-3.8-flash` while the next model answered in 6s). One `RateLimiter` per
    model id, never a shared bucket — shared, a contended model throttled the healthy ones behind
    it. Keep the chain fast-first: `gemini-3.1-pro-preview` measured 55s and still came back
-   contended, so Pro is the last escape hatch, not the second slot. `BrainGateway` logs the
+   contended, so Pro is the last escape hatch, not the second slot.
+   **The two timeouts have to agree.** `URLRequest.timeoutInterval` *overrides*
+   `URLSessionConfiguration.timeoutIntervalForRequest`, so the request's 90s silently undid the
+   session's 20s idle bound on every call — which is how one model was allowed to stall for a
+   minute and a half at a time. Both are 20s now, and the whole chain carries
+   `BrainGateway.turnBudgetSeconds` (60s), after which the turn fails with an honest message
+   instead of walking the rest of the list. `BrainGateway` logs the
    chain, each per-model failure with the decision taken, and the model that served with its
    elapsed seconds. A turn that fails on 503 is a bug, not bad luck — and so is one that takes
    a minute. Measured on the same screenshot: 72.0s before these rules, 6.6s after.
@@ -154,7 +163,7 @@ map almost 1:1 onto `#expect(...)`.
 7. **A listen-only keyboard tap needs Input Monitoring, not just Accessibility.**
    `CGEvent.tapCreate` for key events is gated by `kTCCServiceListenEvent`. With Accessibility
    ticked and Input Monitoring missing, the tap is created without error and receives *nothing*
-   — so ⌃⌥ push-to-talk and ⌃⌥⌘C are both dead while every permission row reads "Granted".
+   — so ⌃⌥ push-to-talk and ⌃⌘C are both dead while every permission row reads "Granted".
    Check `CGPreflightListenEventAccess()`, and never let a tap failure reach only `print()`:
    output from an app started by `open` is unreadable. It goes through `Log.write`.
 
@@ -293,8 +302,21 @@ map almost 1:1 onto `#expect(...)`.
    against the *live* tree, refused by `PolicyGate`, and with asking on, asked about one at a time
    as "… (step 2 of 5)". A step that does not happen **stops the plan** and says how many steps did
    not run, because the steps after it were aimed at a screen the failed step would have changed;
-   a "not now" drops the rest. Half a second between steps is what let a real chat window open
-   before the type step looked for its field.
+   a "not now" drops the rest. One second between steps (`stepSettleDelay`) is what let a real chat
+   window open before the type step looked for its field — half a second survived one launch and
+   lost the race with WhatsApp's, resolving a control against a window still animating in.
+
+   **A step whose screen does not exist yet is continued, not guessed.** "open whatsapp, search for
+   dad, and message him HI" cannot be aimed at one screenshot — the search box appears only after
+   the open, and Send only after something is typed. So a reply may end with
+   `<CONTINUE>what still has to happen</CONTINUE>`, and `continuePlanIfNeeded` runs another whole
+   turn against a fresh capture once the previous one has *finished speaking* (continuing earlier
+   talks over the answer the user is still hearing). Bounded by `CompanionManager.maxPlanRounds`
+   (4), reset by any request from the user, and taken **only when the step actually happened** — a
+   stopped plan, or a card still waiting for an answer, does not continue, because pressing on from
+   a screen that is not the one the plan expected is how an assistant types into the wrong window.
+   The tag is consumed: it is an instruction to the app, and it must never reach the card or the
+   voice. With asking switched on, the first card ends the round and the user says the word.
 
    `[TYPE:x,y:label|text]` is the same invariant with the cursor instead of the pointer, and it is
    the one act whose target is *not* a pressable control: `AXTDriver.typeTarget` looks for an
@@ -353,7 +375,7 @@ Done and tested:
 | Secret rejection | `Memory/SecretSweeper.swift` | 12 provider prefixes + entropy heuristic |
 | Memory store | `Memory/MemoryStore.swift` | Plain markdown, 2 KB cap, never truncated |
 | Memory write-back | `Memory/MemoryReport.swift` | `<MEMORY>` proposal → store → one-line footnote on the card |
-| Reply protocol | `Brain/ResponseParser.swift` | Streaming `[POINT]` / `[ACT]` / `[TYPE]` / `[DO]` / `<SAY>` / `<MEMORY>` / `<NOTE>` / `<SUMMARY>` / `<DONE_TITLE>` / `<NEXT_ACTIONS>` |
+| Reply protocol | `Brain/ResponseParser.swift` | Streaming `[POINT]` / `[ACT]` / `[TYPE]` / `[DO]` / `<SAY>` / `<MEMORY>` / `<NOTE>` / `<SUMMARY>` / `<DONE_TITLE>` / `<NEXT_ACTIONS>` / `<CONTINUE>` |
 | Provider registry | `Brain/ProviderRegistry.swift` | Capability profiles, `visionCapable: Bool?` |
 | Retry + rate limit | `Brain/RetryPolicy.swift` | Backoff with jitter, token bucket |
 | Request/SSE | `Brain/GeminiTransport.swift` | Pure builders; `store:false` enforced by test |
@@ -369,7 +391,7 @@ Done and tested:
 | Tool runner | `Action/ToolRunner.swift` | `NSWorkspace` launch from a fixed directory list; a URL handed to the named browser or the default one; CoreAudio output volume. Performs only what the gate released |
 
 Running: menu bar item, ⌃⌥ **tap-to-arm** dictation (a tap arms the microphone and a second tap
-sends it; holding past 350 ms still behaves as push-to-talk — `TalkArmer.swift`), ⌃⌥⌘C to open and
+sends it; holding past 350 ms still behaves as push-to-talk — `TalkArmer.swift`), ⌃⌘C to open and
 close the panel (`PanelShortcut.swift`, matched on the event tap's own `CGEventFlags`), whole-screen
 turns, cursor move to a pointed-at control, an API-key field in the panel that writes to the Keychain,
 and the **notch HUD** (`Sources/Chunks/HUD/`) — a non-activating card
@@ -441,14 +463,27 @@ the card, spoken, because there is no question to answer.
   happen). What has not been watched is a plan surviving contact with a live app: every step is
   re-resolved against the tree as it is *then*, and the step whose label described a control that
   only exists after the previous step is the one likely to fail first.
-- Chunks drawing on the screen (HeyClicky's circles and arrows as an *output*) is not built.
-  **And the surface this used to call the short path no longer exists:** the interactive
-  `AnnotationOverlayWindow` was deleted with the clicky vendoring (`10bd07e`), so
-  *circle-to-explain is currently dead* — `AnnotationShape`, `RegionResolver` and
-  `CaptureEngine.composited(with:shapes:)` all survive and stay tested, but nothing in the shell
-  produces a shape, and the only caller passes `[]`. Output drawing therefore needs a surface
-  rebuilt first; it is not a reuse job. It still needs no consent, because it moves and presses
-  nothing.
+- **Circle-to-explain works: ⌃⌘D dims the screen and opens the microphone; you draw and speak,
+  Return asks.**
+  The primary surface is `Sources/Chunks/Annotate/AnnotationOverlay.swift`, imported from
+  `10bd07e^` with three exits, and it took the mouse only once the *window configuration* was
+  imported from Capso's `CaptureOverlayWindow` (MIT): **`_setPreventsActivation:` set to true**,
+  `.transient` rather than `.stationary`, `isMovable = false`, `canBecomeKey` true with
+  `canBecomeMain` false, and `orderFrontRegardless()` *then* `makeKey()`. The mechanism, which cost
+  eleven rounds: **keyboard follows key-window status, mouse follows app activation.** A window of an
+  app that never activates can be key, be frontmost over the point, receive `keyDown` — and never get
+  one click. `NSApp.activate` is still not called anywhere in that file and the menu bar never
+  changes hands. Four exits: right-click, Escape (also caught app-wide), the chord, 30 s idle /
+  120 s absolute. The screen dims 18% while it is up, because a transparent surface gives no sign the
+  gesture is live.
+  **Fallback, still wired:** if `show()` refuses, the chord runs `RegionSelector.capture()`
+  (`/usr/sbin/screencapture -x -i`, macOS's own crosshair) and opens `CropMarkupWindow` — a normal
+  panel over the frozen crop with the same tools. Verified on the real machine 2026-10-15:
+  `mouse down — tool=Pen` → `mark added` → `1 mark(s) burned into 2024x1220px` → answered. Two
+  AppKit traps found on the way: drawing an `NSImage` into a flipped view does not preserve its
+  orientation (the crop came back mirrored — render it with `NSImageView`), and
+  `NSGraphicsContext(bitmapImageRep:)` returns **nil** for a PNG-decoded rep, so a burn-in must draw
+  into a rep it created itself. It needs no consent either way, because it moves and presses nothing.
 - `<NOTE>` offers never reach the live pipeline: `AnswerStreamer` collects the offer, nothing
   consumes it yet. There is no Notebook to save into.
 

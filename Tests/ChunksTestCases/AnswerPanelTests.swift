@@ -152,6 +152,43 @@ public enum AnswerPanelTests {
             expectEqual(streamer.nextActions, ["Second", "Third"])
         }
 
+        // "Open WhatsApp, search for Dad, message him HI" cannot be aimed at one screenshot: the
+        // search box does not exist until the app is open. `<CONTINUE>` is how the model hands the
+        // rest to the next look, and the tag is an instruction to the app — never content.
+        test("CONTINUE carries the rest of a plan to the next look, and is never shown") {
+            let streamer = AnswerStreamer()
+            streamer.push("<SAY>opening whatsapp.</SAY> [DO:open_app:WhatsApp] "
+                + "<CONTINUE>search for Dad, then type HI and press send</CONTINUE>")
+            let result = streamer.finish()
+            expectEqual(streamer.continuation, "search for Dad, then type HI and press send",
+                        "a plan the user has to say twice is not a plan")
+            expect(!result.detail.contains("CONTINUE"),
+                   "the tag leaked onto the card the user reads: \(result.detail)")
+            expect(!streamer.utterance.contains("CONTINUE"),
+                   "the tag would be spoken aloud: \(streamer.utterance)")
+        }
+
+        // `<NEXT>` would be a prefix of `<NEXT_ACTIONS>`, and whichever construct is tried first
+        // would eat the other. This is the test that keeps that mistake out of a rename.
+        test("CONTINUE and NEXT_ACTIONS survive the same reply without eating each other") {
+            let streamer = AnswerStreamer()
+            streamer.push("<NEXT_ACTIONS>\n- press send\n</NEXT_ACTIONS>")
+            streamer.push("<CONTINUE>press send in the chat window</CONTINUE>")
+            streamer.finish()
+            expectEqual(streamer.nextActions, ["press send"],
+                        "the chip was eaten by the continuation tag")
+            expectEqual(streamer.continuation, "press send in the chat window",
+                        "the continuation was eaten by the chip tag")
+        }
+
+        test("a reply with no CONTINUE asks for no further look") {
+            let streamer = AnswerStreamer()
+            streamer.push("<SAY>done.</SAY> <DONE_TITLE>Finished</DONE_TITLE> [POINT:none]")
+            streamer.finish()
+            expect(streamer.continuation == nil,
+                   "an absent tag must not schedule another turn and burn a plan round")
+        }
+
         test("an unterminated tag at the end of the stream is still shown") {
             let streamer = AnswerStreamer()
             streamer.push("The answer is 42.")

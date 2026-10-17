@@ -244,6 +244,16 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut
     }
 
+    /// What the microphone has heard in the dictation in flight, trimmed.
+    ///
+    /// Read by the drawing surface when Return commits a question: the user spoke *while* he drew,
+    /// and the answer to "is there a question here at all" has to be taken before the session is
+    /// discarded — afterwards there is nothing to read, and a default question would be asked in
+    /// place of the words he actually said.
+    var currentTranscriptText: String {
+        latestRecognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var isMicrophoneButtonActivelyRecordingAudio: Bool {
         isRecordingFromMicrophoneButton
     }

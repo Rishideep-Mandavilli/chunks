@@ -127,6 +127,12 @@ struct CompanionPanelView: View {
                 Text("\(PanelShortcut.displayText) opens and closes this panel.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
+                // Stated here because the gesture has no button: it fires from anywhere, so the only
+                // place its keys can be read is the panel. Two people — including me, twice — have
+                // tested it with the wrong chord and concluded the feature was dead.
+                Text("\(CircleShortcut.displayText) chooses a region to explain.")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted {

@@ -143,9 +143,33 @@ final class CompanionManager: ObservableObject {
     ///
     /// A press that opens a chat and the type that follows it are aimed at the same screenshot, and
     /// the second element usually does not exist until the first app has drawn a new frame. Half a
-    /// second is the shortest wait that survived a real launch; a step that still cannot resolve
-    /// stops the plan rather than clicking whatever appeared next.
-    static let stepSettleDelay: UInt64 = 500_000_000
+    /// second survived a real launch when this was measured; it did not survive WhatsApp's, and a
+    /// step resolved against a window still animating in reads the desktop and refuses a control the
+    /// user can see. One second is the wait that covers a cold launch without making a plan feel
+    /// stalled; a step that still cannot resolve stops the plan rather than clicking whatever
+    /// appeared next.
+    static let stepSettleDelay: UInt64 = 1_000_000_000
+
+    /// How long a plan waits before photographing the screen for its next round.
+    ///
+    /// Longer than `stepSettleDelay` on purpose: this one waits for an *app* the previous round
+    /// launched, not for a control inside an app that is already up. A screenshot taken mid-swoosh
+    /// shows the model a desktop it has just been told is WhatsApp, and it answers by giving up on
+    /// the plan.
+    static let planRecaptureDelay: UInt64 = 1_500_000_000
+
+    /// How many looks at the screen one spoken request may spend.
+    ///
+    /// "Open WhatsApp, search for Dad, message him HI" cannot be aimed at a single screenshot: the
+    /// search box does not exist until WhatsApp is open, and the send button does not exist until
+    /// something is typed. So a turn may say what still has to happen, Chunks looks again, and the
+    /// plan carries on without being asked twice. Bounded because a model that keeps promising a
+    /// next step is otherwise a loop with a voice.
+    static let maxPlanRounds = 4
+
+    /// The round of the current plan, and whether this turn is one of its own continuations.
+    private var planRound = 0
+    private var isContinuingPlan = false
 
     /// The yes/no state machine. Kept separate from the card's view state so "answering twice
     /// does nothing twice" is a tested rule rather than a hope about SwiftUI's tap handling.
@@ -234,6 +258,19 @@ final class CompanionManager: ObservableObject {
     private var currentResponseTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var circleCancellable: AnyCancellable?
+    /// The overlay while it is on screen. Held so ⌃⌘D a second time can take it down — the
+    /// exit that does not depend on this window ever having received key focus.
+    /// The drawing surface covering the screen, if there is one. The chord is a toggle, so this is
+    /// how a second press knows what to close.
+    private var activeOverlay: AnnotationOverlayWindow?
+
+    /// The markup panel the user is drawing on, if there is one.
+    private var activeMarkup: CropMarkupWindow?
+
+    /// One macOS selection in flight at a time. Its crosshair belongs to the system, so Chunks
+    /// cannot close it — only refuse to start a second.
+    private var isSelectingRegion = false
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
@@ -630,6 +667,12 @@ final class CompanionManager: ObservableObject {
     }
 
     private func bindShortcutTransitions() {
+        circleCancellable = globalPushToTalkShortcutMonitor
+            .circleTogglePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.toggleCircleToExplain()
+            }
         shortcutTransitionCancellable = globalPushToTalkShortcutMonitor
             .shortcutTransitionPublisher
             .receive(on: DispatchQueue.main)
@@ -832,7 +875,9 @@ final class CompanionManager: ObservableObject {
     - <SUMMARY>one short line</SUMMARY> is the last thing said aloud when you finish — the completion line, not a recap of the whole answer.
     - <NEXT_ACTIONS> holds up to three follow-ups the user can tap, one per line starting with "- ". only real next steps that you can actually act on. if there is nothing worth offering, leave the block out entirely.
 
-    order: <SAY> first, then any shown detail, then <DONE_TITLE>, <SUMMARY>, <NEXT_ACTIONS>, <MEMORY>, and one act tag — [POINT:…], [ACT:…], [TYPE:…], [SCROLL:…] or [DO:…] — last.
+    order: <SAY> first, then any shown detail, then <DONE_TITLE>, <SUMMARY>, <NEXT_ACTIONS>, <MEMORY>, then the act tags — [POINT:…], [ACT:…], [TYPE:…], [SCROLL:…] or [DO:…] — in the order they should happen, and <CONTINUE> last of all.
+    emit every step you can aim at *this* screenshot. most of the time that is one step, because a press changes the screen the next press was aimed at — but a plan whose steps are all visible now (fill a field, then press the button beside it) is emitted as several tags in one reply, and Chunks runs them in order.
+    when the request still has a step you cannot aim, because the window it needs is not open yet, close the reply with <CONTINUE>what still has to happen</CONTINUE> on one line. Chunks does the steps it can, looks at the screen again, and lets you finish without the user saying it twice. if the whole request is done, leave the tag out — an empty promise to continue is a loop.
 
     memory:
     you remember things about the user across conversations, in a small file the app owns. you never write that file — you emit a proposal and the app validates and merges it.
@@ -862,7 +907,7 @@ final class CompanionManager: ObservableObject {
       <DONE_TITLE>Ready to send</DONE_TITLE>
       <SUMMARY>The press is on its way.</SUMMARY>
       [ACT:760,930:send button]
-    - user says "tell him good night" with a chat open and its input box empty (one act per reply, so this one types; sending is the tap you offer after):
+    - user says "tell him good night" with a chat open and its input box empty (the send button does not exist until something is typed, so this reply types and hands the send to the next look):
       <SAY>typing good night into that message box now.</SAY>
       the message box is at the bottom right, and it's empty, so nothing gets overwritten. say the word and i'll press send next.
       <DONE_TITLE>Ready to type</DONE_TITLE>
@@ -871,6 +916,14 @@ final class CompanionManager: ObservableObject {
       - press send
       </NEXT_ACTIONS>
       [TYPE:620,965:message box|good night]
+      <CONTINUE>press send in the chat window</CONTINUE>
+    - user says "open whatsapp, search for dad, and message him HI" with WhatsApp closed (you can aim the open; the search box and the message field do not exist yet, so they are not yours to guess coordinates for):
+      <SAY>opening whatsapp — then i'll need a look to find dad.</SAY>
+      three steps: open, search, type and send. each one needs the screen the one before it leaves behind.
+      <DONE_TITLE>Opening WhatsApp</DONE_TITLE>
+      <SUMMARY>WhatsApp is on its way up.</SUMMARY>
+      [DO:open_app:WhatsApp]
+      <CONTINUE>search for Dad in WhatsApp, then type HI into the message box and press send</CONTINUE>
     - user says "scroll down until you find the invoice" (one act: the scroll; the finding happens next turn, on a screen that has moved):
       <SAY>scrolling that list down a few pages — i'll spot the invoice in the next look.</SAY>
       if it is older than a week it may be under the "load earlier" row at the bottom, which is a second scroll.
@@ -1525,6 +1578,231 @@ final class CompanionManager: ObservableObject {
                                                 primaryScreenHeight: primaryHeight)
     }
 
+    /// ⌃⌥⌘D: start a circle-to-explain, or close the markup panel that is already open.
+    func toggleCircleToExplain() {
+        Log.write("annotate: chord received")
+        if let activeOverlay {
+            self.activeOverlay = nil
+            activeOverlay.dismissByChord()
+            return
+        }
+        if let activeMarkup {
+            self.activeMarkup = nil
+            activeMarkup.dismissByChord()
+            return
+        }
+        // The selection step is owned by macOS, whose crosshair takes Escape as cancel; a second
+        // chord while one is in flight would queue a second question about a screen that has not
+        // finished being chosen.
+        guard !isSelectingRegion else {
+            Log.write("annotate: a selection is already in flight — ignored")
+            return
+        }
+        // The chord starts with Control, which is the talk key. Without this, reaching for
+        // ⌃⌥⌘D arms a dictation on the way in, and the drawing session and a live microphone
+        // would both be waiting on the same Return key — one of them gets an answer the user
+        // never asked for. Discarded, not submitted: an unfinished dictation is not a question.
+        if buddyDictationManager.isDictationInProgress {
+            buddyDictationManager.cancelCurrentDictation(preserveDraftText: false)
+            Log.write("annotate: cancelled the dictation the chord's Control had started")
+        }
+        beginCircleToExplain()
+    }
+
+    /// The region the user selected, waiting for the one turn that will explain it.
+    ///
+    /// Consumed once on purpose: a stale crop would make the next three questions all be about a
+    /// rectangle drawn a minute ago, which is worse than not remembering.
+    private var pendingRegionCapture: CompanionScreenCapture?
+
+    private func consumePendingRegionCapture() -> CompanionScreenCapture? {
+        defer { pendingRegionCapture = nil }
+        return pendingRegionCapture
+    }
+
+    /// ⌃⌥⌘D: draw on the live screen, and ask about what was circled.
+    func beginCircleToExplain() {
+        guard let screen = NSScreen.main, let display = CaptureEngine.mainDisplay() else {
+            Log.write("annotate: cannot draw — no display to draw on, falling back to the selector")
+            beginRegionSelection()
+            return
+        }
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        let overlay = AnnotationOverlayWindow(display: display) { [weak self] shapes, spoken in
+            guard let self else { return }
+            self.activeOverlay = nil
+            guard !shapes.isEmpty else {
+                Log.write("annotate: nothing drawn, no question asked")
+                return
+            }
+            Task { @MainActor in await self.explainCircledRegion(shapes: shapes, spoken: spoken,
+                                                                screen: screen, display: display) }
+        }
+        // Read before the surface closes: `onDismissed` discards an uncommitted dictation, and a
+        // transcript read after that is empty — which would silently replace the question he
+        // actually spoke with the default one.
+        overlay.transcriptProvider = { [weak self] in
+            self?.buddyDictationManager.currentTranscriptText ?? ""
+        }
+        overlay.onDismissed = { [weak self, weak overlay] in
+            if let overlay, self?.activeOverlay === overlay { self?.activeOverlay = nil }
+            self?.discardDrawingDictation()
+        }
+        activeOverlay = overlay
+        guard overlay.show() else {
+            activeOverlay = nil
+            Log.write("annotate: the surface refused to open — using the system selector instead")
+            beginRegionSelection()
+            return
+        }
+        startDrawingDictation()
+    }
+
+    /// Open the microphone with the drawing surface, so the question is spoken over the mark
+    /// instead of typed afterwards or guessed at from a default.
+    ///
+    /// Chunks submits it, not the dictation session: `Return` reads the transcript, cancels the
+    /// session, and asks with the crop attached. Letting the session submit on stop would fire a
+    /// turn before the region had been captured, and the model would answer about the whole screen
+    /// rather than the part he drew on.
+    private func startDrawingDictation() {
+        guard !buddyDictationManager.isDictationInProgress else { return }
+        Task { @MainActor in
+            await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
+                currentDraftText: "",
+                updateDraftText: { [weak self] partialTranscript in
+                    Task { @MainActor [weak self] in self?.hud.showCaption(partialTranscript) }
+                },
+                submitDraftText: { finalTranscript in
+                    // Never reached: the session is cancelled, not stopped, by every exit this
+                    // surface has. An empty closure is the honest place to say so.
+                    Log.write("annotate: dictation tried to submit on its own — ignored, "
+                        + "\(finalTranscript.prefix(60))")
+                }
+            )
+            Log.write("annotate: microphone open with the drawing surface")
+        }
+    }
+
+    /// Silence the microphone without asking anything — every exit that is not `Return`.
+    ///
+    /// A dictation left running past the surface would submit its transcript to the *next* thing he
+    /// does, which is the failure the tap-to-arm work already had to design around.
+    private func discardDrawingDictation() {
+        guard buddyDictationManager.isDictationInProgress else { return }
+        buddyDictationManager.cancelCurrentDictation(preserveDraftText: false)
+        Log.write("annotate: microphone discarded with the surface")
+    }
+
+    /// Crop around the marks, composite them into the capture, and ask about exactly that.
+    ///
+    /// `RegionResolver` decides the crop — the same maths the unit tests cover — rather than a
+    /// rectangle computed here, so what the model is shown and what the tests assert cannot drift.
+    private func explainCircledRegion(shapes: [AnnotationShape], spoken: String, screen: NSScreen,
+                                      display: DisplayInfo) async {
+        do {
+            let shot = try await CaptureEngine().capture(display: display, shapes: shapes)
+            let image = shot.composited(with: shapes, display: display)
+            guard let png = ScreenCapture(image: image, globalRect: shot.globalRect).png() else {
+                hud.fail("The circled region could not be read.")
+                return
+            }
+            let region = RegionResolver.resolve(shapes: shapes, displaySize: display.size)
+            Log.write("annotate: \(shapes.count) mark(s) → crop x=\(Int(region.minX)) "
+                + "y=\(Int(region.minY)) w=\(Int(region.width)) h=\(Int(region.height)) "
+                + "→ \(image.width)x\(image.height)px")
+            pendingRegionCapture = CompanionScreenCapture(
+                imageData: png,
+                label: "The region the user circled on their screen",
+                isCursorScreen: true,
+                displayWidthInPoints: Int(screen.frame.width),
+                displayHeightInPoints: Int(screen.frame.height),
+                displayFrame: screen.frame,
+                screenshotWidthInPixels: image.width,
+                screenshotHeightInPixels: image.height)
+            // His words if he spoke any; the standing question if he only drew. Both are real
+            // gestures — the surface must not need a keyboard to be useful.
+            ask(text: spoken.isEmpty
+                ? "What is the part I circled, and what is it for?"
+                : spoken)
+        } catch {
+            let detail = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            Log.write("annotate: capture failed — \(detail)")
+            hud.fail("Chunks could not capture the region you circled.")
+        }
+    }
+
+    /// The fallback gesture, and the one that works today: macOS chooses the region with its own
+    /// crosshair, then Chunks marks up the crop in a panel. Used when the display-sized surface
+    /// cannot be shown, because that surface's hold on the mouse is the thing still in question.
+    func beginRegionSelection() {
+        guard let screen = NSScreen.main else {
+            Log.write("annotate: refused — no main screen")
+            hud.fail("Chunks cannot see the screen to choose a region on.")
+            return
+        }
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        isSelectingRegion = true
+        Task { @MainActor in
+            defer { self.isSelectingRegion = false }
+            guard let png = await RegionSelector.capture() else { return }
+            self.beginMarkup(for: png, on: screen)
+        }
+    }
+
+    /// The drawing step, in a panel the size of the crop.
+    ///
+    /// Deliberately not a display-sized surface — `CropMarkupWindow` carries the three measurements
+    /// that settled that argument. The crop is frozen, so what the user draws on cannot move under
+    /// his pen, and nothing of Chunks' covers his desktop while he does it.
+    private func beginMarkup(for png: Data, on screen: NSScreen) {
+        guard let rep = NSBitmapImageRep(data: png), rep.pixelsWide > 0, rep.pixelsHigh > 0 else {
+            Log.write("annotate: the selection could not be read — \(png.count) bytes")
+            hud.fail("Chunks could not read the region you selected.")
+            return
+        }
+        let pixelSize = NSSize(width: rep.pixelsWide, height: rep.pixelsHigh)
+        guard let markup = CropMarkupWindow(
+            png: png, pixelSize: pixelSize,
+            onSubmit: { [weak self] marked in
+                guard let self else { return }
+                self.activeMarkup = nil
+                self.explainSelectedRegion(png: marked, screen: screen)
+            },
+            onCancel: { [weak self] in self?.activeMarkup = nil }
+        ) else {
+            Log.write("annotate: the crop could not be opened — \(png.count) bytes")
+            hud.fail("Chunks could not open the region you selected.")
+            return
+        }
+        activeMarkup = markup
+        markup.show(on: screen)
+    }
+
+    /// Ask about the crop, with the user's marks already burned into it.
+    ///
+    /// The image arrives cropped and marked, so no `RegionResolver` maths runs on this path — the
+    /// crop is the user's own selection and the marks are his own, both in that image's pixel space.
+    private func explainSelectedRegion(png: Data, screen: NSScreen) {
+        guard let image = NSBitmapImageRep(data: png), image.pixelsWide > 0, image.pixelsHigh > 0 else {
+            Log.write("annotate: the selection could not be read — \(png.count) bytes")
+            hud.fail("Chunks could not read the region you selected.")
+            return
+        }
+        pendingRegionCapture = CompanionScreenCapture(
+            imageData: png,
+            label: "The region the user selected and drew on",
+            isCursorScreen: true,
+            displayWidthInPoints: Int(screen.frame.width),
+            displayHeightInPoints: Int(screen.frame.height),
+            displayFrame: screen.frame,
+            screenshotWidthInPixels: image.pixelsWide,
+            screenshotHeightInPixels: image.pixelsHigh)
+        Log.write("annotate: region selected — \(image.pixelsWide)x\(image.pixelsHigh)px, asking")
+        ask(text: "What is the part I selected, and what is it for?")
+    }
+
     /// Run a turn from typed or tapped text instead of the microphone — this is what a tapped
     /// suggestion chip on the HUD calls.
     ///
@@ -1546,6 +1824,14 @@ final class CompanionManager: ObservableObject {
     /// `utterance`, the cursor takes `points.first`. Nothing re-reads the raw text, so a tag
     /// cannot be half-handled by one consumer and missed by another.
     private func sendTranscriptToBrainWithScreenshot(transcript: String) {
+        // A request from the user restarts the plan budget; a continuation of the plan already
+        // running spends it. Recognised by the flag rather than by the words, so a user who says
+        // "continue" still gets a fresh four rounds.
+        if isContinuingPlan {
+            isContinuingPlan = false
+        } else {
+            planRound = 0
+        }
         currentResponseTask?.cancel()
         ttsClient.stopPlayback()
 
@@ -1553,9 +1839,21 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
             hud.beginThinking()
 
+            // Carried out of the `do` so the next round of a plan can start after the speech has
+            // finished, rather than over the top of it.
+            var pendingContinuation: String?
+            var planStepCompleted = false
+
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                // A circled region replaces the whole-screen capture for exactly one turn.
+                let regionCapture = self.consumePendingRegionCapture()
+                let screenCaptures: [CompanionScreenCapture]
+                if let regionCapture {
+                    screenCaptures = [regionCapture]
+                } else {
+                    // Capture all connected screens so the AI has full context
+                    screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                }
 
                 guard !Task.isCancelled else { return }
 
@@ -1613,7 +1911,15 @@ final class CompanionManager: ObservableObject {
                 // offered one, otherwise the `<SAY>` text. The raw reply is markup and must
                 // never reach the speaker.
                 let spokenText = streamer.utterance
-                let point = streamer.points.first
+                // A crop has no honest route back to screen coordinates: `ScreenshotGeometry`
+                // maps an aim as a proportion of the display the image covers, and a crop covers a
+                // fraction of it. Pointing there would land somewhere plausible and wrong, so the
+                // answer is kept and the pointing is skipped, out loud.
+                let point = regionCapture == nil ? streamer.points.first : nil
+                if regionCapture != nil, streamer.points.first != nil {
+                    Log.write("annotate: reply named a point inside a crop — pointing skipped, "
+                        + "a crop has no screen coordinate to aim at")
+                }
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
@@ -1661,18 +1967,39 @@ final class CompanionManager: ObservableObject {
                 // would do none of them. A tool proposed alongside the plan is *not* run: an
                 // unanswered request fails toward doing nothing, never toward doing both.
                 var actOutcome: String?
+                var planAdvanced = false
                 let proposed = streamer.actionRequests
                 if !proposed.isEmpty {
                     let program = Array(proposed.prefix(ActionRequest.maxProgramSteps))
                     switch await offerProgram(program, screenCaptures: screenCaptures) {
-                    case .done(let line), .stopped(let line): actOutcome = line
+                    case .done(let line):
+                        actOutcome = line
+                        // Every step this reply could aim has happened. That is the only state in
+                        // which looking again is safe: a stopped plan means the screen is not the
+                        // one the remaining steps were aimed at, and pressing on from there is how
+                        // an assistant types into the wrong window.
+                        planAdvanced = true
+                    case .stopped(let line):
+                        actOutcome = line
                     case .asked: break
                     }
                     logUnaskedProposals(streamer: streamer, ranSteps: program.count)
                 } else if let tool = streamer.toolRequests.first {
                     offerTool(tool)
+                    // With asking off the tool has already run, so the plan moved. With asking on
+                    // there is a card outstanding, and the next look would be asking about a
+                    // screen the user has not yet agreed to change.
+                    planAdvanced = !consentGate.isPending
                     logUnaskedProposals(streamer: streamer, ranSteps: 1)
                 }
+                pendingContinuation = streamer.continuation
+                // A round that asked for nothing to happen is not a failed step — it is a look that
+                // found nothing yet. Once a plan is genuinely under way, that deserves another look
+                // instead of an apology, because a cold launch can beat even the recapture delay.
+                // Outside a plan it does not: a model that merely mentions `<CONTINUE>` after an
+                // ordinary answer must not spend four model calls on itself.
+                planStepCompleted = planAdvanced || (planRound > 0 && proposed.isEmpty
+                    && streamer.toolRequests.isEmpty)
 
                 // Save this exchange to conversation history, with the tags resolved rather
                 // than stripped: what the user was *shown* is what the next turn has to
@@ -1734,7 +2061,40 @@ final class CompanionManager: ObservableObject {
             if !Task.isCancelled {
                 voiceState = .idle
                 scheduleTransientHideIfNeeded()
+                // After the speech, not during it: the next round starts a new card and cuts off
+                // whatever is still being said, so a plan that continued here would talk over
+                // itself and the user would hear half of each step.
+                continuePlanIfNeeded(remaining: pendingContinuation, stepCompleted: planStepCompleted)
             }
+        }
+    }
+
+    /// Carry a multi-step request into the next look at the screen.
+    ///
+    /// The step's own line has already been spoken and the card already shows it, so what arrives
+    /// next reads as a continuation rather than a new answer. Bounded by `maxPlanRounds`, and only
+    /// taken when the step actually happened — see the caller.
+    private func continuePlanIfNeeded(remaining: String?, stepCompleted: Bool) {
+        guard let remaining, !remaining.isEmpty else { return }
+        guard stepCompleted else {
+            Log.write("plan: not continuing — the last step did not complete: \(remaining)")
+            return
+        }
+        guard planRound < Self.maxPlanRounds else {
+            Log.write("plan: stopped at \(Self.maxPlanRounds) rounds with this left — \(remaining)")
+            hud.fail("I stopped after \(Self.maxPlanRounds) steps. Say the word and I'll carry on.")
+            return
+        }
+        planRound += 1
+        isContinuingPlan = true
+        Log.write("plan: round \(planRound) of \(Self.maxPlanRounds) — \(remaining)")
+        Task { @MainActor in
+            // Let whatever the last step opened finish drawing before it is photographed again —
+            // logged, because "it captured too early" is only diagnosable if the log says when the
+            // look actually happened.
+            Log.write("plan: recapturing in \(String(format: "%.1f", Double(Self.planRecaptureDelay) / 1_000_000_000))s")
+            try? await Task.sleep(nanoseconds: Self.planRecaptureDelay)
+            ask(text: "Continue: \(remaining)")
         }
     }
 

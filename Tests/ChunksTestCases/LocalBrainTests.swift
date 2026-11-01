@@ -193,5 +193,85 @@ public enum LocalBrainTests {
             expectEqual(ProviderRegistry.localVisionGuess(modelID: "mistral:7b"), nil,
                         "nil means unknown, never false — the difference is whether the user is warned or blocked")
         }
+
+        // MARK: - Ollama Native Transport & Gemma 4 Support
+
+        test("OllamaTransport converts base URL to native /api/chat endpoint") {
+            let url = OllamaTransport.chatURL(baseURL: URL(string: "http://localhost:11434/v1")!)
+            expectEqual(url.absoluteString, "http://localhost:11434/api/chat",
+                        "Ollama's /api/chat is required to bypass the 4k context truncation and enable native think control")
+            let trailing = OllamaTransport.chatURL(baseURL: URL(string: "http://localhost:11434/v1/")!)
+            expectEqual(trailing.absoluteString, "http://localhost:11434/api/chat")
+        }
+
+        test("OllamaTransport body configures num_ctx, think: false, and images array") {
+            let testImgData = Data([0x89, 0x50, 0x4E, 0x47])
+            let body = OllamaTransport.body(
+                model: "gemma4:e2b-it-qat",
+                systemPrompt: "You are Chunks.",
+                userPrompt: "What am I looking at?",
+                images: [(data: testImgData, label: "The user's whole screen.")],
+                history: [],
+                stream: true,
+                numCtx: 16384,
+                think: false
+            )
+            expectEqual(body["model"] as? String, "gemma4:e2b-it-qat")
+            expectEqual(body["think"] as? Bool, false)
+            let options = body["options"] as? [String: Any]
+            expectEqual(options?["num_ctx"] as? Int, 16384, "must provide expanded context so Gemma 4 does not truncate on large system prompts")
+            let messages = body["messages"] as? [[String: Any]] ?? []
+            expectEqual(messages.count, 2)
+            let userMsg = messages.last ?? [:]
+            let images = userMsg["images"] as? [String] ?? []
+            expectEqual(images.count, 1)
+            expectEqual(images.first, testImgData.base64EncodedString())
+        }
+
+        test("OllamaTransport stream parser handles NDJSON and ignores thinking scratchpads") {
+            let chunkWithThought = #"{"message":{"role":"assistant","content":"","thinking":"User wants help"},"done":false}"#
+            let thoughtEvents = OllamaTransport.parse(line: chunkWithThought)
+            expect(thoughtEvents.isEmpty, "thinking content should not be surfaced to the user")
+
+            let chunkWithContent = #"{"message":{"role":"assistant","content":"I see your desktop."},"done":false}"#
+            let contentEvents = OllamaTransport.parse(line: chunkWithContent)
+            expectEqual(contentEvents, [.textDelta("I see your desktop.")])
+
+            let doneChunk = #"{"message":{"role":"assistant","content":""},"done":true}"#
+            let doneEvents = OllamaTransport.parse(line: doneChunk)
+            expectEqual(doneEvents, [.completed])
+        }
+
+        test("model(named:) resolves normalized names like 'gemma 4 e2b' to 'gemma4:e2b-it-qat'") {
+            let provider = BrainProvider(
+                id: "ollama",
+                displayName: "Ollama",
+                transport: .openAICompatible,
+                baseURL: URL(string: "http://localhost:11434/v1")!,
+                models: [
+                    BrainModel(id: "qwen3:14b", displayName: "qwen3:14b", visionCapable: false),
+                    BrainModel(id: "gemma4:e2b-it-qat", displayName: "gemma4:e2b-it-qat", visionCapable: true),
+                    BrainModel(id: "gemma3n:e2b", displayName: "gemma3n:e2b", visionCapable: false)
+                ],
+                isFree: true
+            )
+            expectEqual(provider.model(named: "gemma4:e2b-it-qat")?.id, "gemma4:e2b-it-qat")
+            expectEqual(provider.model(named: "gemma4:e2b")?.id, "gemma4:e2b-it-qat")
+            expectEqual(provider.model(named: "gemma 4 e2b")?.id, "gemma4:e2b-it-qat")
+            expectEqual(provider.model(named: "gemma 4")?.id, "gemma4:e2b-it-qat")
+        }
+
+        test("OpenAICompatibleTransport content places image_url before text for GGUF template safety") {
+            let requestWithImg = TurnRequest(
+                question: "what is this?",
+                scope: .wholeScreen,
+                imageData: Data([0x89, 0x50, 0x4E, 0x47]),
+                memoryBlock: "")
+            let parts = GeminiRequestBuilder.parts(for: requestWithImg)
+            let content = OpenAICompatibleTransport.content(parts)
+            expect(!content.isEmpty)
+            expectEqual(content.first?["type"] as? String, "image_url",
+                        "GGUF multimodal templates require image tokens before text to prevent mistaking images for OCR text")
+        }
     }
 }

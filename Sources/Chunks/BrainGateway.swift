@@ -470,17 +470,28 @@ final class BrainGateway {
         started: Date,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval) {
-        // Ollama streams thinking models into `delta.reasoning` and leaves `content` empty —
-        // measured on `qwen3-vl:8b`: 176 characters of reasoning, 0 of content. Chunks must not
-        // surface reasoning text, so the only correct move is to ask the server not to think,
-        // which puts the answer back in `content`. Sent for Ollama alone, because `think` is its
-        // extension and not part of the OpenAI shape every other server parses.
-        let thinking: Bool? = provider.id == "ollama" ? false : nil
-        let body = OpenAICompatibleTransport.body(model: model.id, systemPrompt: systemPrompt,
+        let isOllama = provider.id == "ollama"
+        let requestURL: URL
+        let body: [String: Any]
+
+        if isOllama {
+            requestURL = OllamaTransport.chatURL(baseURL: provider.baseURL)
+            body = OllamaTransport.body(model: model.id,
+                                        systemPrompt: systemPrompt,
+                                        userPrompt: userPrompt,
+                                        images: images,
+                                               history: history,
+                                               stream: true,
+                                               numCtx: 16384,
+                                               think: false)
+        } else {
+            requestURL = OpenAICompatibleTransport.chatCompletionsURL(baseURL: provider.baseURL)
+            body = OpenAICompatibleTransport.body(model: model.id, systemPrompt: systemPrompt,
                                                   userPrompt: userPrompt, images: images,
                                                   history: history, stream: true,
-                                                  thinking: thinking)
-        var request = URLRequest(url: OpenAICompatibleTransport.chatCompletionsURL(baseURL: provider.baseURL))
+                                                  thinking: nil)
+        }
+        var request = URLRequest(url: requestURL)
         request.httpMethod = "POST"
         for (field, value) in OpenAICompatibleTransport.headers(apiKey: nil) {
             request.setValue(value, forHTTPHeaderField: field)
@@ -522,7 +533,10 @@ final class BrainGateway {
         var accumulated = ""
         var streamFailure: String?
         for try await line in bytes.lines {
-            for event in OpenAIStreamParser.parse(line: String(line)) {
+            let events = isOllama
+                ? OllamaTransport.parse(line: String(line))
+                : OpenAIStreamParser.parse(line: String(line))
+            for event in events {
                 switch event {
                 case .textDelta(let delta):
                     accumulated += delta

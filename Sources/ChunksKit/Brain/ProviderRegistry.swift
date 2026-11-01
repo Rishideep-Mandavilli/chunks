@@ -36,7 +36,26 @@ public struct BrainProvider: Identifiable, Equatable, Sendable {
     }
 
     public func model(named name: String) -> BrainModel? {
-        models.first { $0.id == name }
+        if let exact = models.first(where: { $0.id == name }) {
+            return exact
+        }
+        let lower = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if let caseMatch = models.first(where: { $0.id.lowercased() == lower }) {
+            return caseMatch
+        }
+        // Normalized matching: ignore spaces, hyphens, and colons to match user queries
+        // like "gemma 4", "gemma 4 e2b", "gemma4:e2b" against "gemma4:e2b-it-qat".
+        let cleanName = lower.replacingOccurrences(of: " ", with: "")
+                             .replacingOccurrences(of: "-", with: "")
+                             .replacingOccurrences(of: ":", with: "")
+        guard !cleanName.isEmpty else { return nil }
+        return models.first(where: {
+            let cleanID = $0.id.lowercased()
+                .replacingOccurrences(of: " ", with: "")
+                .replacingOccurrences(of: "-", with: "")
+                .replacingOccurrences(of: ":", with: "")
+            return cleanID == cleanName || cleanID.hasPrefix(cleanName) || cleanName.hasPrefix(cleanID)
+        })
     }
 }
 

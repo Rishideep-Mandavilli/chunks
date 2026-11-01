@@ -149,6 +149,9 @@ struct leanring_buddyApp: App {
         if ThinkingProbe.isRequested {
             MainActor.assumeIsolated { ThinkingProbe.run() }
         }
+        if LocalBrainProbe.isRequested {
+            MainActor.assumeIsolated { LocalBrainProbe.run() }
+        }
         if AnnotationSafetyProbe.isRequested {
             // Hopped to the main thread, not `assumeIsolated`. This `init` is not guaranteed to run
             // on main and on 2026-10-12 it did not: every probe line was logged `[bg]`, meaning the

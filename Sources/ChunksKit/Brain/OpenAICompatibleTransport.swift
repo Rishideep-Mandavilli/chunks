@@ -42,15 +42,22 @@ public enum OpenAICompatibleTransport {
     /// Images ride as data URLs because that is what these servers accept; the base64 payload is
     /// already produced for Gemini, so no re-encoding happens.
     public static func content(_ parts: [GeminiRequestBuilder.ContentPart]) -> [[String: Any]] {
-        parts.map { part in
+        var images: [[String: Any]] = []
+        var texts: [[String: Any]] = []
+        for part in parts {
             switch part {
             case .text(let text):
-                return ["type": "text", "text": text]
+                texts.append(["type": "text", "text": text])
             case .image(let base64, let mimeType):
-                return ["type": "image_url",
-                        "image_url": ["url": "data:\(mimeType);base64,\(base64)"]]
+                images.append([
+                    "type": "image_url",
+                    "image_url": ["url": "data:\(mimeType);base64,\(base64)"]
+                ])
             }
         }
+        // Vision-language GGUF templates (e.g. Gemma 4, LLaVA) require image tokens before text,
+        // otherwise leading text causes the image to be parsed as corrupted OCR text.
+        return images + texts
     }
 
     /// What these bytes actually are, from their own first characters.
@@ -115,16 +122,16 @@ public enum OpenAICompatibleTransport {
         var userContent: [[String: Any]] = []
         for image in images {
             userContent.append([
-                "type": "text",
-                // The label verbatim, as the Gemini path sends it. "Screenshot of …" was wrong twice:
-                // it disagreed with the other transport, and a file he asked about is not part of his
-                // screen — a model told otherwise offers to click something inside the photograph.
-                "text": image.label.isEmpty ? "An image." : image.label,
-            ])
-            userContent.append([
                 "type": "image_url",
                 "image_url": ["url": "data:\(mimeType(of: image.data));base64,"
                     + image.data.base64EncodedString()],
+            ])
+        }
+        for image in images {
+            let label = image.label.isEmpty ? "An image." : image.label
+            userContent.append([
+                "type": "text",
+                "text": label,
             ])
         }
         userContent.append(["type": "text", "text": userPrompt])

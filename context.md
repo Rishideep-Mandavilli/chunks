@@ -2624,3 +2624,37 @@ present and `caffeinate -u` to be absent from the live instruction the model is 
 **What is still on his machine:** pid 82174 is a live `caffeinate -u -t 3600` holding nothing, with
 about 55 minutes left on a timeout nobody needs. It is his process, so it was not touched —
 `kill 82174` clears it, and asking Chunks for an hour awake now produces the right command.
+
+## Gemma 4 Local Model (`gemma4:e2b-it-qat` on Ollama) Working Across Text & Vision, 2026-11-01
+
+Problem reported: Chunks was failing when configured with the local Gemma 4 model (`gemma4:e2b-it-qat` on Ollama), which supports both text and vision.
+
+### Root causes diagnosed
+1. **Ollama `/v1/chat/completions` Shim vs Native `/api/chat`:**
+   - Ollama's OpenAI compatibility shim (`/v1`) hardcodes context limit to 4,096 tokens and silently ignores `options.num_ctx`. Because Chunks' system prompt + memory + history + screenshot tokens exceed 4.3k tokens, `/v1` immediately truncated Gemma 4 with `finish_reason: "length"` after 1 token.
+   - Ollama `/v1` also ignores `think: false`, causing Gemma 4 to spend 8–15 seconds generating reasoning scratchpad before any reply tokens.
+   - Ollama's native `/api/chat` endpoint natively respects `options: {"num_ctx": 16384}` and `think: false`, delivering complete replies with zero thinking delay.
+2. **GGUF Multimodal Template Image-First Requirement:**
+   - In GGUF multimodal templates, if `type: text` precedes `type: image_url`, Gemma 4 treats the image as OCR/metadata rather than visual content and claims no image was provided. Placing `image_url` before `text` in `OpenAICompatibleTransport` resolved visual perception reliably.
+3. **Model Name Normalization in Provider Registry:**
+   - `model(named:)` was strictly exact (`==`). Normalizing spaces, colons, and hyphens allows flexible user selection (`gemma 4 e2b` or `gemma4:e2b` cleanly resolves to `gemma4:e2b-it-qat`).
+
+### Implementation
+- Added `Sources/ChunksKit/Brain/OllamaTransport.swift`:
+  - Routes directly to Ollama's native `/api/chat`.
+  - Configures `options: ["num_ctx": 16384]` (preventing prompt truncation).
+  - Sets `think: false` (disabling 8-15s reasoning scratchpad, slashing text latency to 0.3s–0.4s and vision latency to 2.0s–2.5s).
+  - Encodes images natively in message `images: [base64]`.
+  - Streams NDJSON and converts into `GeminiStreamParser.Event` while suppressing thinking scratchpad tokens.
+- Updated `Sources/ChunksKit/Brain/OpenAICompatibleTransport.swift`:
+  - Placed `image_url` before `text` for GGUF template safety.
+- Updated `Sources/ChunksKit/Brain/ProviderRegistry.swift`:
+  - Normalized model matching for names with spaces/colons/hyphens.
+- Updated `Sources/Chunks/BrainGateway.swift`:
+  - Dispatched Ollama local turns to `OllamaTransport`.
+- Created `Sources/Chunks/LocalBrainProbe.swift` and hooked into `ClickyApp.swift` (`--probe-local`).
+- Added unit tests in `Tests/ChunksTestCases/LocalBrainTests.swift` (704/705 passing).
+- Added local brain check to `scripts/verify.sh`.
+- Rebuilt universal binary signed with "Chunks Local" and installed to `~/Applications/Chunks.app`.
+- Verified live end-to-end: text turn in 0.3s–0.4s (`3 + 4` → `7`), vision turn with 2.2 MB image in 2.0s–2.5s emitting full `<SAY>`, `<DONE_TITLE>`, `<SUMMARY>`, `[ACT:]`, `[POINT:]`, `<NEXT_ACTIONS>`.
+

@@ -294,6 +294,13 @@ else
   printf '        %s\n' "$(printf '%s' "$mic_out" | grep -vE '^\s*$' | tail -3 | tr '\n' '|')"
   fail=$((fail + 1)); failures+=("microphone opens")
 fi
+# The local brain check: if Ollama is running on localhost:11434, verify local discovery and Gemma 4
+if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+  check "local brain: Ollama discovery and Gemma 4 vision/text probe" "$BIN" --probe-local
+else
+  printf '  \033[33mSKIP\033[0m  local brain: Ollama not running on localhost:11434\n'
+  skip=$((skip + 1))
+fi
 echo
 
 echo "file reading, end to end"

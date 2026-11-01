@@ -93,6 +93,86 @@ enum LocalBrainProbe {
                 exit(1)
             }
 
+            // 3. Task: Opening app ("open Notes for me")
+            out("probe-local: testing opening app task...")
+            do {
+                let streamer = AnswerStreamer()
+                let startOpen = Date()
+                _ = try await BrainGateway().analyzeImageStreaming(
+                    images: [(data: pngData, label: "The user's whole screen (800x600 pixels)")],
+                    systemPrompt: CompanionManager.companionVoiceResponseSystemPrompt,
+                    userPrompt: "open Notes for me",
+                    onTextChunk: { chunk in
+                        streamer.push(chunk)
+                    }
+                )
+                streamer.finish()
+                let elapsed = Date().timeIntervalSince(startOpen)
+                let hasOpen = streamer.toolRequests.contains {
+                    if case .openApp(let name) = $0 { return name.lowercased().contains("notes") }
+                    return false
+                }
+                guard hasOpen else {
+                    out("probe-local: FAIL opening app — expected openApp tool for Notes, got tools: \(streamer.toolRequests), actions: \(streamer.actionRequests.map(\.label))")
+                    exit(1)
+                }
+                out("probe-local: opening app PASS (\(String(format: "%.1f", elapsed))s) → [DO:open_app:Notes]")
+            } catch {
+                out("probe-local: FAIL opening app — \(error)")
+                exit(1)
+            }
+
+            // 4. Task: Guiding / pointing ("where is the Ask button? guide me to it and point to it")
+            out("probe-local: testing guiding/pointing task...")
+            do {
+                let streamer = AnswerStreamer()
+                let startGuide = Date()
+                let response = try await BrainGateway().analyzeImageStreaming(
+                    images: [(data: pngData, label: "The user's whole screen (800x600 pixels)")],
+                    systemPrompt: CompanionManager.companionVoiceResponseSystemPrompt,
+                    userPrompt: "where is the Ask button? guide me to it and point to it",
+                    onTextChunk: { chunk in
+                        streamer.push(chunk)
+                    }
+                )
+                streamer.finish()
+                let elapsed = Date().timeIntervalSince(startGuide)
+                guard let pt = streamer.points.first else {
+                    out("probe-local: FAIL guiding — expected point target in streamer.points, got raw text: \(response.text)")
+                    exit(1)
+                }
+                out("probe-local: guiding PASS (\(String(format: "%.1f", elapsed))s) → [POINT:\(Int(pt.x)),\(Int(pt.y)):\(pt.label)]")
+            } catch {
+                out("probe-local: FAIL guiding — \(error)")
+                exit(1)
+            }
+
+            // 5. Task: Typing ("type 'how to use sql' in the search field")
+            out("probe-local: testing typing task...")
+            do {
+                let streamer = AnswerStreamer()
+                let startType = Date()
+                let response = try await BrainGateway().analyzeImageStreaming(
+                    images: [(data: pngData, label: "The user's whole screen (800x600 pixels)")],
+                    systemPrompt: CompanionManager.companionVoiceResponseSystemPrompt,
+                    userPrompt: "type 'how to use sql' in the search field",
+                    onTextChunk: { chunk in
+                        streamer.push(chunk)
+                    }
+                )
+                streamer.finish()
+                let elapsed = Date().timeIntervalSince(startType)
+                let hasType = streamer.actionRequests.contains { if case .type = $0.verb { return true }; return false }
+                guard hasType else {
+                    out("probe-local: FAIL typing — expected type action, got text: \(response.text)")
+                    exit(1)
+                }
+                out("probe-local: typing PASS (\(String(format: "%.1f", elapsed))s)")
+            } catch {
+                out("probe-local: FAIL typing — \(error)")
+                exit(1)
+            }
+
             out("probe-local: ALL CHECKS PASSED for \(model.id)")
             exit(0)
         }

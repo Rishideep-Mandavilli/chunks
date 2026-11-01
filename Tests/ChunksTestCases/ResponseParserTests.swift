@@ -614,5 +614,73 @@ public enum ResponseParserTests {
             expect(ResponseParserTests.texts(ev).contains("<SUMMARY>this never closed"),
                    "an incomplete SUMMARY ate the reply instead of showing it")
         }
+
+        test("doneTitle parses when closed with </DONE> or </TITLE>") {
+            let p1 = ResponseParser()
+            let ev1 = p1.feed("<DONE_TITLE>Notes open</DONE>[POINT:500,500:Notes]") + p1.finish()
+            expectEqual(ResponseParserTests.titles(ev1), "Notes open")
+            expectEqual(ResponseParserTests.points(ev1).count, 1)
+
+            let p2 = ResponseParser()
+            let ev2 = p2.feed("<DONE_TITLE>Page loaded</TITLE>") + p2.finish()
+            expectEqual(ResponseParserTests.titles(ev2), "Page loaded")
+        }
+
+        test("point and type tags recover when coordinates use x or y placeholders") {
+            let p = ResponseParser()
+            let ev = p.feed("[POINT:x,480:Ask button][TYPE:x,803:Search field|hello]") + p.finish()
+            let pts = ResponseParserTests.points(ev)
+            expectEqual(pts.count, 1)
+            expectEqual(pts.first?.x, 500.0)
+            expectEqual(pts.first?.y, 480.0)
+            expectEqual(pts.first?.label, "Ask button")
+
+            let acts = ev.compactMap { if case .act(let a) = $0 { return a }; return nil }
+            expectEqual(acts.count, 1)
+            expectEqual(acts.first?.textToType, "hello")
+            expectEqual(acts.first?.pointTarget?.x, 500.0)
+            expectEqual(acts.first?.pointTarget?.y, 803.0)
+        }
+
+        test("act tag attempting to open an app converts to openApp tool") {
+            let p = ResponseParser()
+            let ev = p.feed("<SAY>opening notes</SAY>[ACT:app=Notes role=menuitem name=\"Open\"]") + p.finish()
+            let tools = ev.compactMap { if case .tool(let t) = $0 { return t }; return nil }
+            expectEqual(tools.count, 1)
+            if let first = tools.first, case .openApp(let name) = first {
+                expectEqual(name, "Notes")
+            } else {
+                expect(false, "expected openApp tool for Notes")
+            }
+        }
+
+        test("semantic target parses when extra keys like type or id are present") {
+            guard let target = SemanticTarget.parse("app=WhatsApp name=\"Search\" type=\"dad\"") else {
+                expect(false, "failed to parse semantic target with extra type field")
+                return
+            }
+            expectEqual(target.app, "WhatsApp")
+            expectEqual(target.name, "Search")
+        }
+
+        test("act followed by pipeless type tag converts to type act on that target") {
+            let p = ResponseParser()
+            let ev = p.feed("[ACT:app=Terminal role=textfield name=\"search\"]\n[TYPE:search for how to use sql]") + p.finish()
+            let acts = ev.compactMap { if case .act(let a) = $0 { return a }; return nil }
+            expectEqual(acts.count, 1)
+            expectEqual(acts.first?.textToType, "search for how to use sql")
+            expectEqual(acts.first?.semanticTarget?.app, "Terminal")
+            expectEqual(acts.first?.semanticTarget?.name, "search")
+        }
+
+        test("type tag with colon delimiter parses semantic target") {
+            let p = ResponseParser()
+            let ev = p.feed("[TYPE:app=WhatsApp name=\"Message\":good night]") + p.finish()
+            let acts = ev.compactMap { if case .act(let a) = $0 { return a }; return nil }
+            expectEqual(acts.count, 1)
+            expectEqual(acts.first?.textToType, "good night")
+            expectEqual(acts.first?.semanticTarget?.app, "WhatsApp")
+            expectEqual(acts.first?.semanticTarget?.name, "Message")
+        }
     }
 }

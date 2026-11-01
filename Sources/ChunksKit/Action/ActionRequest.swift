@@ -279,6 +279,22 @@ public struct ActionRequest: Equatable, Sendable {
             return ActionRequest(verb: .type(text: text), aim: .semantic(semantic))
         }
 
+        // Semantic targets when delimited by `:` instead of `|` or followed directly by text
+        // (e.g. `[TYPE:app=WhatsApp name="Message":good night]`).
+        if typed == nil {
+            let (fields, tail) = SemanticTarget.scanFields(body)
+            if let app = fields["app"], let name = fields["name"] {
+                var candidateText = tail.trimmingCharacters(in: .whitespaces)
+                if candidateText.hasPrefix(":") || candidateText.hasPrefix("|") {
+                    candidateText = String(candidateText.dropFirst()).trimmingCharacters(in: .whitespaces)
+                }
+                if !candidateText.isEmpty, candidateText.count <= maxTypedCharacters {
+                    let semantic = SemanticTarget(app: app, role: fields["role"]?.lowercased(), name: name)
+                    return ActionRequest(verb: .type(text: candidateText), aim: .semantic(semantic))
+                }
+            }
+        }
+
         // The qualified-coordinate form ACT learned on 2026-10-25 — `app=Google Chrome x=200,y=400`
         // — photographed again on 2026-10-28 written into a `[TYPE:]`, where it failed open as raw
         // text over an empty editor. The grammar is the same evidence the point path already

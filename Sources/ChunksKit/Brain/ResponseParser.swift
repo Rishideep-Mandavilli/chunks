@@ -396,6 +396,17 @@ public final class ResponseParser {
                     // Same "none" escape as [POINT:] — the model considered acting and
                     // concluded there is nothing to act on. Consumed quietly.
                 } else if let request = ActionRequest.parseAct(inner) {
+                    // Check if this semantic act is an attempt by a model to launch/open an app:
+                    // e.g. [ACT:app=Notes name="Open"] or [ACT:app=Notes name="Notes"] or role=application
+                    if let semantic = request.semanticTarget, request.verb == .press {
+                        let n = semantic.name.lowercased().trimmingCharacters(in: .whitespaces)
+                        let a = semantic.app.lowercased().trimmingCharacters(in: .whitespaces)
+                        let r = semantic.role?.lowercased()
+                        if n == "open" || n == "launch" || n == a || r == "application" || r == "app" {
+                            events.append(.tool(.openApp(name: semantic.app)))
+                            break
+                        }
+                    }
                     // Either a point in the picture or a control named in the accessibility tree;
                     // `parseAct` decides, and the request carries which so the shell can resolve it
                     // without re-reading the tag.
@@ -419,6 +430,33 @@ public final class ResponseParser {
                     // The tag is still shown — fail-open, unchanged — and the act arrives at
                     // `finish` or at the next tag, from the text in between.
                     deferredTypeHead = inner
+                    events.append(.text(String(buffer[hit.range])))
+                } else if let lastActIdx = events.lastIndex(where: {
+                    if case .act = $0 { return true }
+                    return false
+                }) {
+                    let trailingNonWhitespace = events[(lastActIdx + 1)...].contains {
+                        if case .text(let t) = $0 {
+                            return !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        }
+                        return true
+                    }
+                    if !trailingNonWhitespace, case .act(var prevAct) = events[lastActIdx], prevAct.verb == .press {
+                        var textToType = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if let colon = textToType.firstIndex(of: ":") {
+                            let prefix = textToType[..<colon].lowercased().trimmingCharacters(in: .whitespaces)
+                            if prefix == "text" || prefix == "type" || prefix == prevAct.aim.label.lowercased() {
+                                textToType = String(textToType[textToType.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+                            }
+                        }
+                        if !textToType.isEmpty, textToType.count <= ActionRequest.maxTypedCharacters {
+                            prevAct.verb = .type(text: textToType)
+                            events[lastActIdx] = .act(prevAct)
+                            typeExtensionArmed = true
+                            buffer.removeSubrange(..<hit.range.upperBound)
+                            continue
+                        }
+                    }
                     events.append(.text(String(buffer[hit.range])))
                 } else {
                     // The same visible failure as a malformed ACT. This one matters more: a
@@ -494,7 +532,20 @@ public final class ResponseParser {
     /// is followed by prose behaves exactly as it did before rather than losing the whole act.
     private static func closeRange<S: StringProtocol>(of c: Construct, in buffer: S,
                                                       from start: S.Index) -> Range<S.Index>? {
-        let first = buffer.range(of: c.end ?? "", range: start..<buffer.endIndex)
+        var endCandidates = [c.end].compactMap { $0 }
+        if c.kind == .doneTitle {
+            endCandidates = ["</DONE_TITLE>", "</DONE>", "</TITLE>"]
+        } else if c.kind == .summary {
+            endCandidates = ["</SUMMARY>", "</SUM>"]
+        }
+        var first: Range<S.Index>?
+        for candidate in endCandidates {
+            if let r = buffer.range(of: candidate, range: start..<buffer.endIndex) {
+                if first == nil || r.lowerBound < first!.lowerBound {
+                    first = r
+                }
+            }
+        }
         guard c.kind == .type else { return first }
         var searchFrom = start
         while let candidate = buffer.range(of: "]", range: searchFrom..<buffer.endIndex) {
@@ -556,7 +607,10 @@ public final class ResponseParser {
         for c in ResponseParser.constructs {
             guard let endToken = c.end else { continue }
             guard let open = buffer.range(of: c.start, options: .backwards) else { continue }
-            let isClosed = buffer.range(of: endToken, range: open.upperBound..<buffer.endIndex) != nil
+            var endTokens = [endToken]
+            if c.kind == .doneTitle { endTokens = ["</DONE_TITLE>", "</DONE>", "</TITLE>"] }
+            else if c.kind == .summary { endTokens = ["</SUMMARY>", "</SUM>"] }
+            let isClosed = endTokens.contains { buffer.range(of: $0, range: open.upperBound..<buffer.endIndex) != nil }
             if !isClosed {
                 offer(buffer.distance(from: buffer.startIndex, to: open.lowerBound))
             }
@@ -679,10 +733,14 @@ public final class ResponseParser {
     /// first comma. A token, so a label that begins with "x-ray" and an app called "X" are untouched.
     static func stripAxisNames(_ body: String) -> String {
         var text = body
-        // `x,625,320`: the whole leading token is an axis name, so the token and its comma both go.
+        // `x,625,320`: the whole leading token is an axis name, so the token and its comma both go
+        // only when there is still another comma ahead (two coordinates remaining).
         if let comma = text.firstIndex(of: ","),
            isAxisToken(String(text[..<comma])) {
-            text = String(text[text.index(after: comma)...]).trimmingCharacters(in: .whitespaces)
+            let remainder = text[text.index(after: comma)...]
+            if remainder.contains(",") {
+                text = String(remainder).trimmingCharacters(in: .whitespaces)
+            }
         }
         // `x:235,y:400` and `x=200,380`: the axis name is glued to its number by a separator.
         text = dropAxisPrefix(from: text)
@@ -719,16 +777,37 @@ public final class ResponseParser {
             }
         }
 
-        // 2. `y` is the leading numeric run after the first comma. Scanning for it rather
-        //    than splitting on a delimiter is what lets the label be introduced by either a
-        //    comma or a colon, and lets the label itself contain both.
-        guard let firstComma = body.firstIndex(of: ","),
-              let x = Double(body[..<firstComma].trimmingCharacters(in: .whitespaces)) else { return nil }
+        // 2. `x` is before the first comma, `y` is the leading numeric run after the first comma.
+        //    If a model writes "x" or "y" instead of numbers (e.g. `x,480:Ask` or `x,y:label`),
+        //    defaulting to 500.0 (the center) recovers the act instead of dropping the command.
+        guard let firstComma = body.firstIndex(of: ",") else { return nil }
+        let xPart = body[..<firstComma].trimmingCharacters(in: .whitespaces)
+        let x: Double
+        if let parsedX = Double(xPart) {
+            x = parsedX
+        } else if xPart.lowercased() == "x" || xPart.lowercased() == "x=" {
+            x = 500.0
+        } else {
+            return nil
+        }
 
         let afterX = body.index(after: firstComma)
         let numericRun = body[afterX...].prefix { "0123456789.+- ".contains($0) }
-        let afterY = body.index(afterX, offsetBy: numericRun.count)
-        guard let y = Double(body[afterX..<afterY].trimmingCharacters(in: .whitespaces)) else { return nil }
+        var afterY = body.index(afterX, offsetBy: numericRun.count)
+        let yPart = body[afterX..<afterY].trimmingCharacters(in: .whitespaces)
+        let y: Double
+        if let parsedY = Double(yPart) {
+            y = parsedY
+        } else {
+            let nextWord = String(body[afterX...].prefix(while: { $0 != ":" && $0 != "," && $0 != "|" && $0 != " " }))
+                .trimmingCharacters(in: .whitespaces).lowercased()
+            if nextWord == "y" || nextWord == "y=" {
+                y = 500.0
+                afterY = body.index(afterX, offsetBy: nextWord.count)
+            } else {
+                return nil
+            }
+        }
 
         // 3. Skip the separator, then whatever remains is the label.
         var label = String(body[afterY...])

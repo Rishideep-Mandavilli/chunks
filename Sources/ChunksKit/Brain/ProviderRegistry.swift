@@ -54,7 +54,16 @@ public struct BrainProvider: Identifiable, Equatable, Sendable {
                 .replacingOccurrences(of: " ", with: "")
                 .replacingOccurrences(of: "-", with: "")
                 .replacingOccurrences(of: ":", with: "")
-            return cleanID == cleanName || cleanID.hasPrefix(cleanName) || cleanName.hasPrefix(cleanID)
+            if cleanID == cleanName || cleanID.hasPrefix(cleanName) || cleanName.hasPrefix(cleanID) {
+                return true
+            }
+            if cleanName.contains("4b") && (cleanID.contains("e4b") || cleanID.contains("4b")) {
+                return true
+            }
+            if cleanName.contains("2b") && (cleanID.contains("e2b") || cleanID.contains("2b")) {
+                return true
+            }
+            return false
         })
     }
 }

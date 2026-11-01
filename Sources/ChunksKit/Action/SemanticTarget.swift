@@ -104,7 +104,7 @@ public struct SemanticTarget: Equatable, Sendable {
     static func scanFields(_ body: String) -> (fields: [String: String], tail: String) {
         var rest = Substring(body.trimmingCharacters(in: .whitespacesAndNewlines))
         var fields: [String: String] = [:]
-        let allowed = ["app", "role", "name"]
+        let allowed = ["app", "role", "name", "type", "id", "action", "text", "value"]
 
         /// One `key="value"` pair. Quoted values may contain anything; a bare one runs to the next
         /// field, not to the next space.

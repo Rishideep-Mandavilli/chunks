@@ -63,12 +63,25 @@ public func expectThrows(_ body: () throws -> Void,
     }
 }
 
+/// Say that this check could not run, and why.
+///
+/// Not a pass, and not a failure: the machine was missing something. The summary counts it
+/// separately so nobody can read a green number as full coverage.
+public func skipTest(_ reason: String) {
+    TestRunner.record(.skipped(reason))
+}
+
 // MARK: - Runner
 
 public final class TestRunner {
     public struct Case { public let suite: String; public let name: String; public let body: () -> Void }
 
-    enum Outcome { case pass(String); case failure(TestFailure) }
+    /// A check that did not run is not a check that passed.
+    ///
+    /// The harness used to have no way to say "skipped", so a test that needed a permission wrote
+    /// `expect(true, "skipped: no Screen Recording permission")` and the suite reported green while
+    /// the only assertion that could catch the `CGDisplayPixelsWide` class of bug never ran.
+    enum Outcome { case pass(String); case failure(TestFailure); case skipped(String) }
 
     nonisolated(unsafe) static private var registered: [Case] = []
     nonisolated(unsafe) static private var outcomes: [Outcome] = []
@@ -86,6 +99,7 @@ public final class TestRunner {
     public static func run() -> Bool {
         outcomes.removeAll()
         var currentSuite = ""
+        var skippedNames: [String] = []
         for c in registered {
             if c.suite != currentSuite {
                 currentSuite = c.suite
@@ -97,7 +111,13 @@ public final class TestRunner {
             let failures = newOutcomes.compactMap { entry -> TestFailure? in
                 if case .failure(let f) = entry { return f } else { return nil }
             }
-            if failures.isEmpty {
+            let skips = newOutcomes.compactMap { entry -> String? in
+                if case .skipped(let reason) = entry { return reason } else { return nil }
+            }
+            if failures.isEmpty && !skips.isEmpty {
+                print("  ⊘ \(c.name) — \(skips.first!)")
+                skippedNames.append("\(c.suite): \(c.name)")
+            } else if failures.isEmpty {
                 print("  ✓ \(c.name)")
             } else {
                 print("  ✗ \(c.name)")
@@ -108,9 +128,17 @@ public final class TestRunner {
             if case .failure(let f) = entry { return f } else { return nil }
         }
         let total = registered.count
-        print("\n\(total - Set(failures.map { "\($0.file):\($0.line)" }).count)/\(total) passed")
+        let failed = Set(failures.map { "\($0.file):\($0.line)" }).count
+        let ran = total - skippedNames.count
+        print("\n\(ran - failed)/\(total) passed" + (skippedNames.isEmpty ? "" : ", \(skippedNames.count) SKIPPED"))
+        if !skippedNames.isEmpty {
+            // Printed every time, not hidden behind a flag: a green number that quietly excludes
+            // checks is how a suite stops meaning anything.
+            print("these checks did not run on this machine:")
+            for name in skippedNames { print("  ⊘ \(name)") }
+        }
         if failures.isEmpty {
-            print("all tests passed")
+            print(skippedNames.isEmpty ? "all tests passed" : "nothing failed — but see the skips above")
             return true
         }
         print("\(failures.count) assertion failure(s)")

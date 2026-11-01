@@ -55,15 +55,16 @@ public enum ScreenshotGeometry {
 
     /// Aim coordinates (top-left origin) → AppKit global coordinates (bottom-left origin).
     ///
-    /// `displayFrame` is the `NSScreen` frame, which is already bottom-left global. The flip
-    /// happens here, once, so no caller has to reason about which Y convention it is holding.
-    /// Returns `nil` for a degenerate image, because dividing by a zero width would otherwise
-    /// hand back `NaN` and a `NaN` coordinate lands a press nowhere at all.
+    /// `imageFrame` is the rectangle the picture covers, in AppKit's bottom-left global space: a
+    /// whole display's `NSScreen` frame, or a crop's own rect inside that display. The flip happens
+    /// here, once, so no caller has to reason about which Y convention it is holding. Returns `nil`
+    /// for a degenerate image, because dividing by a zero width would otherwise hand back `NaN` and
+    /// a `NaN` coordinate lands a press nowhere at all.
     public static func appKitGlobalPoint(x: Double,
                                          y: Double,
                                          imageWidth: Double,
                                          imageHeight: Double,
-                                         displayFrame: CGRect) -> CGPoint? {
+                                         imageFrame: CGRect) -> CGPoint? {
         guard imageWidth > 0, imageHeight > 0 else { return nil }
         let space = aimSpace(x: x, y: y)
         let extentX = space == .grid ? gridEdge : imageWidth
@@ -72,20 +73,36 @@ public enum ScreenshotGeometry {
         let fx = min(max(x / extentX, 0), 1)
         let fy = min(max(y / extentY, 0), 1)
 
-        let width = Double(displayFrame.width)
-        let height = Double(displayFrame.height)
-        // Half a point inside the display on every side. An aim that lands on the last row of the
+        let width = Double(imageFrame.width)
+        let height = Double(imageFrame.height)
+        // Half a point inside on every side. An aim that lands on the last row of the
         // image — which is what an input bar at the bottom of the screen looks like to the model —
         // must still be over a window: `CGWindowListCopyWindowInfo` bounds and AX hit tests are
         // exclusive at the far edge, so a point *on* the edge resolves to nothing and the press is
         // refused for a control the user can see.
         let localX = min(max(fx * width, 0.5), width - 0.5)
-        // Image Y runs downward from the top of the display; AppKit Y runs upward from its
-        // bottom, so the fraction is inverted before it is scaled.
+        // Image Y runs downward from the top of the picture; AppKit Y runs upward from its bottom,
+        // so the fraction is inverted before it is scaled.
         let localYFromBottom = min(max((1 - fy) * height, 0.5), height - 0.5)
 
-        return CGPoint(x: displayFrame.minX + localX,
-                       y: displayFrame.minY + localYFromBottom)
+        return CGPoint(x: imageFrame.minX + localX,
+                       y: imageFrame.minY + localYFromBottom)
+    }
+
+    /// A rectangle in global **top-left** points → the same rectangle in AppKit's bottom-left space.
+    ///
+    /// Needed because the two authorities disagree by convention: `CaptureEngine` and the
+    /// Accessibility API work top-left (`CGDisplayBounds`), `NSScreen` and `NSPanel` work
+    /// bottom-left. A crop arrives in the first and an aim is mapped in the second, so the flip is
+    /// done once, here, for the rect — rather than at each call site for each point.
+    /// `primaryScreenHeight` is the height of the screen owning the global origin, exactly as in
+    /// `axGlobalPoint`, and the inversion is its own inverse.
+    public static func appKitRect(fromTopLeftGlobal rect: LogicalRect,
+                                  primaryScreenHeight: Double) -> CGRect {
+        CGRect(x: rect.minX,
+               y: primaryScreenHeight - rect.maxY,
+               width: rect.width,
+               height: rect.height)
     }
 
     /// AppKit global (bottom-left) → the top-left global space the Accessibility API hit-tests

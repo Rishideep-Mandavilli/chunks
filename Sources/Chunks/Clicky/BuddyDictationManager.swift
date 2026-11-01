@@ -273,13 +273,25 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private let transcriptionProvider: any BuddyTranscriptionProvider
-    private let audioEngine = AVAudioEngine()
+    /// Not `let`, because an engine whose `start()` was refused by CoreAudio cannot be started
+    /// again — it has to be replaced. See `start()` below.
+    private var audioEngine = AVAudioEngine()
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
     private var activeStartSource: BuddyDictationStartSource?
     private var draftCallbacks: BuddyDictationDraftCallbacks?
     private var draftTextBeforeCurrentDictation = ""
     private var latestRecognizedText = ""
     private var shouldAutomaticallySubmitFinalDraft = false
+    /// Set when the microphone could not be opened at all, even after the retry.
+    ///
+    /// The shell needs this because the alternative is the notch appearing and vanishing with no
+    /// word — which reads as the shortcut being broken, and is not what happened.
+    @Published private(set) var didFailToOpenMicrophone = false
+
+    /// Why the last microphone open failed, when it did — the card reads the sentence from here so
+    /// the words match the cause.
+    @Published private(set) var microphoneFailure: MicrophoneFailure?
+
     private var hasFinishedCurrentDictationSession = false
     private var finalizeFallbackWorkItem: DispatchWorkItem?
     private var pendingStartRequestIdentifier = UUID()
@@ -341,6 +353,9 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     func cancelCurrentDictation(preserveDraftText: Bool = true) {
         pendingStartRequestIdentifier = UUID()
+        // Before the guard, not after it: a session that was already reset still owns the engine
+        // until this line runs, and skipping the teardown is how the microphone stayed claimed.
+        releaseAudioEngine()
 
         guard isDictationInProgress else { return }
 
@@ -352,8 +367,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             draftCallbacks?.updateDraftText(currentDraftText)
         }
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
         activeTranscriptionSession?.cancel()
         activeTranscriptionSession = nil
 
@@ -567,23 +580,142 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         self.activeTranscriptionSession = activeTranscriptionSession
 
-        let inputNode = audioEngine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+        var attempt = 0
+        var lastError: Error?
+        while attempt <= Self.microphoneRetryWaits.count {
+            attempt += 1
+            do {
+                let hertz = try startEngineWithTap(fresh: attempt > 1)
+                didFailToOpenMicrophone = false
+                microphoneFailure = nil
+                Log.write("dictation: microphone live at \(Int(hertz)) Hz"
+                    + (attempt == 1 ? "" : " — recovered on attempt \(attempt)"))
+                return
+            } catch {
+                lastError = error
+                guard attempt <= Self.microphoneRetryWaits.count else { break }
+                Log.write("dictation: the microphone would not open (\(error)) — "
+                    + "waiting \(Int(Self.microphoneRetryWaits[attempt - 1] * 1000))ms and trying again")
+                try? await Task.sleep(nanoseconds: UInt64(Self.microphoneRetryWaits[attempt - 1] * 1e9))
+            }
+        }
+        didFailToOpenMicrophone = true
+        let device = MicrophoneDevice.report
+        microphoneFailure = MicrophoneFailure(from: lastError, device: device)
+        // The device line is what makes this diagnosable after the fact: the error code is the same
+        // for a release delay and for another app holding the input, and only the second one is
+        // worth telling him about.
+        Log.write("dictation: the microphone stayed closed after \(attempt) attempts — \(device.oneLine)")
+        throw lastError ?? NSError(domain: "Chunks.Dictation", code: 2, userInfo: nil)
+    }
 
-        inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+    /// How long the microphone is chased after a refusal, in waits between attempts.
+    ///
+    /// Measured 2026-10-25: the app was relaunched about a second after the previous instance was
+    /// killed and `kAUStartIO` answered `'what'` (2003329396) on every attempt across the next four
+    /// seconds, while `system_profiler` showed the built-in input healthy at 48 kHz. That is the
+    /// device not having finished being released, and a single *immediate* retry — which is all the
+    /// first fix had — cannot ride it out.
+    ///
+    /// The schedule is tuned for **speech lost**, not for wall-clock: he is talking into a closed
+    /// microphone while this runs, so the first wait is short enough to catch a device that clears
+    /// fast, and the total stays under 1.5 s — after which an honest card beats another second of
+    /// him repeating a sentence. `--probe-mic` is what says the attempts themselves are free:
+    /// reusing the engine opens in 55 ms and a brand-new one in 53 ms (three runs, 30/30 openings,
+    /// allocation alone 0 ms), so the retry builds a fresh engine without paying for it, and the
+    /// waits are the only cost here.
+    static let microphoneRetryWaits: [TimeInterval] = [0.15, 0.4, 1.0]
+
+    /// Why the microphone stayed shut, in the words the card needs.
+    ///
+    /// The first version of this message blamed Privacy & Security on a machine where every grant
+    /// read `true` — a wrong instruction is worse than none, because he goes and unticks something
+    /// that was fine.
+    struct MicrophoneFailure: Equatable {
+        enum Cause { case noDevice, heldByAnotherApp, busy, refused }
+
+        let cause: Cause
+
+        init(cause: Cause) { self.cause = cause }
+
+        /// Read the error the engine threw **and** what the device was doing at the time.
+        ///
+        /// The error alone cannot separate "still being released" from "somebody else is streaming
+        /// from it" — both answer `'what'` — and the two need different sentences, because only one
+        /// of them is fixed by pressing the key again.
+        init?(from error: Error?, device: MicrophoneDevice.Report) {
+            guard let error else { return nil }
+            let text = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            if text.contains("no audio input device") || device.hertz <= 0 {
+                cause = .noDevice; return
+            }
+            if text.contains("2003329396") || text.contains("kAUStartIO") {
+                cause = device.runningSomewhere ? .heldByAnotherApp : .busy
+                return
+            }
+            cause = .refused
+        }
+
+        var sentence: String {
+            switch cause {
+            case .noDevice:
+                return "No microphone is available to Chunks. Pick an input in System Settings "
+                    + "› Sound › Input and try again."
+            case .heldByAnotherApp:
+                // Says what to do, which is not "press again": the holder has to let go.
+                return "Another app is using the microphone right now, so Chunks cannot open it. "
+                    + "Close whatever is recording — a call, a voice tab, dictation elsewhere — "
+                    + "then press the key."
+            case .busy:
+                return "The microphone was still being released by the Mac. Chunks tried again for "
+                    + "a second and a half — press the key once more."
+            case .refused:
+                return "The microphone would not open. Check System Settings › Privacy & Security "
+                    + "› Microphone, then restart Chunks."
+            }
+        }
+    }
+
+    /// Stop the engine, drop its tap, and hand the input back to the operating system.
+    ///
+    /// Safe to call from any state — including one where the engine never started — because every
+    /// call is guarded on what the engine actually is. This is the teardown that was missing after a
+    /// failed session, and a missing teardown here is not a leak of memory but of the microphone.
+    private func releaseAudioEngine() {
+        let node = audioEngine.inputNode
+        if node.outputFormat(forBus: 0).sampleRate > 0 {
+            node.removeTap(onBus: 0)
+        }
+        if audioEngine.isRunning { audioEngine.stop() }
+    }
+
+    /// The engine's input, tapped and started. `fresh` replaces the engine first.
+    ///
+    /// Returns the sample rate it actually got, because the log line that reads "microphone live"
+    /// is the only evidence later of what the device was at the time.
+    private func startEngineWithTap(fresh: Bool) throws -> Double {
+        if fresh {
+            releaseAudioEngine()
+            audioEngine = AVAudioEngine()
+        }
+        let node = audioEngine.inputNode
+        let format = node.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            // A 0 Hz format is what the input node reports when macOS has no usable device —
+            // headphones switched away, or the mic is held by another app. Starting anyway throws
+            // the opaque CoreAudio code, so this is the case worth naming.
+            throw NSError(domain: "Chunks.Dictation", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey:
+                                        "no audio input device is available to this app"])
+        }
+        node.removeTap(onBus: 0)
+        node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.activeTranscriptionSession?.appendAudioBuffer(buffer)
             self?.updateAudioPowerLevel(from: buffer)
         }
-
         audioEngine.prepare()
-        do {
-            try audioEngine.start()
-            Log.write("dictation: microphone live at \(Int(inputFormat.sampleRate)) Hz")
-        } catch {
-            Log.write("dictation: engine refused to start — \(error)")
-            throw error
-        }
+        try audioEngine.start()
+        return format.sampleRate
     }
 
     private func handleRecognitionError(_ error: Error) {
@@ -655,6 +787,13 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func resetSessionState() {
+        // **Release the device here, not only in the callers.** An `AVAudioEngine` with a tap
+        // installed keeps the input claimed for the life of the process, and macOS lets one client
+        // per process stream from a device — so a single leaked engine makes every later press fail
+        // with `kAUStartIO` `'what'`, while a freshly launched copy of the same app opens the
+        // microphone in 65 ms. That asymmetry is the whole diagnosis: the running app was holding
+        // the device it had failed to give back.
+        releaseAudioEngine()
         pendingStartRequestIdentifier = UUID()
         activeTranscriptionSession = nil
         draftCallbacks = nil

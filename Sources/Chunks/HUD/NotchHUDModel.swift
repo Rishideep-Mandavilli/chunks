@@ -41,7 +41,100 @@ final class NotchHUDModel: ObservableObject {
     /// Height of the compact status pill's content row, excluding the cutout zone.
     static let pillContentHeight: CGFloat = 30
 
+    /// The phase a turn is genuinely in, named in the words the card shows.
+    ///
+    /// Set by whoever is doing the work and never inferred from a timer or a guess. What this
+    /// replaces is a pill that read "Thinking" for the whole of a turn whether the request had been
+    /// sent, was still being transcribed, or had already died in the retry chain — the one case the
+    /// user cannot check from the outside, which is exactly why the row has to be told rather than
+    /// assumed.
+    enum Stage: Equatable {
+        case listening
+        case transcribing
+        case askingModel
+        case streaming
+        case acting
+        case waitingForYou
+        case answered
+        /// The turn ended without an answer. Its own case rather than a reuse of `.answered`,
+        /// because the whole point of the stage line is that it reports what the work is doing, and
+        /// "Answered" over a failure is the lie this file has already had to fix once.
+        case failed
+
+        var label: String {
+            switch self {
+            case .listening: return "Listening"
+            case .transcribing: return "Reading that back"
+            case .askingModel: return "Asking the model"
+            case .streaming: return "Answering"
+            case .acting: return "Doing it"
+            case .waitingForYou: return "Waiting for you"
+            case .answered: return "Answered"
+            case .failed: return "Could not answer"
+            }
+        }
+    }
+
+    /// One step of a plan that has already happened, with its place in the plan when there is one.
+    struct ActLine: Equatable {
+        var text: String
+        var step: Int?
+        var of: Int?
+    }
+
     @Published var phase: Phase = .idle
+
+    @Published private(set) var stage: Stage = .listening
+
+    /// The steps that have run this turn, oldest first.
+    ///
+    /// Stacked rather than overwritten because the failure the user reported was a plan that
+    /// looked like it had done one thing: each outcome line replaced the last, so "Pressed Search"
+    /// was gone by the time "Typed 3 characters" arrived and nothing said the plan was four steps
+    /// deep.
+    @Published private(set) var actLines: [ActLine] = []
+
+    /// How long this turn has been running, ticking while work is in flight and held at its final
+    /// value once the answer lands.
+    @Published private(set) var elapsed: TimeInterval = 0
+
+    /// What he said, kept on the card under the stage while the answer is written.
+    @Published private(set) var spokenQuestion: String = ""
+
+    /// What the microphone is hearing, newest bar last, each 0...1.
+    ///
+    /// Only live while the pill is `.listening`. It exists for the gap the caption cannot cover:
+    /// between the press and the first partial transcript there is no text to show, and "…" is
+    /// indistinguishable from a microphone that never opened. A row that moves only when he does is
+    /// the difference between *waiting* and *stuck* — said with real audio rather than an animation
+    /// that breathes on its own.
+    @Published private(set) var waveform: [CGFloat] = WaveformMeter().heights
+
+    private var meter = WaveformMeter()
+
+    /// One reading from the dictation engine.
+    ///
+    /// Ignored outside `.listening` on purpose: a meter that kept scrolling after the microphone
+    /// closed would be showing audio nobody is taking.
+    func ingestAudioLevel(_ level: CGFloat, at date: Date = Date()) {
+        guard case .listening = phase else { return }
+        let before = meter.samples
+        meter.ingest(level, at: date)
+        // Published only when a bar actually moved. The engine reads far faster than a window fills,
+        // and re-rendering the pill on every sample is CPU spent on nothing.
+        if before != meter.samples { waveform = meter.heights }
+    }
+
+    /// Flat and quiet: the honest state of an open microphone with nothing in it yet.
+    private func resetWaveform() {
+        meter.reset()
+        waveform = meter.heights
+    }
+
+    /// A fixed row for `--render-ui`, which has no microphone to feed the meter.
+    func setWaveformForRendering(_ levels: [CGFloat]) {
+        waveform = levels
+    }
 
     /// The display's cutout depth, injected by `NotchPanelManager`. The view pads its top by
     /// exactly this much; getting it wrong puts the answer behind the bezel.
@@ -79,9 +172,6 @@ final class NotchHUDModel: ObservableObject {
     /// not two windows competing for focus.
     @Published private(set) var confirmQuestion: String?
 
-    /// What happened after the user answered, in the row the question occupied.
-    @Published private(set) var confirmResult: String?
-
     /// Where the user's answer goes.
     ///
     /// Set by `CompanionManager`, which owns the consent gate and the driver. The model shows
@@ -90,9 +180,9 @@ final class NotchHUDModel: ObservableObject {
     var onConfirmAnswer: ((ConsentGate.Outcome) -> Void)?
 
     private var confirmation: AnswerPanelLayout.CardConfirmation {
-        if confirmQuestion != nil { return .question }
-        if confirmResult != nil { return .result }
-        return .none
+        // Only a live question takes the block's height now. What happened after the answer is a
+        // timeline row, counted with the timeline, so the same outcome cannot be paid for twice.
+        confirmQuestion != nil ? .question : .none
     }
 
     var isVisible: Bool { phase != .idle }
@@ -109,14 +199,45 @@ final class NotchHUDModel: ObservableObject {
         switch phase {
         case .idle: return ""
         case .status(let hint): return hint
-        // The user's own words, as the recognizer hears them. Falling back to "Listening"
-        // is deliberate: an empty pill looks like a crashed app, and silence while the mic
+        // The user's own words, as the recognizer hears them. Falling back to the stage is
+        // deliberate: an empty pill looks like a crashed app, and silence while the mic
         // is open is more informative than a half-word.
-        case .listening: return caption.isEmpty ? "Listening" : caption
-        case .thinking: return headline.isEmpty ? "Thinking" : headline
-        case .result: return headline
+        case .listening: return caption.isEmpty ? stage.label : caption
+        case .thinking: return stage.label
+        case .result: return headline.isEmpty ? stage.label : headline
         case .failed(let message): return message
         }
+    }
+
+    /// Whether the pill carries an elapsed figure beside its text.
+    ///
+    /// Off while his own words are on screen: a timer next to a live transcript reads as though the
+    /// transcript were being timed, and the number the user cares about starts when the words stop.
+    var showsElapsed: Bool {
+        switch phase {
+        case .idle, .status: return false
+        case .listening: return caption.isEmpty
+        case .thinking, .result, .failed: return true
+        }
+    }
+
+    /// The act lines the card draws, newest last, with the older ones folded away.
+    var visibleActLines: [ActLine] {
+        Array(actLines.suffix(AnswerPanelLayout.maxVisibleTimelineRows))
+    }
+
+    /// How many steps ran that the card is not showing.
+    var foldedActCount: Int {
+        max(0, actLines.count - visibleActLines.count)
+    }
+
+    /// The elapsed readout. One decimal while a turn is in flight, so a 1.4-second answer does not
+    /// spend most of its life reading "1s"; a whole number once it has settled, because the precise
+    /// figure is not the point any more.
+    var elapsedText: String {
+        elapsed < 10
+            ? String(format: "%.1fs", elapsed)
+            : String(format: "%.0fs", elapsed)
     }
 
     /// Height of everything below the cutout zone.
@@ -131,7 +252,11 @@ final class NotchHUDModel: ObservableObject {
             pointCount: points.count,
             actionCount: actions.count,
             hasNote: memoryNote != nil,
+            hasDraft: draft != nil,
             confirmation: confirmation,
+            question: spokenQuestion,
+            timelineTexts: visibleActLines.map { $0.text },
+            timelineTotal: actLines.count,
             width: cardWidth)
         return max(AnswerPanelLayout.minimumHeight, measured)
     }
@@ -145,6 +270,28 @@ final class NotchHUDModel: ObservableObject {
         if case .result = phase { Log.write("hud: a new press replaced the previous reply") }
         clearContent()
         phase = .listening
+        stage = .listening
+        showsTimer = true
+        resetWaveform()
+        startClock()
+    }
+
+    /// Move the card to a named phase, because the phase is a fact about the work and only the
+    /// code doing the work knows it.
+    func setStage(_ newStage: Stage) {
+        stage = newStage
+        if newStage == .waitingForYou, case .idle = phase { phase = .result }
+    }
+
+    /// Say which step of a plan is running now, so the outcome line can carry its place.
+    ///
+    /// Called by the program loop rather than by the act itself: with asking switched off there is
+    /// no card to number, and the line the user reads is the only place the plan's length appears.
+    func beginStep(index: Int, of: Int) {
+        // A one-step plan is not a plan; "1/1" would be the card claiming a structure it does not
+        // have.
+        currentStep = of > 1 ? (index, of) : nil
+        stage = .acting
     }
 
     /// Put the user's words on the pill as the recognizer hears them.
@@ -156,6 +303,9 @@ final class NotchHUDModel: ObservableObject {
                                                      budget: AnswerPanelLayout.captionCharacterBudget)
         guard !bounded.isEmpty else { return }
         caption = bounded
+        // The same words stay on the card once it opens: the question is the only context that
+        // makes a four-line act timeline mean anything.
+        spokenQuestion = bounded
     }
 
     /// Show a one-line hint with no turn in flight.
@@ -166,6 +316,11 @@ final class NotchHUDModel: ObservableObject {
     /// preview wants — there is no next turn to time against.
     func showHint(_ line: String, for seconds: Double?) {
         clearContent()
+        // A hint has no turn behind it, so the clock is cleared rather than merely stopped: a
+        // pill reading "hold control + option to talk · 6.3s" would imply a wait nobody is in.
+        stopClock()
+        turnStart = nil
+        elapsed = 0
         phase = .status(line)
         hintTask?.cancel()
         guard let seconds else { return }
@@ -191,9 +346,14 @@ final class NotchHUDModel: ObservableObject {
     /// though this turn has already been answered — but keeps what the user just said, since
     /// that is the question being waited on and it is the only text worth showing meanwhile.
     func beginThinking() {
+        // The meter stops with the microphone. A row that kept scrolling here would be drawing
+        // sound nobody is capturing, which is the fake-progress failure in a new costume.
         let whatTheySaid = caption
         clearContent()
         headline = whatTheySaid
+        spokenQuestion = whatTheySaid
+        stage = .askingModel
+        showsTimer = true
         phase = .thinking
     }
 
@@ -204,17 +364,25 @@ final class NotchHUDModel: ObservableObject {
     /// every point, not increments.
     func apply(_ streamer: AnswerStreamer) {
         let display = streamer.displayable
-        speech = display.speech
+        // Bounded like the detail, for the reason in `speechCharacterBudget`: an unbounded speech
+        // line does not grow the card, it pushes the answer buttons off the bottom of it.
+        speech = AnswerPanelLayout.boundedDetail(display.speech,
+                                                 budget: AnswerPanelLayout.speechCharacterBudget)
         detail = AnswerPanelLayout.boundedDetail(display.detail)
         points = streamer.points
         actions = streamer.nextActions
-        headline = streamer.doneTitle ?? firstLine(display.speech)
+        draft = streamer.draftText
+        headline = streamer.doneTitle ?? Self.firstLine(display.speech)
+        // A first delta is the moment "Asking the model" stops being true. Stated here rather
+        // than at the request, because the request can be retried onto another model twice before
+        // anything arrives.
+        if stage == .askingModel { stage = .streaming }
 
         // Only become a card once there is something to put on one. A reply that so far holds
         // nothing but a half-parsed tag, or only a `[POINT]`, would otherwise show an empty
         // card with "Answer" as its title while the model is still deciding.
         let showsSomething = !display.speech.isEmpty || !display.detail.isEmpty
-            || !points.isEmpty || !actions.isEmpty
+            || !points.isEmpty || !actions.isEmpty || draft != nil
         if showsSomething { phase = .result }
     }
 
@@ -225,18 +393,107 @@ final class NotchHUDModel: ObservableObject {
         if speech.isEmpty && detail.isEmpty {
             let utterance = streamer.utterance
             speech = utterance
-            if headline.isEmpty { headline = firstLine(utterance) }
+            if headline.isEmpty { headline = Self.firstLine(utterance) }
+        }
+        // The clock stops when the *answer* is done, not when the model stops streaming: a reply
+        // that queues four acts takes as long as the acts take, and the number the user sees has
+        // to be the one they waited for.
+        if actLines.isEmpty || stage == .streaming {
+            stage = .answered
+            stopClock()
         }
         phase = .result
     }
 
     func fail(_ message: String) {
         clearContent()
+        stopClock()
+                // Not `.answered`, which is what this line used to be. A turn that died is the one thing
+        // the card must not claim to have finished, and everything that reads `stage` — the window's
+        // live line included — was about to say "Answered" over a failure.
+        stage = .failed
         // The message is the card's body, not its status line: it is the only content, and
         // putting it in the status slot would leave a 96 pt card with one small line at the
         // top and nothing under it.
         speech = message
         phase = .failed(message)
+    }
+
+    /// Show a fired reminder, with no turn behind it.
+    ///
+    /// A reminder is not an answer: there was no question, no capture and no model call, so this must
+    /// not borrow the thinking stage or leave a clock running for work nobody is waiting on.
+    /// `lateNote` is the honest half — the hour it was due, whenever the machine was asleep or the app
+    /// was shut and it arrived after the fact. Saying "now" for something due at 09:00 would hide the
+    /// one fact he would want to know about it.
+    func showReminder(_ text: String, lateNote: String?) {
+        clearContent()
+        stopClock()
+        turnStart = nil
+        elapsed = 0
+        showsTimer = false
+        headline = "Reminder"
+        speech = AnswerPanelLayout.boundedDetail(
+            text, budget: AnswerPanelLayout.speechCharacterBudget)
+        detail = lateNote ?? ""
+        stage = .answered
+        phase = .result
+        // A card with nothing streaming into it still has to end: the notch is the notch, and a
+        // reminder that owned the surface until his next press would block the next thing he asked.
+        hintTask?.cancel()
+        hintTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.reminderCardSeconds))
+            guard let self, !Task.isCancelled, case .result = self.phase else { return }
+            self.dismiss(reason: "reminder read")
+        }
+    }
+
+    /// How long a fired reminder stays on the card when nobody is watching it.
+    static let reminderCardSeconds: Double = 24
+
+    /// Whether the card has a turn to time.
+    ///
+    /// Off for a reminder: `0.0s` beside "Reminder" is a number measuring nothing, and the row exists
+    /// to answer "how long have I been waiting", which has no answer for something read after the
+    /// fact.
+    @Published private(set) var showsTimer = true
+
+    /// The elapsed readout, or empty when there is no turn to time.
+    var elapsedTextOrNone: String { showsTimer ? elapsedText : "" }
+
+    /// Words Chunks wrote for him to send himself, kept whole.
+    ///
+    /// A separate surface from `speech` because a drafted message is the payload, not narration about
+    /// it: it has to be readable in one piece and copyable in one tap. It is never spoken — reading a
+    /// message aloud while he cannot see all of it is how a wrong name gets sent — and it is capped by
+    /// the parser rather than clipped here, so what he reads is what he copies.
+    @Published private(set) var draft: String?
+
+    /// Where a tap on Copy goes.
+    ///
+    /// A closure for the same reason `onConfirmAnswer` is one: the model draws the question and never
+    /// decides what answering it means. Writing the pasteboard is shell work, and the notch has to be
+    /// able to hand an answer to a window without owning one.
+    var onCopyDraft: (() -> Void)?
+
+    /// He tapped Copy. Hand the words to whoever owns the pasteboard and say what happened on the
+    /// card, because a button that copies in silence is indistinguishable from one that did nothing.
+    func copyDraft() {
+        guard draft != nil else { return }
+        onCopyDraft?()
+    }
+
+    /// Offer the words a finished type act landed in a field, in the same copy well.
+    ///
+    /// The field is a bad place to copy from — selecting inside another app's box is his mouse
+    /// against that app's selection rules — and the card line that says the words landed ("Typed 28
+    /// characters into Compose message.") does not let him take them anywhere else. He asked for
+    /// this the day he watched a reply get typed into a chat he might have wanted in two places.
+    /// A `<DRAFT>` of his own already owns the well, so a turn that produced both keeps the draft:
+    /// the words he asked Chunks to write outrank the words Chunks happened to type.
+    func offerTypedTextForCopy(_ text: String) {
+        guard draft == nil, !text.isEmpty else { return }
+        draft = text
     }
 
     /// Show what the memory store did about the turn's proposal, as a footnote on the card.
@@ -260,6 +517,7 @@ final class NotchHUDModel: ObservableObject {
         phase = .idle
         hintTask?.cancel()
         hintTask = nil
+        stopClock()
         clearContent()
         Log.write("hud: dismissed (from \(leaving), reason: \(reason))")
     }
@@ -271,8 +529,8 @@ final class NotchHUDModel: ObservableObject {
     /// The wording names the control the *hit test* found, not the one the model described, so
     /// the user is approving what is about to be pressed.
     func askConfirm(_ question: String) {
-        confirmResult = nil
         confirmQuestion = question
+        stage = .waitingForYou
         phase = .result
     }
 
@@ -288,16 +546,68 @@ final class NotchHUDModel: ObservableObject {
         onConfirmAnswer?(outcome)
     }
 
-    /// Replace the question row with one line about what happened.
+    /// Add one line to the record of what this turn did to the screen.
+    ///
+    /// Appended rather than replacing the last line, and the row it used to occupy is gone: a
+    /// plan's fourth outcome overwriting its first is what made a four-step turn look like a
+    /// one-step one. The card is capped, so the view folds anything past
+    /// `AnswerPanelLayout.maxVisibleTimelineRows` into "+N earlier".
     func reportConfirm(_ line: String) {
         confirmQuestion = nil
         let bounded = AnswerPanelLayout.boundedDetail(line,
                                                       budget: AnswerPanelLayout.noteCharacterBudget)
-        confirmResult = bounded.isEmpty ? nil : bounded
+        guard !bounded.isEmpty else { return }
+        actLines.append(ActLine(text: bounded, step: currentStep?.index, of: currentStep?.of))
+        currentStep = nil
+        stage = .acting
         if phase == .idle { phase = .result }
     }
 
     private var hintTask: Task<Void, Never>?
+
+    /// The step whose outcome line has not been reported yet.
+    private var currentStep: (index: Int, of: Int)?
+
+    private var tick: Timer?
+    private var turnStart: Date?
+
+    /// Start the turn clock. Half-second ticks, because a readout that changes once a second looks
+    /// frozen for up to a second at a time — the exact impression this row exists to remove.
+    private func startClock() {
+        turnStart = Date()
+        elapsed = 0
+        tick?.invalidate()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshClock() }
+        }
+        // Added to the common mode: the run loop is busy streaming a reply, and a clock that only
+        // ticks when the loop is idle is a clock that stops during the wait it is measuring.
+        RunLoop.main.add(timer, forMode: .common)
+        tick = timer
+    }
+
+    private func refreshClock() {
+        guard let turnStart else { return }
+        elapsed = Date().timeIntervalSince(turnStart)
+    }
+
+    /// Stop ticking but keep the final figure, so "Answered · 4.2s" is the time it actually took.
+    private func stopClock() {
+        tick?.invalidate()
+        tick = nil
+        refreshClock()
+    }
+
+    /// Freeze the elapsed readout at a chosen value.
+    ///
+    /// Only `--render-ui` calls it. A render of a design has to be reproducible, and a card whose
+    /// timer reads whatever the clock happened to be doing when the file was written cannot be
+    /// compared against the next one.
+    func setElapsedForRendering(_ seconds: TimeInterval) {
+        stopClock()
+        turnStart = nil
+        elapsed = seconds
+    }
 
     private func clearContent() {
         // A press question that loses its card without an answer was never approved, and the
@@ -308,7 +618,6 @@ final class NotchHUDModel: ObservableObject {
             confirmQuestion = nil
             onConfirmAnswer?(.denied)
         }
-        confirmResult = nil
         headline = ""
         speech = ""
         detail = ""
@@ -316,9 +625,17 @@ final class NotchHUDModel: ObservableObject {
         points = []
         caption = ""
         memoryNote = nil
+        draft = nil
+        actLines = []
+        currentStep = nil
+        stage = .listening
     }
 
-    private func firstLine(_ text: String) -> String {
+    /// The card's label when the model gave no `<DONE_TITLE>`.
+    ///
+    /// Static and shared with the history store on purpose: a turn's row in the window and the line
+    /// the user just read on the card must be the same words, not two independent cuts of one answer.
+    static func firstLine(_ text: String) -> String {
         text.split(separator: "\n", omittingEmptySubsequences: true)
             .first.map(String.init)?
             .trimmingCharacters(in: .whitespaces) ?? ""

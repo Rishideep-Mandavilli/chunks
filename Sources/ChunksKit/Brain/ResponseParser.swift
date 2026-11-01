@@ -13,11 +13,20 @@ public struct PointTarget: Equatable, Sendable {
     public var label: String
     public var display: Int
 
-    public init(x: Double, y: Double, label: String, display: Int = 1) {
+    /// The application the model says the control belongs to, when it named one alongside a
+    /// coordinate: `app=Qoder x=400,50:file title`.
+    ///
+    /// Not decoration. A pixel aim is a guess about a picture, and the picture may show three apps;
+    /// the named one is evidence the hit test can be checked against, so the qualifier makes the
+    /// press stricter rather than looser — see `ActionRequest.parseAct`.
+    public var appName: String?
+
+    public init(x: Double, y: Double, label: String, display: Int = 1, appName: String? = nil) {
         self.x = x
         self.y = y
         self.label = label
         self.display = display
+        self.appName = appName
     }
 
     public var point: LogicalPoint { LogicalPoint(x: x, y: y) }
@@ -30,6 +39,29 @@ public struct MemoryProposal: Equatable, Sendable {
     public struct Addition: Equatable, Sendable, Codable {
         public var section: MemoryStore.Section
         public var fact: String
+
+        /// What the model *claims* about where the fact came from.
+        ///
+        /// A claim, not a fact: `MemoryStore.propose` checks it against the transcript of this turn
+        /// and downgrades it if his own words are not in there. It exists because the answer changes
+        /// what is allowed to retire the line later — an inference off his screen never overwrites
+        /// something he said out loud.
+        public var claim: MemoryStore.Origin
+
+        /// A substring naming the one stored fact this one replaces, or nil.
+        ///
+        /// Without it the file can only grow, and a cap that can only grow is a cap that eventually
+        /// refuses every correction. One match, or the whole addition is refused — a supersede that
+        /// quietly matched nothing is the bug the H-MEM spec itself still has open.
+        public var supersedes: String?
+
+        public init(section: MemoryStore.Section, fact: String,
+                    claim: MemoryStore.Origin = .inferred, supersedes: String? = nil) {
+            self.section = section
+            self.fact = fact
+            self.claim = claim
+            self.supersedes = supersedes
+        }
     }
     public var add: [Addition]
     public var prune: [String]
@@ -49,6 +81,8 @@ public struct MemoryProposal: Equatable, Sendable {
             struct Add: Decodable {
                 var section: String
                 var fact: String
+                var source: String?
+                var supersedes: String?
             }
             var add: [Add]?
             var prune: [String]?
@@ -58,17 +92,25 @@ public struct MemoryProposal: Equatable, Sendable {
         var out = MemoryProposal()
         out.add = (wire.add ?? []).compactMap { entry in
             guard let section = MemoryStore.Section(rawValue: entry.section) else { return nil }
-            return Addition(section: section, fact: entry.fact)
+            return Addition(section: section, fact: entry.fact,
+                            claim: entry.source == "he said" ? .said : .inferred,
+                            supersedes: entry.supersedes)
         }
         out.prune = wire.prune ?? []
         return out
     }
 
     public var encodedJSON: String {
-        let obj: [String: Any] = [
-            "add": add.map { ["section": $0.section.rawValue, "fact": $0.fact] },
-            "prune": prune,
-        ]
+        var additions: [[String: Any]] = []
+        for one in add {
+            var entry: [String: Any] = ["section": one.section.rawValue, "fact": one.fact]
+            // Written back only when set, so a round-trip of an ordinary proposal stays byte-identical
+            // to what the protocol has always looked like.
+            if one.claim == .said { entry["source"] = "he said" }
+            if let supersedes = one.supersedes { entry["supersedes"] = supersedes }
+            additions.append(entry)
+        }
+        let obj: [String: Any] = ["add": additions, "prune": prune]
         guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return "{}" }
         return String(decoding: data, as: UTF8.self)
     }
@@ -86,8 +128,19 @@ public enum ReplyEvent: Equatable, Sendable {
     case point(PointTarget)
     /// The model proposed a memory change. Validate before applying.
     case memory(MemoryProposal)
-    /// The model offered to save an explanation to the Notebook.
-    case noteOffer(title: String)
+    /// Words to be sent, written for him to send himself.
+    ///
+    /// A separate surface rather than ordinary answer text because the answer *is* the payload: he has
+    /// to be able to select the whole of it and put it where it belongs. Chunks fills a field and never
+    /// presses Send, so a drafted message that only exists as a paragraph of prose is a paragraph he
+    /// cannot deliver. This is the tag that carries it, and the card that carries a Copy button.
+    ///
+    /// Never spoken: reading a draft aloud while he cannot see all of it is worse than the two seconds
+    /// it takes to read it once.
+    case draft(String)
+    /// The tail of a `[TYPE:]` payload that arrived as plain text, because code contains the `]`
+    /// that ends the tag. The streamer re-joins it onto the last type request before anything runs.
+    case typeExtension(String)
     /// The one line to speak when the turn finishes.
     ///
     /// Distinct from `.speech`: `<SAY>` is narration the model chose to speak *and* show,
@@ -137,14 +190,13 @@ public final class ResponseParser {
         let start: String        // literal that opens it
         let end: String?         // literal that closes it, nil if self-closing (e.g. [POINT:…])
         let kind: Kind
-        enum Kind { case say, memory, note, point, act, type, scroll, tool, summary,
-                   doneTitle, nextActions, continuation, read }
+        enum Kind { case say, memory, point, act, type, scroll, tool, summary,
+                   doneTitle, nextActions, continuation, read, draft }
     }
 
     private static let constructs: [Construct] = [
         Construct(start: "<SAY>",    end: "</SAY>",    kind: .say),
         Construct(start: "<MEMORY>", end: "</MEMORY>", kind: .memory),
-        Construct(start: "<NOTE>",   end: "</NOTE>",   kind: .note),
         Construct(start: "[POINT:",  end: "]",         kind: .point),
         // Same body format as [POINT:…] — the model is pointing at a control it wants
         // pressed rather than one it wants flown to.
@@ -175,6 +227,11 @@ public final class ResponseParser {
         // user's behalf — it changes nothing on screen — and because the answer comes back in the
         // *next* turn, with the contents attached, which no other construct does.
         Construct(start: "[READ:", end: "]", kind: .read),
+        // Words to be sent, written so he can send them himself: `<DRAFT>…</DRAFT>`. Its own tag
+        // rather than a `<SAY>` block because the payload has to survive intact — a message he is
+        // about to paste cannot arrive as prose mixed with the explanation of it — and because the
+        // card that holds it needs a Copy button, which no other surface on this card has.
+        Construct(start: "<DRAFT>", end: "</DRAFT>", kind: .draft),
     ]
 
     private var buffer = ""
@@ -187,12 +244,84 @@ public final class ResponseParser {
         return drain(final: false)
     }
 
-    /// Flush. Any residue — including a half-written tag — becomes text.
+    /// Flush. Any residue — including a half-written tag — becomes text, and any type payload
+    /// still gathering from that text is closed into its act.
     public func finish() -> [ReplyEvent] {
         let rest = buffer
         buffer = ""
-        guard !rest.isEmpty else { return [] }
-        return [.text(rest)]
+        var events: [ReplyEvent] = []
+        if !rest.isEmpty { settledText(rest, &events) }
+        closeTypePayloads(&events)
+        return events
+    }
+
+    // MARK: Type payloads that arrive as text
+
+    /// A `[TYPE:]` whose body carried an aim but no `|`: a contended model puts the words after
+    /// the closing bracket, as plain text — photographed twice on his machine over an empty
+    /// editor. The head is kept here and the words are gathered from the text events that follow,
+    /// because a type act that never parses is the user's words vanishing, which is the one loss
+    /// this parser exists to prevent.
+    private var deferredTypeHead: String?
+    private var deferredTypePayload = ""
+
+    /// A `[TYPE:]` that parsed: code contains `]`, which ends the construct early, so the rest of
+    /// the payload also arrives as plain text and is re-joined onto the request before it runs.
+    /// Armed rather than open: a well-formed tag followed by prose on the next line must not gain
+    /// that prose, so only text continuing the *same line* re-joins, and it brings back the `]`
+    /// the construct consumed.
+    private var typeExtensionArmed = false
+    private var typeExtensionOpen = false
+    private var typeExtensionPayload = ""
+
+    /// Record settled text, feeding any open type payload from it.
+    ///
+    /// A line that opens a new tag ends the payload: the raw-tag text of a malformed `[ACT:…]`
+    /// must not be typed into the editor beside the code it followed.
+    private func settledText(_ s: String, _ events: inout [ReplyEvent]) {
+        if typeExtensionArmed {
+            typeExtensionArmed = false
+            if !s.hasPrefix("\n"), !s.hasPrefix(" "), !s.hasPrefix("["), !s.isEmpty {
+                typeExtensionOpen = true
+                typeExtensionPayload = "]"
+            }
+        }
+        if deferredTypeHead != nil || typeExtensionOpen {
+            var gathered = s
+            var closed = false
+            if gathered.hasPrefix("[") {
+                gathered = ""
+                closed = true
+            } else if let tag = gathered.range(of: "\n[") {
+                gathered = String(gathered[..<tag.lowerBound])
+                closed = true
+            }
+            if deferredTypeHead != nil { deferredTypePayload += gathered }
+            else { typeExtensionPayload += gathered }
+            if closed { closeTypePayloads(&events) }
+        }
+        events.append(.text(s))
+    }
+
+    /// Turn whatever the text stream carried into the act it belonged to.
+    private func closeTypePayloads(_ events: inout [ReplyEvent]) {
+        typeExtensionArmed = false
+        if let head = deferredTypeHead {
+            deferredTypeHead = nil
+            let payload = deferredTypePayload.trimmingCharacters(in: .whitespacesAndNewlines)
+            deferredTypePayload = ""
+            if !payload.isEmpty, payload.count <= ActionRequest.maxTypedCharacters,
+               var request = ActionRequest.parseType(head + "|x") {
+                request.verb = .type(text: payload)
+                events.append(.act(request))
+            }
+        }
+        if typeExtensionOpen {
+            typeExtensionOpen = false
+            let ext = typeExtensionPayload
+            typeExtensionPayload = ""
+            if !ext.isEmpty { events.append(.typeExtension(ext)) }
+        }
     }
 
     // MARK: Draining
@@ -204,10 +333,12 @@ public final class ResponseParser {
             // Find the earliest construct that starts here and is already complete.
             guard let hit = earliestCompleteConstruct() else { break }
 
-            // Anything before the construct is settled text.
+            // Anything before the construct is settled text — and may be the tail of a type
+            // payload that arrived without its pipe.
             if hit.range.lowerBound > buffer.startIndex {
-                events.append(.text(String(buffer[..<hit.range.lowerBound])))
+                settledText(String(buffer[..<hit.range.lowerBound]), &events)
             }
+            if hit.kind != .type { closeTypePayloads(&events) }
 
             switch hit.kind {
             case .say:
@@ -220,9 +351,16 @@ public final class ResponseParser {
                     // A malformed MEMORY block is dropped, not shown: it is machine
                     // syntax, and echoing it would confuse the user.
                 }
-            case .note:
-                let title = (hit.inner ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                if !title.isEmpty { events.append(.noteOffer(title: title)) }
+            case .draft:
+                let body = (hit.inner ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                // Fail open like every act tag: a swallowed draft is the message he asked for and
+                // never got. Over the cap it is shown as text rather than cut, because half a
+                // sentence pasted into a chat is worse than the whole tag on the card.
+                if body.isEmpty || body.count > ResponseParser.maxDraftCharacters {
+                    events.append(.text(String(buffer[hit.range])))
+                } else {
+                    events.append(.draft(body))
+                }
             case .summary:
                 if let line = ResponseParser.singleLine(hit.inner) { events.append(.summary(line)) }
             case .doneTitle:
@@ -257,8 +395,11 @@ public final class ResponseParser {
                 if ResponseParser.isNoPoint(inner) {
                     // Same "none" escape as [POINT:] — the model considered acting and
                     // concluded there is nothing to act on. Consumed quietly.
-                } else if let target = ResponseParser.parsePoint(inner) {
-                    events.append(.act(ActionRequest(target: target)))
+                } else if let request = ActionRequest.parseAct(inner) {
+                    // Either a point in the picture or a control named in the accessibility tree;
+                    // `parseAct` decides, and the request carries which so the shell can resolve it
+                    // without re-reading the tag.
+                    events.append(.act(request))
                 } else {
                     // A malformed ACT would, unlike a malformed POINT, have asked for a click.
                     // Showing it raw is still the right failure: the user sees the tag instead
@@ -266,8 +407,19 @@ public final class ResponseParser {
                     events.append(.text(String(buffer[hit.range])))
                 }
             case .type:
-                if let request = ActionRequest.parseType(hit.inner ?? "") {
+                closeTypePayloads(&events)
+                let inner = hit.inner ?? ""
+                if let request = ActionRequest.parseType(inner) {
                     events.append(.act(request))
+                    // Code carries `]`, which is what just ended this construct: text continuing
+                    // the same line is the rest of the payload until the next tag says otherwise.
+                    typeExtensionArmed = true
+                } else if !inner.contains("|"), ActionRequest.parseType(inner + "|x") != nil {
+                    // Aim yes, pipe no: the words are coming as plain text after the bracket.
+                    // The tag is still shown — fail-open, unchanged — and the act arrives at
+                    // `finish` or at the next tag, from the text in between.
+                    deferredTypeHead = inner
+                    events.append(.text(String(buffer[hit.range])))
                 } else {
                     // The same visible failure as a malformed ACT. This one matters more: a
                     // swallowed `[TYPE:…]` is words the user asked to send that silently vanished.
@@ -327,6 +479,37 @@ public final class ResponseParser {
         let kind: Construct.Kind
     }
 
+    /// Where this construct's payload ends.
+    ///
+    /// For every tag but one it is the first `]` after the open, because an `[ACT:]` body is two
+    /// numbers and a label and a `[DO:]` body is a name — neither can contain a bracket. `[TYPE:]` is
+    /// the exception, and the reason is his code: measured 2026-10-29 against a reply carrying
+    /// `uint8_t data[]`, the construct closed at *that* bracket, the rest of the program arrived as
+    /// prose beside the act, and the recovery path put a literal `]` back at the front of the next
+    /// chunk. For this tag a `]` ends the payload only where the reply's own structure ends it —
+    /// nothing follows it, or what follows is another construct. That is a rule about this grammar,
+    /// not about whichever language he is typing.
+    ///
+    /// When no structural end exists the first `]` still wins, so a payload that closes mid-line and
+    /// is followed by prose behaves exactly as it did before rather than losing the whole act.
+    private static func closeRange<S: StringProtocol>(of c: Construct, in buffer: S,
+                                                      from start: S.Index) -> Range<S.Index>? {
+        let first = buffer.range(of: c.end ?? "", range: start..<buffer.endIndex)
+        guard c.kind == .type else { return first }
+        var searchFrom = start
+        while let candidate = buffer.range(of: "]", range: searchFrom..<buffer.endIndex) {
+            searchFrom = candidate.upperBound
+            // The pipe-less form — `[TYPE:1,2:box]the code` — has no payload *inside* the brackets at
+            // all: this bracket ends the aim, and the code arrives after it and is gathered onto the
+            // request. The rule below is only for a bracket that is standing inside a payload.
+            if !buffer[start..<candidate.lowerBound].contains("|") { return candidate }
+            let tail = buffer[candidate.upperBound...].trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            if tail.isEmpty || tail.hasPrefix("[") || tail.hasPrefix("<") { return candidate }
+        }
+        return first
+    }
+
     /// The earliest complete `<TAG>…</TAG>` or `[POINT:…]` starting in the buffer.
     private func earliestCompleteConstruct() -> Hit? {
         var best: Hit?
@@ -336,7 +519,8 @@ public final class ResponseParser {
             while let s = buffer.range(of: c.start, range: searchStart..<buffer.endIndex) {
                 searchStart = s.upperBound
                 let afterOpen = s.upperBound
-                guard let e = buffer.range(of: c.end ?? "", range: afterOpen..<buffer.endIndex) else {
+                guard let e = ResponseParser.closeRange(of: c, in: buffer,
+                                                         from: afterOpen) else {
                     // Opened but not closed yet — try a later occurrence of the same tag,
                     // but only if another one could still be complete.
                     continue
@@ -414,6 +598,14 @@ public final class ResponseParser {
     /// Both `<DONE_TITLE>` and `<SUMMARY>` are meant to be a single line. A model that
     /// answers with a paragraph gets its first sentence rather than a card that overflows,
     /// and an empty block is dropped rather than emitting a blank title.
+    /// The longest draft the card can hold.
+    ///
+    /// A message he has to read before he sends it. Past about six lines the card is a wall of text
+    /// with a button under it, and the alternative to refusing the long one is clipping it — a
+    /// truncated draft pasted into a chat is a sentence that ends in the middle of a thought, which is
+    /// the exact failure `DoRequest.maxQuestionCharacters` was written against.
+    public static let maxDraftCharacters = 340
+
     static func singleLine(_ raw: String?) -> String? {
         guard let raw else { return nil }
         let collapsed = raw
@@ -476,8 +668,45 @@ public final class ResponseParser {
     /// the label is whatever remains after the second comma. Splitting on every colon
     /// instead would truncate any label containing one, and splitting on every comma would
     /// truncate any label containing one of those.
+    /// The aim's own words, with the axis names a model adds taken out.
+    ///
+    /// Measured 2026-10-29 against his real history: of the twelve `[TYPE:]` tags this build has been
+    /// asked to run, four carried an axis letter the tag space never defined — `x:235,y:400`,
+    /// `x,625,320`, `x,230,y:360:main.c`, `x=200,380` — and every one of them failed open as raw
+    /// markup over an empty editor, which is the user asking twice for the same code. The rule is
+    /// structural, not a list of spellings: an axis name is a token made only of `x`/`y`, optionally
+    /// joined to its number by `=`, `:` or a comma, sitting at the front of the aim or just after its
+    /// first comma. A token, so a label that begins with "x-ray" and an app called "X" are untouched.
+    static func stripAxisNames(_ body: String) -> String {
+        var text = body
+        // `x,625,320`: the whole leading token is an axis name, so the token and its comma both go.
+        if let comma = text.firstIndex(of: ","),
+           isAxisToken(String(text[..<comma])) {
+            text = String(text[text.index(after: comma)...]).trimmingCharacters(in: .whitespaces)
+        }
+        // `x:235,y:400` and `x=200,380`: the axis name is glued to its number by a separator.
+        text = dropAxisPrefix(from: text)
+        guard let comma = text.firstIndex(of: ",") else { return text }
+        // …and the same for the second coordinate, which is where `y:` and `y=` appear.
+        let tail = dropAxisPrefix(from: String(text[text.index(after: comma)...]))
+        return String(text[..<comma]) + "," + tail
+    }
+
+    private static func isAxisToken(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
+        return !trimmed.isEmpty && trimmed.allSatisfy { $0 == "x" || $0 == "y" }
+    }
+
+    /// `x:` / `y=` at the front of a coordinate, and nothing else.
+    private static func dropAxisPrefix(from text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard let separator = trimmed.firstIndex(where: { $0 == "=" || $0 == ":" }),
+              isAxisToken(String(trimmed[..<separator])) else { return trimmed }
+        return String(trimmed[trimmed.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
+    }
+
     static func parsePoint(_ inner: String) -> PointTarget? {
-        var body = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+        var body = stripAxisNames(inner.trimmingCharacters(in: .whitespacesAndNewlines))
         var display = 1
 
         // 1. Strip a trailing ":screenN", if present. Working from the tail is what lets a

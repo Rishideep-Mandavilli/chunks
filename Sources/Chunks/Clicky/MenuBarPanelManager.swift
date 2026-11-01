@@ -154,6 +154,11 @@ final class MenuBarPanelManager: NSObject {
         if panel == nil {
             createPanel()
         }
+        // The hosting view is built once and reused, so the panel's `onAppear` fires the first time
+        // only — and the memory file is hand-editable, so it can change while the app runs. Re-read
+        // on every open: a meter showing a number the file no longer holds is the kind of confident
+        // wrongness this project keeps having to fix.
+        companionManager.refreshMemory()
 
         positionPanelBelowStatusItem()
 

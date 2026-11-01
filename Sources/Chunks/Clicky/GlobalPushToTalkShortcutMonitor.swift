@@ -26,6 +26,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// second time is an exit that works even when the window never got key focus.
     let circleTogglePublisher = PassthroughSubject<Void, Never>()
 
+    /// Fires on ⌃⌘A. The third letter of the same family, for the third surface: the window is
+    /// where an answer is re-read, so it needs a chord of its own rather than a second meaning
+    /// for the one that opens the settings panel.
+    let windowTogglePublisher = PassthroughSubject<Void, Never>()
+
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
     /// Mutated exclusively from the CGEvent tap callback, which runs on
@@ -103,7 +108,10 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             0
         ) else {
             CFMachPortInvalidate(globalEventTap)
-            print("⚠️ Global push-to-talk: couldn't create event tap run loop source")
+            // Through `Log`, not `print`: an app started by `open` has no readable stdout, and a
+            // talk key that silently does nothing with every permission row reading "Granted" is
+            // invariant 7's failure mode.
+            Log.write("event tap: FAILED to create the run loop source — tap exists but receives nothing")
             return
         }
 
@@ -148,10 +156,15 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         // A handful of events, once. Without this the log cannot tell a tap that was never
         // created from one that was created and is being starved of events — and those two
         // need different fixes.
+        //
+        // **The key is not written down.** This line used to carry `keyCode=` and `flags=`, and so
+        // did the twelve below it: a plaintext record of the first keys typed after every launch,
+        // in a file the user is asked to paste when something breaks. Keycodes plus a known layout
+        // are the password. The event *kind* answers the starvation question just as well, so the
+        // diagnostic stays and the record goes.
         if eventsSeenLogged < 3 {
             eventsSeenLogged += 1
-            Log.write("event tap: event type=\(eventType.rawValue) keyCode=\(eventKeyCode) "
-                      + "flags=0x\(String(event.flags.rawValue, radix: 16))")
+            Log.write("event tap: event type=\(eventType.rawValue) (key not logged)")
         }
 
         // Matched against the tap's own CGEventFlags, because that is what the pure matcher
@@ -173,13 +186,20 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             Log.write("event tap: circle chord matched")
             circleTogglePublisher.send(())
         }
+        if eventType == .keyDown, !isAutoRepeat,
+           WindowShortcut.matches(keyCode: eventKeyCode, flags: event.flags) {
+            Log.write("event tap: window chord matched")
+            windowTogglePublisher.send(())
+        }
 
         if eventType == .keyDown, keyDownsLogged < 12 {
             keyDownsLogged += 1
-            Log.write("event tap: keyDown keyCode=\(eventKeyCode) "
-                + "flags=0x\(String(event.flags.rawValue, radix: 16)) "
-                + "panel=\(PanelShortcut.matches(keyCode: eventKeyCode, flags: event.flags)) "
-                + "circle=\(CircleShortcut.matches(keyCode: eventKeyCode, flags: event.flags))")
+            // Which chords this key *would* have fired is the whole diagnostic — the key itself is
+            // not logged, for the reason written above the first three lines.
+            Log.write("event tap: key heard (panel="
+                + "\(PanelShortcut.matches(keyCode: eventKeyCode, flags: event.flags)) "
+                + "circle=\(CircleShortcut.matches(keyCode: eventKeyCode, flags: event.flags)) "
+                + "window=\(WindowShortcut.matches(keyCode: eventKeyCode, flags: event.flags)))")
         }
 
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(

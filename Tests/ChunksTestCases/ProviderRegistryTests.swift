@@ -70,6 +70,15 @@ public enum ProviderRegistryTests {
                     + "through a slow model before trying the cheap fast ones")
             expectEqual(ids.first, "gemini-3.6-flash",
                         "the first model tried is what the user waits on every single turn")
+            // Measured over 161 turns: `3.8-flash` has a 24.2s median and 116 failures, while
+            // `3.1-flash-lite` has a 14.5s median and **9** failures. Slot two is where the chain
+            // lands after the first refusal *and* the model the hedge asks alongside the leader, so
+            // it belongs to the reliable one — the highest number in the name is not a ranking.
+            expectEqual(ids.dropFirst().first, "gemini-3.1-flash-lite",
+                        "the second slot went back to the slow-and-contended model: \(ids)")
+            expect(ids.firstIndex(of: "gemini-3.8-flash") ?? 0 > 1,
+                  "3.8-flash is ahead of the model that answers it — its median is slower than "
+                    + "the per-attempt slice, so it can only ever lose the slot")
             expectEqual(ProviderRegistry.defaultFreeModelID, ids.first,
                         "the default model and the head of the chain disagree, so a fresh "
                             + "install starts on the tier that has never served a turn here")

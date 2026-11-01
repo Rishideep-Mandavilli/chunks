@@ -1,0 +1,396 @@
+#!/bin/bash
+# Every check Chunks can make without a human at the keyboard.
+#
+# This exists because a feature was once added that made the rest of the app unusable and the unit
+# suite stayed green — the tests covered the arithmetic, not the wiring. So this runs the suite AND
+# every read-only probe against the real machine AND re-renders every surface, and it fails loudly
+# when any of them stops working. Run it before declaring anything done.
+#
+# The probes are the developer's harness, not the user's workflow: nothing here presses anything,
+# sends a request, or needs a permission the shell does not already have.
+set -u
+cd "$(dirname "$0")/.."
+
+# The signed bundle, not `.build/debug`: macOS grants Screen Recording and the Keychain by
+# signature, so a probe run from the bare binary reports a machine that is not this machine.
+APP="${CHUNKS_BINARY:-$HOME/Applications/Chunks.app/Contents/MacOS/Chunks}"
+if [[ ! -x "$APP" || "$APP" != *.app/Contents/MacOS/* ]]; then
+  printf 'error: install the signed app with ./scripts/make-app.sh && ./scripts/install.sh first\n' >&2
+  exit 1
+fi
+BIN="$APP"
+export CHUNKS_DEV=1
+RENDER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chunks-verify.XXXXXX")" || exit 1
+printf 'render artifacts: %s\n' "$RENDER_DIR"
+
+pass=0; fail=0; skip=0
+declare -a failures=()
+
+# check <label> <command…> — a step passes when it exits 0 and wrote something to stdout.
+# Exit 3 means "this machine is fine, the service is not" — the self-test uses it when the free
+# tier is refusing requests. Counted as a skip, because a red line for something nobody changed
+# teaches everyone to ignore the red lines.
+check() {
+  local label="$1"; shift
+  local out status
+  out="$( { "$@" ; } 2>&1 )"; status=$?
+  if [[ $status -eq 0 && -n "$out" ]]; then
+    printf '  \033[32mPASS\033[0m  %s\n' "$label"
+    pass=$((pass + 1))
+  elif [[ $status -eq 3 ]]; then
+    printf '  \033[33mSKIP\033[0m  %s  — %s\n' "$label" \
+      "$(printf '%s' "$out" | grep -o 'SKIP:.*' | head -1 | cut -c7-)"
+    skip=$((skip + 1))
+  else
+    printf '  \033[31mFAIL\033[0m  %s  (exit %d)\n' "$label" "$status"
+    printf '        %s\n' "$(printf '%s' "$out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+    fail=$((fail + 1)); failures+=("$label")
+  fi
+}
+
+# file <label> <path> — a render passes when the PNG exists and is big enough to hold real content.
+file_check() {
+  local label="$1" path="$2" minimum="${3:-20000}"
+  if [[ -f "$path" ]] && [[ $(stat -f%z "$path") -ge $minimum ]]; then
+    printf '  \033[32mPASS\033[0m  %s  (%s KB)\n' "$label" "$(( $(stat -f%z "$path") / 1024 ))"
+    pass=$((pass + 1))
+  else
+    printf '  \033[31mFAIL\033[0m  %s  — missing or empty: %s\n' "$label" "$path"
+    fail=$((fail + 1)); failures+=("$label")
+  fi
+}
+
+echo "Chunks — full verification"
+echo "binary: $BIN"
+echo
+
+echo "build"
+check "swift build is clean" swift build
+expected_fingerprint="$(python3 scripts/build-fingerprint.py)" || exit 1
+installed_fingerprint=""
+IFS= read -r installed_fingerprint < "$(dirname "$BIN")/../Resources/BuildInputs.sha256" || true
+if [[ "$installed_fingerprint" != "$expected_fingerprint" ]]; then
+  printf 'error: the installed app does not match the source; run ./scripts/make-app.sh && ./scripts/install.sh\n' >&2
+  exit 1
+fi
+echo
+
+echo "unit tests"
+out="$(swift run chunks-test 2>&1)"; status=$?
+line="$(printf '%s' "$out" | grep -E '^[0-9]+/[0-9]+ passed' | tail -1)"
+if [[ $status -eq 0 && -n "$line" ]]; then
+  printf '  \033[32mPASS\033[0m  %s\n' "$line"
+  printf '%s\n' "$out" | grep '⊘' || true
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %s\n' "${line:-the suite failed}"
+  printf '%s\n' "$out" | grep '✗' | head -10 | sed 's/^/        /'
+  fail=$((fail + 1)); failures+=("unit tests")
+fi
+echo
+
+echo "the real machine, read-only"
+check "self-test: what this build can see"           "$BIN" --self-test
+check "hit test: a point resolves to a control"      "$BIN" --probe-ax 900,120
+check "hit test: the name fallback finds it too"     "$BIN" --probe-ax 900,120 --named "address bar"
+# The draw-and-speak crop aim, checked as arithmetic on the real binary: the region's own rect is
+# flipped into AppKit space, the aim is mapped inside it, and the result is flipped back — so the
+# centre of a region at (0,0 1200x700) must land at (600, 350) whatever the display's height. This
+# is the wiring the unit tests cannot see: a crop aimed as a fraction of the whole display would
+# still print a plausible point, and press something else.
+crop_out="$("$BIN" --probe-crop '0,0,1200,700|500,500' 2>&1)"
+if printf '%s' "$crop_out" | grep -q "→ (600.0, 350.0)" \
+   && printf '%s' "$crop_out" | grep -q "probe-ax: point="; then
+  printf '  \033[32mPASS\033[0m  crop aim: a region maps back to its own place\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  crop aim: the region did not map to its centre\n'
+  printf '        %s\n' "$(printf '%s' "$crop_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("crop aim mapping")
+fi
+check "semantic aim: a named control, no pixel"      "$BIN" --probe-semantic 'app=Finder name="Macintosh HD"'
+# The ranking route, which exists because a name search reads what a control publishes about itself
+# and most web controls publish nothing. Which controls are on screen depends on what he has open, so
+# this asserts the two halves that must always hold: a name that cannot exist is refused out loud
+# rather than answered with the nearest thing, and a name that does exist reaches a card sentence
+# through the same door a press goes through. A browser has to be open for it to mean anything, and
+# when none is the run says SKIP rather than agreeing that the route works.
+browser=""
+for candidate_app in "Google Chrome" Safari Firefox "Mozilla Firefox" Microsoft\ Edge Arc Brave; do
+  if pgrep -x "$candidate_app" >/dev/null 2>&1; then browser="$candidate_app"; break; fi
+done
+if [ -n "$browser" ]; then
+  # The name is read out of what the app publishes right now rather than typed into this script, for
+  # the standing reason: a check that names `Reload` passed all afternoon and then failed when the
+  # window moved down the screen and the walk found no pressable control to aim at at all.
+  ctrl_out="$("$BIN" --probe-controls "$browser" 2>&1)"
+  target_name="$(printf '%s' "$ctrl_out" \
+    | grep -vE "AXMenuBarItem|AXMenuItem" \
+    | grep -oE 'title="[^"]{4,40}"' | head -1 | sed 's/^title="//; s/"$//')"
+  nonsense_out="$("$BIN" --probe-candidates "app=$browser name=zzqxvt" 2>&1)"
+  # How many things the ranking could see at all, read out of the same walk the press uses. When it is
+  # zero the check below proves nothing about web content, and saying "published no named control"
+  # would blame the app for what is actually the window walk reaching nothing inside the veto — the
+  # measured case on 2026-10-31: `--probe-controls` printed 198 pressable controls for Chrome and the
+  # ranking collected 0 inside `(0.0, 156.0, 1710.0, 951.0)`, with the budget spent on browser chrome.
+  ranked_count="$(printf '%s' "$nonsense_out" | grep -oE ': [0-9]+ pressable control' | grep -oE '[0-9]+' | head -1)"
+  if [ -z "$target_name" ]; then
+    printf '  \033[33mSKIP\033[0m  candidates: %s published no named control inside the window the ' \
+           "$browser"
+    printf 'ranking can reach (it saw %s pressable candidate(s))\n' "${ranked_count:-0}"
+    skip=$((skip + 1))
+  elif printf '%s' "$nonsense_out" | grep -q "refused —" \
+     && "$BIN" --probe-candidates "app=$browser name=$target_name" 2>&1 \
+        | grep -q "card would ask \"Press"; then
+    printf '  \033[32mPASS\033[0m  candidates: a guess is asked about, a near miss is refused\n'
+    pass=$((pass + 1))
+  else
+    printf '  \033[31mFAIL\033[0m  candidates: "%s" was not resolved, or an impossible name was not refused\n' "$target_name"
+    printf '        %s\n' "$(printf '%s' "$nonsense_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+    fail=$((fail + 1)); failures+=("candidate ranking in $browser")
+  fi
+else
+  printf '  \033[33mSKIP\033[0m  candidates: no browser open, so no web content to rank\n'
+  skip=$((skip + 1))
+fi
+# The reveal tool's two halves: a name resolves to one real folder on this disk, and a credential
+# folder is refused before a card is ever built. The second is a contract, not a behaviour test —
+# showing `~/.ssh` on screen is a leak even when nothing is read from it.
+reveal_out="$("$BIN" --probe-reveal "$PWD" 2>&1)"
+secret_out="$("$BIN" --probe-reveal '~/.ssh' 2>&1)"
+if printf '%s' "$reveal_out" | grep -q "one match" \
+   && printf '%s' "$secret_out" | grep -q "refused — secret"; then
+  printf '  \033[32mPASS\033[0m  reveal: a folder resolves, a credential store is refused\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  reveal: the name search or the credential refusal changed\n'
+  printf '        %s\n' "$(printf '%s\n%s' "$reveal_out" "$secret_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("reveal tool")
+fi
+check "fields: what an app publishes to the typist"  "$BIN" --probe-fields Finder
+# The command tool's executor, run with two fixed programs the harness chooses — never an argument,
+# because a flag that ran whatever it was handed is the door the parser exists to close.
+cmd_out="$("$BIN" --probe-command 2>&1)"
+# Three states, and the third is the one that matters: `caffeinate -u -t 5` is *meant* to still be
+# running when Chunks stops watching, and until 2026-10-31 the probe reported it as "finished" — the
+# same word `date` gets. A check that asserted only the first two lines let a card tell the user his
+# six-hour sleep hold had already ended.
+if printf '%s' "$cmd_out" | grep -q "date — finished · [1-9]" \
+   && printf '%s' "$cmd_out" | grep -q "true — finished · 0 chars" \
+   && printf '%s' "$cmd_out" | grep -q "caffeinate -u -t 5 — still running" \
+   && printf '%s' "$cmd_out" | grep -q "ToolRunner.run(.runCommand) — executed"; then
+  printf '  \033[32mPASS\033[0m  command tool: runs a program, collects output, and knows a hold from a finish\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  command tool: the executor did not report all three outcomes\n'
+  printf '        %s\n' "$(printf '%s' "$cmd_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("command tool")
+fi
+# The reminder tool, against this Mac's actual clock. A unit case checks `at 21:00` against a fixed
+# calendar; only this run checks it against the hour the machine is really at, which is where the
+# first version was wrong (a 40-minute reminder reported itself as "in 39 min"). The spoken form
+# is matched as either shape on purpose: armed at 23:30, "in 40 min" *is* "tomorrow at 00:10", and
+# a check that only passes before midnight is a fixture bug, not a regression — learned at 23:57
+# on 2026-10-28 when this line went red for no other reason than the hour.
+remind_out="$("$BIN" --probe-remind 'remind:stretch|40 min' 2>&1)"
+remind_seconds="$("$BIN" --probe-remind 'remind:buy milk|in 30 seconds' 2>&1)"
+if printf '%s' "$remind_out" | grep -qF 'Remind "stretch" in 40 min?' \
+   && printf '%s' "$remind_out" | grep -qE '· (in [0-9]+ min|tomorrow at [0-9]{2}:[0-9]{2})' \
+   && printf '%s' "$remind_out" | grep -q "nothing was armed" \
+   && printf '%s' "$remind_seconds" | grep -q "refused at parse"; then
+  printf '  \033[32mPASS\033[0m  reminders: the tag parses, the clock agrees, seconds are refused\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  reminders: the tool did not describe its own card\n'
+  printf '        %s\n' "$(printf '%s\n%s' "$remind_out" "$remind_seconds" | grep -vE '^\s*$' | tail -3 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("reminder tool")
+fi
+# The power hold. The decision is a unit case; whether *this* machine takes an `IOPMAssertion` is not,
+# and the panel row has to be able to tell "on" from "holding" — so the probe asks, reads the answer
+# and releases it in the same breath.
+awake_out="$("$BIN" --probe-awake 2>&1)"
+if printf '%s' "$awake_out" | grep -q "took the request and it has been released"; then
+  printf '  \033[32mPASS\033[0m  power hold: the machine takes the request, and the probe let go of it\n'
+  pass=$((pass + 1))
+elif printf '%s' "$awake_out" | grep -q "refused (status"; then
+  printf '  \033[33mSKIP\033[0m  power hold: this machine refused the assertion — the row must say so\n'
+  skip=$((skip + 1))
+else
+  printf '  \033[31mFAIL\033[0m  power hold: the probe never reported a verdict\n'
+  printf '        %s\n' "$(printf '%s' "$awake_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("power hold")
+fi
+# The two tags a reply can only work with if the model knows them. `--probe-prompt` prints the whole
+# instruction the live request carries, so this is the same text, not a copy of it: a prompt edit that
+# drops `<DRAFT>` leaves the code intact and the feature dead, which no unit case can see.
+prompt_out="$("$BIN" --probe-prompt 'write him a reply' 2>&1)"
+if printf '%s' "$prompt_out" | grep -q "<DRAFT>" \
+   && printf '%s' "$prompt_out" | grep -q "\[DO:remind:" \
+   && printf '%s' "$prompt_out" | grep -q "caffeinate -di" \
+   && ! printf '%s' "$prompt_out" | grep -q "caffeinate -u" \
+   && ! printf '%s' "$prompt_out" | grep -q "there is no tool yet"; then
+  printf '  \033[32mPASS\033[0m  prompt: draft and reminder tags explained, sleep flags are the ones that hold\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  prompt: a supported tag is missing, or the sleep example is back on `-u`\n'
+  fail=$((fail + 1)); failures+=("prompt teaches the new tags")
+fi
+# The memory trust rule, driven through his real `memory.md` in a temporary copy. Both halves must
+# hold: an inference may not retire something he said, and his own correction must be able to — the
+# second one matters because the file is capped, so a replacement that cannot land makes a full file
+# permanently wrong.
+memory_out="$("$BIN" --probe-memory 2>&1)"; memory_status=$?
+if [[ $memory_status -eq 3 ]]; then
+  printf '  \033[33mSKIP\033[0m  memory: %s\n' \
+    "$(printf '%s' "$memory_out" | grep -o 'SKIP:.*' | head -1 | cut -c7-)"
+  skip=$((skip + 1))
+elif printf '%s' "$memory_out" | grep -q "refused, as it must be" \
+   && printf '%s' "$memory_out" | grep -q "said by him → replaced"; then
+  printf '  \033[32mPASS\033[0m  memory: a guess cannot overwrite what he said, and his own word can\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  memory: the replacement rule did not behave on his real file\n'
+  printf '        %s\n' "$(printf '%s' "$memory_out" | grep -vE '^\s*$' | tail -3 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("memory trust rule")
+fi
+# The named aim must find the app the user is looking at, not a helper whose name merely starts with
+# the same word — the ShortcutsViewService refusal of 2026-10-27 that said "no control called
+# stop sleep" about a tile on screen. Asserted only when Shortcuts has a *window* open: the process
+# keeps running after the window closes, and then there is genuinely nothing to aim at, so a refusal
+# would be correct and the check would be lying about a regression.
+if pgrep -x Shortcuts >/dev/null 2>&1 \
+   && "$BIN" --probe-controls Shortcuts 2>&1 | grep -q "AXButton"; then
+  sc_out="$("$BIN" --probe-semantic 'app=Shortcuts name="stop sleep"' 2>&1)"
+  if printf '%s' "$sc_out" | grep -q "AXButton/stop sleep"; then
+    printf '  \033[32mPASS\033[0m  named aim: the app with the window, not the helper beside it\n'
+    pass=$((pass + 1))
+  else
+    printf '  \033[31mFAIL\033[0m  named aim: a visible shortcut could not be resolved\n'
+    printf '        %s\n' "$(printf '%s' "$sc_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+    fail=$((fail + 1)); failures+=("named aim picks the right process")
+  fi
+else
+  printf '  \033[33mSKIP\033[0m  named aim: no Shortcuts window open to aim at\n'
+  skip=$((skip + 1))
+fi
+check "desktop: the icon tree is still published"    "$BIN" --probe-desktop
+check "voices: at least one is offered to the app"   "$BIN" --probe-voice
+# The microphone itself. Every other check in this file reads the screen or the disk; none of them
+# could see the failure that made the notch appear and vanish, because that one lives in CoreAudio.
+# This opens the input ten times and prints what each path cost, so "voice is dead" is a red line
+# here rather than a message from him.
+mic_out="$("$BIN" --probe-mic 2>&1)"; mic_status=$?
+if [[ $mic_status -eq 3 ]]; then
+  printf '  \033[33mSKIP\033[0m  microphone: %s\n' \
+    "$(printf '%s' "$mic_out" | grep -o 'SKIP:.*' | head -1 | cut -c7-)"
+  skip=$((skip + 1))
+elif printf '%s' "$mic_out" | grep -q "reuse the same engine.*5/5 opened" \
+   && printf '%s' "$mic_out" | grep -q "start a fresh engine.*5/5 opened"; then
+  printf '  \033[32mPASS\033[0m  microphone: opens on reuse and on a fresh engine  (%s)\n' \
+    "$(printf '%s' "$mic_out" | grep -o 'median [0-9]*ms' | head -2 | tr '\n' ' ' | sed 's/median //g')"
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  microphone: this build could not open an input that was there\n'
+  printf '        %s\n' "$(printf '%s' "$mic_out" | grep -vE '^\s*$' | tail -3 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("microphone opens")
+fi
+echo
+
+echo "file reading, end to end"
+# Fixtures are *discovered*, never invented: a path typed into this script is a test that passes on
+# the day it is written and fails for a reason that has nothing to do with the app the day after.
+TEXT_FIXTURE="$PWD/AGENTS.md"
+PDF_FIXTURE="$(ls -1t "$HOME"/Downloads/*.pdf 2>/dev/null | head -1 || true)"
+DOC_FIXTURE="$(ls -1t "$HOME"/Downloads/*.docx 2>/dev/null | head -1 || true)"
+IMG_FIXTURE="$(ls -1t "$HOME"/Downloads/*.png "$HOME"/Downloads/*.jpg "$HOME"/Downloads/*.jpeg 2>/dev/null | head -1 || true)"
+
+check "find: a sentence names one file"              "$BIN" --probe-find 'read the resume in my downloads'
+check "find: a sentence about the screen finds none" "$BIN" --probe-find 'why is the certificate warning showing'
+check "read: a text file"                            "$BIN" --probe-read "$TEXT_FIXTURE|what invariants exist"
+if [[ -n "$PDF_FIXTURE" ]]; then
+  check "read: a PDF's pages ($(basename "$PDF_FIXTURE" | cut -c1-24))" "$BIN" --probe-read "$PDF_FIXTURE|the total"
+else
+  printf '  SKIP    read: a PDF — none in ~/Downloads to try\n'; skip=$((skip + 1))
+fi
+if [[ -n "$DOC_FIXTURE" ]]; then
+  check "read: a Word file ($(basename "$DOC_FIXTURE" | cut -c1-24))" "$BIN" --probe-read "$DOC_FIXTURE|the summary"
+else
+  printf '  SKIP    read: a Word file — none in ~/Downloads to try\n'; skip=$((skip + 1))
+fi
+if [[ -n "$IMG_FIXTURE" ]]; then
+  check "read: a picture, as pixels ($(basename "$IMG_FIXTURE" | cut -c1-20))" "$BIN" --probe-read "$IMG_FIXTURE"
+else
+  printf '  SKIP    read: a picture — none in ~/Downloads to try\n'; skip=$((skip + 1))
+fi
+check "prompt: what the model is actually told"      "$BIN" --probe-prompt 'the receipt'
+echo
+
+echo "surfaces, rendered afresh with successful exit required"
+check "render: notch states and draft Copy bounds" "$BIN" --render-ui "$RENDER_DIR/card.png"
+check "render: window" "$BIN" --render-window "$RENDER_DIR/window.png"
+check "render: panel" "$BIN" --render-panel "$RENDER_DIR/panel.png"
+check "render: setup steps and their plan rules" "$BIN" --render-setup "$RENDER_DIR/setup.png"
+file_check "the notch card, all states"    "$RENDER_DIR/card.png"   120000
+file_check "the window, full and empty"    "$RENDER_DIR/window.png" 80000
+file_check "the menu-bar panel"            "$RENDER_DIR/panel.png"  40000
+file_check "the first-run flow, all three steps" "$RENDER_DIR/setup.png" 60000
+echo
+
+echo "the safety contract, asserted not assumed"
+check "bundle: universal, matching deployment target, hardened with exact entitlements" \
+  python3 - "$BIN" "$PWD/scripts/Chunks.entitlements" <<'PY'
+import json, pathlib, plistlib, re, subprocess, sys
+binary = pathlib.Path(sys.argv[1])
+manifest = json.loads(subprocess.check_output(['swift', 'package', 'dump-package']))
+minimum = next(p['version'] for p in manifest['platforms'] if p['platformName'] == 'macos')
+with (binary.parent.parent / 'Info.plist').open('rb') as stream:
+    info = plistlib.load(stream)
+assert info['LSMinimumSystemVersion'] == minimum, 'bundle and package deployment targets disagree'
+arches = subprocess.check_output(['lipo', '-archs', str(binary)], text=True).split()
+assert set(arches) == {'arm64', 'x86_64'}, f'not universal: {arches}'
+with open(sys.argv[2], 'rb') as stream:
+    expected = plistlib.load(stream)
+assert expected == {'com.apple.security.device.audio-input': True}, 'unexpected entitlement expansion'
+subprocess.run(['codesign', '--verify', '--deep', '--strict', str(binary.parent.parent.parent)], check=True)
+for arch in arches:
+    load_commands = subprocess.check_output(['xcrun', 'vtool', '-show-build', '-arch', arch, str(binary)], text=True)
+    assert re.search(r'\bminos\s+' + re.escape(minimum) + r'\s', load_commands), f'{arch}: executable deployment target disagrees'
+    details = subprocess.check_output(['codesign', '-d', '--arch', arch, '--verbose=4', str(binary)], stderr=subprocess.STDOUT, text=True)
+    assert re.search(r'flags=.*\bruntime\b', details), f'{arch}: hardened runtime missing'
+    assert 'Signature=adhoc' not in details and 'Authority=' in details, f'{arch}: stable signing identity missing'
+    entitlements = subprocess.check_output(['codesign', '-d', '--arch', arch, '--entitlements', ':-', str(binary)], stderr=subprocess.DEVNULL)
+    assert plistlib.loads(entitlements) == expected, f'{arch}: signed entitlements disagree'
+print(f'arm64 + x86_64; minimum macOS {minimum}; hardened runtime; microphone entitlement only')
+PY
+# The overlay that locked his Mac is the one regression that must never come back: a full-screen
+# surface that takes the mouse without a way out.
+# `NSApp.activate` is allowed to appear in that file's *comments* — it explains why the call is
+# absent — so the check looks for a call site, not the string.
+if grep -q "_setPreventsActivation" Sources/Chunks/Annotate/AnnotationOverlay.swift \
+   && ! grep -vE '^\s*//' Sources/Chunks/Annotate/AnnotationOverlay.swift | grep -q "NSApp\.activate("; then
+  printf '  \033[32mPASS\033[0m  the annotation overlay still never activates the app\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  the overlay activation contract changed — see the 2026-10-11 lockup\n'
+  fail=$((fail + 1)); failures+=("overlay activation contract")
+fi
+if grep -q '"store": false' Sources/ChunksKit/Brain/GeminiTransport.swift \
+   && grep -q '"store": false' Sources/Chunks/BrainGateway.swift; then
+  printf '  \033[32mPASS\033[0m  the Gemini request still asks for no server-side storage\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  store:false has gone missing from the request builder\n'
+  fail=$((fail + 1)); failures+=("store:false")
+fi
+echo
+
+printf '%s\n' "----------------------------------------"
+if [[ $fail -eq 0 ]]; then
+  printf '\033[32mall %d checks passed\033[0m' "$pass"
+[[ $skip -gt 0 ]] && printf ' (%d skipped — read the SKIP lines above for the reason)' "$skip"
+printf '\n'
+  exit 0
+fi
+printf '\033[31m%d passed, %d FAILED\033[0m\n' "$pass" "$fail"
+for f in "${failures[@]}"; do printf '  - %s\n' "$f"; done
+exit 1

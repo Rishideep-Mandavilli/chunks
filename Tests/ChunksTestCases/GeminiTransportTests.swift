@@ -115,7 +115,8 @@ public enum GeminiTransportTests {
             expect(sys.contains("<SAY>"), "must define the speech tag")
             expect(sys.contains("[POINT:"), "must define the point tag")
             expect(sys.contains("<MEMORY>"), "must define the memory tag")
-            expect(sys.contains("<NOTE>"), "must define the notebook tag")
+            expect(!sys.contains("<NOTE>"), "must not teach a tag with no consumer")
+            expect(!sys.lowercased().contains("notebook"), "must not promise an unbuilt Notebook")
             expect(sys.contains("top-left"), "must define the point origin")
             expect(sys.lowercased().contains("never guess at screen contents"),
                    "must forbid hallucinating screen contents")

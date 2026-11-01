@@ -7,6 +7,7 @@
 //  interaction states are defined here as the single source of truth.
 //
 
+import ChunksKit
 import SwiftUI
 import AppKit
 
@@ -20,152 +21,140 @@ enum DS {
 
     enum Colors {
 
-        // ── Backgrounds ──────────────────────────────────────────────
-        // Layered surfaces from deepest to most elevated.
-        // Higher surfaces are lighter, creating a sense of depth.
+        // ── Ground and elevation ─────────────────────────────────────
+        // A physical system reads depth two ways at once: a raised sheet is *lighter* than the
+        // ground and carries a shadow, and a well is *darker* and carries an inner one. So "higher"
+        // no longer means "lighter" everywhere — pressed is deliberately darker than hover, which is
+        // what makes a row feel pushed rather than lit.
 
-        /// The deepest background — used for the main app window fill.
-        static let background = Color(hex: "#101211")
+        /// The ground. Every window, panel and card sits on this.
+        static let ground = Color(hex: Palette.ground)
 
-        /// First elevation layer — used for cards, sidebar, top bar backgrounds.
-        static let surface1 = Color(hex: "#171918")
+        /// A sheet of paper — cards, the sidebar rail, the composer bar.
+        static let raised = Color(hex: Palette.raised)
 
-        /// Second elevation layer — used for input fields, elevated cards, chat bubbles.
-        static let surface2 = Color(hex: "#202221")
+        /// A well cut into the paper: text fields, input wells.
+        static let sunken = Color(hex: Palette.sunken)
 
-        /// Third elevation layer — used for hover backgrounds on interactive elements.
-        static let surface3 = Color(hex: "#272A29")
+        /// A row with the pointer over it.
+        static let hover = Color(hex: Palette.hover)
 
-        /// Fourth elevation layer — used for active/pressed states on interactive elements.
-        static let surface4 = Color(hex: "#2E3130")
+        /// A row that is selected or being pressed.
+        static let pressed = Color(hex: Palette.pressed)
 
         // ── Borders ──────────────────────────────────────────────────
 
-        /// Subtle border — used for card outlines, dividers, input field borders.
-        static let borderSubtle = Color(hex: "#373B39")
+        /// The hairline between two sheets. Decorative by WCAG's own reading: it is never the only
+        /// thing identifying a control, so it is not held to 3:1.
+        static let line = Color(hex: Palette.line)
 
-        /// Strong border — used for focused inputs, hovered card outlines.
-        static let borderStrong = Color(hex: "#444947")
+        /// A stronger rule, for the edge of a well.
+        static let lineStrong = Color(hex: Palette.lineStrong)
 
-        // ── Text ─────────────────────────────────────────────────────
+        /// The outline of a control you can act on.
+        static let lineControl = Color(hex: Palette.lineControl)
 
-        /// Primary text — main body text, titles, headings.
-        static let textPrimary = Color(hex: "#ECEEED")
+        // ── Legacy names, kept because 26 call sites read them ───────
+        // Aliases, not a second system: change a role and every view written against the dark
+        // palette follows it. `background` is the ground; `surface1…4` are the elevations in the
+        // old order.
 
-        /// Secondary text — descriptions, hints, muted labels.
-        static let textSecondary = Color(hex: "#ADB5B2")
+        static var background: Color { ground }
+        static var surface1: Color { raised }
+        static var surface2: Color { sunken }
+        static var surface3: Color { hover }
+        static var surface4: Color { pressed }
+        static var borderSubtle: Color { line }
+        static var borderStrong: Color { lineStrong }
 
-        /// Tertiary text — very muted, used for section labels, timestamps, disabled text.
-        static let textTertiary = Color(hex: "#6B736F")
+        // ── Ink ──────────────────────────────────────────────────────
+        // Three weights of text and no more. The dark palette had a fourth grey for micro labels; it
+        // measured 3.3:1 on bone, so it is gone rather than re-tuned — a label that has to be
+        // squinted at is a label that should not be small and grey in the first place.
 
-        /// Text used on top of the accent fill (#2563eb blue), like the primary button label.
-        /// White on #2563eb achieves ~5.1:1 contrast — WCAG AA compliant.
-        /// White on #1d4ed8 hover achieves ~6.5:1 — also WCAG AA compliant.
-        static let textOnAccent: Color = .white
+        /// Body text, titles, anything read for more than a glance. 16.5:1 on the ground.
+        static let ink = Color(hex: Palette.ink)
 
-        // ── Tailwind Blue Scale ─────────────────────────────────────
-        // Full Tailwind CSS v4 blue palette for consistent blue usage.
-        //
-        // Usage guide:
-        //   50–100  → Very subtle tinted backgrounds (selected rows, hover fills on dark surfaces)
-        //   200–300 → Light text/icons on dark backgrounds, disabled states
-        //   400     → Bright accent text, links, icons, chat user bubbles
-        //   500     → Mid-tone fills, badges, secondary buttons
-        //   600     → Primary action fills (buttons, toggles) — main accent
-        //   700     → Hover/pressed state for primary actions
-        //   800–900 → Deep backgrounds, dark overlays, header bars
-        //   950     → Deepest blue — near-black tinted backgrounds
+        /// Detail and explanation. 8.3:1.
+        static let inkMuted = Color(hex: Palette.inkMuted)
 
-        static let blue50  = Color(hex: "#eff6ff")
-        static let blue100 = Color(hex: "#dbeafe")
-        static let blue200 = Color(hex: "#bfdbfe")
-        static let blue300 = Color(hex: "#93c5fd")
-        static let blue400 = Color(hex: "#60a5fa")
-        static let blue500 = Color(hex: "#3b82f6")
-        static let blue600 = Color(hex: "#2563eb")
-        static let blue700 = Color(hex: "#1d4ed8")
-        static let blue800 = Color(hex: "#1e40af")
-        static let blue900 = Color(hex: "#1e3a8a")
-        static let blue950 = Color(hex: "#172554")
+        /// Timestamps and meta at the smallest size the system uses. 4.8:1 measured on the *sunken*
+        /// well, which is the hardest ground it appears on and the one that decides the value.
+        static let inkFaint = Color(hex: Palette.inkFaint)
 
-        // ── Accent (derived from blue scale) ───────────────────────
-        // The primary fill is Blue 600; hover darkens to Blue 700.
+        /// Bone text on an ink object — the primary button's label. 12.1:1.
+        static let onInk = Color(hex: Palette.onInk)
 
-        /// Accent fill — used for solid button backgrounds.
-        /// #2563eb → ~5.1:1 contrast with white text (WCAG AA).
-        static let accent = blue600
+        static var textPrimary: Color { ink }
+        static var textSecondary: Color { inkMuted }
+        static var textTertiary: Color { inkFaint }
 
-        /// Accent hover — slightly darker blue for hover state.
-        /// #1d4ed8 → ~6.5:1 contrast with white text (WCAG AA+).
-        static let accentHover = blue700
+        /// Text on the activity blue. White measures 5.9:1; bone only reaches 3.9, which is a large
+        /// text pass and not a body one.
+        static let textOnAccent = Color(hex: Palette.onAccent)
 
-        /// Accent text — bright blue used for accent-colored text and icons
-        /// on dark backgrounds (links, active nav items, highlighted labels).
-        static let accentText = blue400
+        // The Tailwind blue ramp this file carried is deleted. All eleven steps were
+        // unreferenced after the bone/ink swap, and a palette with two ways to say
+        // "blue" is a palette where the next colour goes into the wrong one.
 
-        /// Very subtle accent tint — used for selected item backgrounds (e.g. current step
-        /// in the sidebar). Low opacity so it doesn't overpower.
-        static let accentSubtle = blue500.opacity(0.10)
+        // ── Activity, and the four states ────────────────────────────
+        // Colour is state here and nothing else. The primary action is *not* one of them — it is an
+        // ink object (see `action`), because in a physical system the thing you press is the darkest
+        // thing on the surface, and saving blue for "work in flight" keeps the one saturated hue in
+        // the app meaning exactly one thing.
 
-        // ── Semantic Colors ──────────────────────────────────────────
+        /// In-flight blue: the status dot, the meter, a link, a focus ring.
+        static let accent = Color(hex: Palette.accent)
 
-        /// Destructive/error actions — delete buttons, error messages, close button hover.
-        static let destructive = Color(hex: "#E5484D")        // Radix Red 9
+        /// Pressed/hover variant of the activity blue.
+        static let accentHover = Color(hex: Palette.accentDeep)
 
-        /// Destructive hover state.
-        static let destructiveHover = Color(hex: "#F2555A")   // Radix Red 10
+        /// Accent used as text. Same value as the fill — on bone there is no need for a brighter
+        /// variant, which is what the dark palette's `blue400` was compensating for.
+        static let accentText = Color(hex: Palette.accent)
 
-        /// Destructive used for text on dark backgrounds (brighter for readability).
-        static let destructiveText = Color(hex: "#FF6369")    // Radix Red 11
+        /// A tint of the activity colour behind a selected row or a current step.
+        ///
+        /// Built from `Palette.accent` rather than a second copy of the hex: a value typed twice is
+        /// a value that drifts, and this one already escaped the contrast suite once.
+        static let accentSubtle = Color(hex: Palette.accent).opacity(0.10)
 
-        /// Success — checkmarks, granted status, completion indicators.
-        /// Independent green so success states are visually distinct from the blue accent.
-        static let success = Color(hex: "#34D399")      // Tailwind Emerald 400
+        /// The primary action's surface: ink. The label on it is `onInk`.
+        static let action = Color(hex: Palette.action)
 
-        /// Warning — caution messages, manual verification failure explanations.
-        static let warning = Color(hex: "#FFB224")            // Radix Amber 9
+        /// A pressed primary action — the same object catching less light as it goes into the paper.
+        static let actionHover = Color(hex: Palette.actionHover)
 
-        /// Warning text — brighter variant for text on dark backgrounds.
-        static let warningText = Color(hex: "#F1A10D")        // Radix Amber 11
+        /// Destructive — a turn that failed, and the rare delete.
+        static let destructive = Color(hex: Palette.destructive)
 
-        /// Info/feature highlight — used for prompt card headers, code highlights.
-        /// Lighter than accentText so informational elements are visually distinct
-        /// from interactive accent-colored elements.
-        static let info = Color(hex: "#70B8FF")               // Radix Blue 9
+        static let destructiveHover = Color(hex: Palette.destructiveDeep)
 
-        /// Inline code text color — slightly brighter blue for monospace code snippets.
-        static let codeText = Color(hex: "#9DC2FF")           // Radix Blue 11 variant
+        /// Destructive as text: the darker step, because #b3261e on the sunken well is a 5.4 pass
+        /// but on a pressed row it is not.
+        static let destructiveText = Color(hex: Palette.destructiveDeep)
+
+        /// Done. Independent of the activity blue so "finished" cannot be misread as "working".
+        static let success = Color(hex: Palette.success)
+
+        static let successText = Color(hex: Palette.successDeep)
+
+        /// Waiting on him. #a86208 rather than the dark palette's #FFB224: an amber that bright
+        /// disappears into bone at 2.8:1, and a dot nobody sees is not a state.
+        static let warning = Color(hex: Palette.warning)
+
+        static let warningText = Color(hex: Palette.warningDeep)
+
+
 
         // ── Overlay Cursor ───────────────────────────────────────────
 
-        /// The blue cursor/bubble color used in OverlayWindow.
-        /// Kept distinct from the accent since it serves a different purpose
-        /// (screen overlay vs in-app UI).
-        static let overlayCursorBlue = Color(hex: "#3380FF")
-
-        // ── Floating Button Gradient ─────────────────────────────────
-
-        /// The floating session button gradient colors (unchanged from original —
-        /// this gradient is intentionally distinct from the rest of the palette
-        /// to make the floating button stand out as a "jewel" on the desktop).
-        static let floatingGradientPurple = Color(hex: "#8F46EB")
-        static let floatingGradientPink = Color(hex: "#E84D9E")
-        static let floatingGradientOrange = Color(hex: "#FF8C33")
-
-        // ── Help Chat ──────────────────────────────────────────────
-
-        /// User message bubble background in the help chat.
-        /// Blue 800 — deep blue that's clearly distinct from the dark surface
-        /// while keeping white text highly readable (~9:1 contrast).
-        static let helpChatUserBubble = blue800
-
-        /// Slightly lighter variant for hover/pressed states on user bubbles.
-        static let helpChatUserBubbleHover = blue700
-
-        /// Footer/backdrop behind the floating help chat.
-        /// Slightly lighter than the main window background so the chat zone reads
-        /// as a distinct docked surface even before the pill input is visible.
-        static let helpChatBackdrop = Color(hex: "#212121")
+        /// The blue the pointer trailer and its bubbles are drawn in.
+        ///
+        /// `Palette.cursorTrail`, and the reason it is in the palette file is that it is the one
+        /// colour here with no fixed ground: it flies over other apps' windows, so no contrast pair
+        /// can be asserted against it and a literal in this file would be invisible to every check.
+        static let overlayCursorBlue = Color(hex: Palette.cursorTrail)
 
         // ── Disabled State ───────────────────────────────────────────
         // Following Material Design 3's disabled pattern:
@@ -174,16 +163,175 @@ enum DS {
 
         /// Disabled button/container background.
         static var disabledBackground: Color {
-            textPrimary.opacity(0.12)
+            ink.opacity(0.07)
         }
 
         /// Disabled text/icon color.
         static var disabledText: Color {
-            textPrimary.opacity(0.38)
+            ink.opacity(0.34)
+        }
+    }
+
+    // MARK: - Dots Studio reskin (2026-10-30)
+
+    /// The warm-paper language for the panel, the history window and the first-run guide.
+    ///
+    /// Parallel to `Colors`, not a replacement: the notch HUD reads `Colors.ground/raised/sunken`
+    /// and is out of scope, so the three reskinned surfaces read these instead. Every value comes
+    /// from `Palette.Dots`, which is where the contrast suite asserts them.
+    enum Dots {
+        static let paper = Color(hex: Palette.Dots.paper)
+        static let raised = Color(hex: Palette.Dots.raised)
+        static let sunken = Color(hex: Palette.Dots.sunken)
+        static let hover = Color(hex: Palette.Dots.hover)
+        static let pressed = Color(hex: Palette.Dots.pressed)
+        static let line = Color(hex: Palette.Dots.line)
+        static let lineStrong = Color(hex: Palette.Dots.lineStrong)
+        static let ink = Color(hex: Palette.Dots.ink)
+        static let hull = Color(hex: Palette.Dots.hull)
+
+        /// The three measured fields. Grounds with ink on them — never marks on paper, never
+        /// reversed. `Palette.Dots.fillOnlyFields` and the contrast suite hold that line.
+        static let sea = Color(hex: Palette.Dots.sea)
+        static let seaDeep = Color(hex: Palette.Dots.seaDeep)
+        static let sky = Color(hex: Palette.Dots.sky)
+        static let skyRail = Color(hex: Palette.Dots.skyRail)
+        static let sand = Color(hex: Palette.Dots.sand)
+        static let sandTag = Color(hex: Palette.Dots.sandTag)
+        /// The control colour: toggle track, memory meter, the chosen thread's leading bar.
+        static let teal = Color(hex: Palette.Dots.teal)
+        /// The mockup's link blue — legal on every ground except sky.
+        static let link = Color(hex: Palette.Dots.link)
+
+        /// A **solid** edge, for a control. The mockups draw cards with a dashed rule and controls
+        /// (the model pill, the section tags, the close button, the outer sheet) with a solid one;
+        /// dashing everything made the controls read as decoration rather than as things to press.
+        static var controlEdge: Color { Color(hex: Palette.Dots.ink).opacity(0.55) }
+        static var sheetEdge: Color { Color(hex: Palette.Dots.ink).opacity(0.80) }
+
+        /// The pen-hatch, measured off the reference image's sea: 2 px stroke on a 33 px pitch,
+        /// 15 px dash with a 5 px gap, 1.6% ink coverage. Scaled ×0.5 into points (1 pt stroke,
+        /// 16 pt pitch, 7.5 pt dash, 2.5 pt gap) and dropped to a very low opacity so it reads as
+        /// paper grain, not a pattern. Drawn, not a bitmap: it survives a rebuild and scales with
+        /// the view. Applied only to flat field fills.
+        enum Hatch {
+            static let pitch: CGFloat = 16
+            static let dash: CGFloat = 7.5
+            static let gap: CGFloat = 2.5
+            static let lineWidth: CGFloat = 1
+            static let opacity: Double = 0.05
+        }
+
+        /// The dashed rule — the reference's signature edge treatment. Decorative by WCAG's own
+        /// reading (it is never the only thing identifying a control), so it is held to no ratio,
+        /// but it is held to *one* value: six on, four off, one point, ink at a fifth. A dashed
+        /// border drawn at three different weights across two surfaces is how the old panel ended
+        /// up with five greys.
+        enum Dash {
+            static let lineWidth: CGFloat = 1
+            static let on: CGFloat = 6
+            static let off: CGFloat = 4
+            static var style: StrokeStyle {
+                StrokeStyle(lineWidth: lineWidth, dash: [on, off])
+            }
+            static var color: Color { Color(hex: Palette.Dots.ink).opacity(0.22) }
+        }
+
+        /// A cumulus band in sand, sitting on the bottom edge of a sky band.
+        ///
+        /// Drawn from a fixed bump-radius list rather than a random one, so the same panel renders
+        /// the same clouds on every launch and every rebuild — a bitmap would not scale, and a
+        /// seeded-by-time shape would make the surface flicker between runs.
+        struct CloudBand: View {
+            /// Radii in points, cycled along the baseline. Varied on purpose: equal bumps read as a
+            /// gear, not a cloud.
+            var radii: [CGFloat] = [22, 34, 15, 28, 40, 18, 31, 24]
+            /// Horizontal squeeze, so the same band can be a wide header cloud or a narrow corner one.
+            var squash: CGFloat = 1.0
+
+            var body: some View {
+                Canvas { context, size in
+                    let base = size.height
+                    var path = Path()
+                    path.move(to: CGPoint(x: 0, y: base))
+                    var x: CGFloat = 0
+                    var index = 0
+                    while x < size.width + 40 {
+                        let r = radii[index % radii.count] * squash
+                        path.addArc(center: CGPoint(x: x + r, y: base), radius: r,
+                                    startAngle: .degrees(180), endAngle: .degrees(0),
+                                    clockwise: false)
+                        x += 2 * r
+                        index += 1
+                    }
+                    path.addLine(to: CGPoint(x: size.width, y: base))
+                    path.closeSubpath()
+                    context.fill(path, with: .color(Color(hex: Palette.Dots.sand)))
+                }
+                .allowsHitTesting(false)
+            }
+        }
+
+        /// A card on the nautical ground: one field or paper fill, a dashed edge, and the hatch
+        /// riding the flat fill. Used by the panel and the window; never by the notch card.
+        struct DotsCard: ViewModifier {
+            var fill: Color
+            var radius: CGFloat = DS.CornerRadius.large
+            var hatched: Bool = true
+
+            func body(content: Content) -> some View {
+                content
+                    .background(fill)
+                    .overlay {
+                        if hatched {
+                            DS.Dots.HatchPattern()
+                        }
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .strokeBorder(Dash.color, style: Dash.style))
+                    .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            }
+        }
+
+        /// The hatch as a vector overlay. Alternate rows are offset half a period so the dashes do
+        /// not stack into columns, which is what makes it read as hand-hatching rather than a grid.
+        struct HatchPattern: View {
+            var body: some View {
+                Canvas { context, size in
+                    let ink = Color(hex: Palette.Dots.ink).opacity(Hatch.opacity)
+                    var y = Hatch.pitch / 2
+                    var row = 0
+                    while y < size.height {
+                        var x = row.isMultiple(of: 2) ? 0 : (Hatch.dash + Hatch.gap) / 2
+                        while x < size.width {
+                            let rect = CGRect(x: x, y: y,
+                                              width: Hatch.dash, height: Hatch.lineWidth)
+                            context.fill(Path(rect), with: .color(ink))
+                            x += Hatch.dash + Hatch.gap
+                        }
+                        y += Hatch.pitch
+                        row += 1
+                    }
+                }
+                .allowsHitTesting(false)
+            }
         }
     }
 
     // MARK: - Spacing (for reference, not enforced)
+
+    /// The panel's type voices, named once.
+    ///
+    /// There were none, so every row typed its own point size and the panel ended up with 10, 11,
+    /// 12, 13 and 14 pt text in no order — four weights of the same label, none of them chosen.
+    /// Four voices is the whole vocabulary: what a panel is called, what a control is called, what
+    /// the row's own explanation says, and the counter or key in the corner.
+    enum Fonts {
+        static let headline = Font.system(size: 14, weight: .semibold)
+        static let label = Font.system(size: 12, weight: .medium)
+        static let meta = Font.system(size: 11)
+        static let micro = Font.system(size: 10, weight: .medium)
+    }
 
     enum Spacing {
         static let xs: CGFloat = 4
@@ -198,20 +346,22 @@ enum DS {
     // MARK: - Corner Radii
 
     enum CornerRadius {
-        /// Small elements like tags, badges.
-        static let small: CGFloat = 6
-        /// Buttons, input fields, small cards.
-        static let medium: CGFloat = 8
+        /// Small elements like tags and badges.
+        static let small: CGFloat = 8
+        /// Buttons, input fields, rows.
+        static let medium: CGFloat = 12
         /// Cards, dialogs, chat bubbles.
-        static let large: CGFloat = 10
-        /// Large panels, permission cards.
-        static let extraLarge: CGFloat = 12
+        static let large: CGFloat = 16
+        /// Large panels — the notch card, the window's sheets.
+        static let extraLarge: CGFloat = 20
         /// Pill-shaped buttons (the continue button).
         static let pill: CGFloat = .infinity
     }
 
     // MARK: - Animation Durations
 
+    /// Durations, kept as numbers because the call sites compose them into `.easeOut(...)` and
+    /// `.linear(...)`. The *shape* of the motion lives in `DS.Motion`.
     enum Animation {
         /// Quick state changes — hover in/out, press feedback.
         static let fast: Double = 0.15
@@ -219,6 +369,54 @@ enum DS {
         static let normal: Double = 0.25
         /// Slower, more dramatic — fade-ins, celebration screen elements.
         static let slow: Double = 0.4
+    }
+
+    // MARK: - Motion
+
+    /// Springs, because a physical object does not ease out of a move — it settles into one.
+    ///
+    /// `SwiftUI.Animation` spelled out, because inside `DS` the bare name resolves to the
+    /// duration enum above.
+    ///
+    /// The reference's knob runs `{stiffness: 380, damping: 40}`: quick, with a hint of overshoot.
+    /// SwiftUI's `response`/`dampingFraction` pair is a different parameterisation of the same
+    /// curve, and these are the values that match it closely enough to feel the same under a finger.
+    enum Motion {
+        /// A press, a hover, a toggle. Fast enough to feel connected to the click.
+        static let tap = SwiftUI.Animation.spring(response: 0.22, dampingFraction: 0.72)
+        /// A row selecting, a sheet arriving.
+        static let settle = SwiftUI.Animation.spring(response: 0.32, dampingFraction: 0.72)
+        /// The card growing out of the notch.
+        static let unfold = SwiftUI.Animation.spring(response: 0.45, dampingFraction: 0.80)
+    }
+
+    // MARK: - Elevation
+
+    /// The two-layer shadow that makes a sheet look like an object.
+    ///
+    /// One tight dark shadow reads as contact with the surface; one wide soft one reads as height
+    /// above it. Either alone looks like a screenshot effect — the contact shadow without the lift
+    /// is a sticker, and the lift without the contact is a hover state that never ends.
+    enum Shadow {
+        /// The tight layer: `0 1px 2px rgba(0,0,0,.04)`.
+        static let contactColor = Color.black.opacity(0.05)
+        static let contactRadius: CGFloat = 1
+        static let contactY: CGFloat = 1
+
+        /// The lift layer: `0 10px 24px -14px rgba(0,0,0,.22)`. SwiftUI has no negative spread, so
+        /// the radius carries it: a wide, low-opacity blur offset well below the sheet.
+        static let liftColor = Color.black.opacity(0.14)
+        static let liftRadius: CGFloat = 12
+        static let liftY: CGFloat = 7
+
+        /// A pressed object sits lower, so it throws less.
+        static let pressedLiftColor = Color.black.opacity(0.08)
+        static let pressedLiftRadius: CGFloat = 5
+        static let pressedLiftY: CGFloat = 2
+
+        /// The top edge of a sheet catches light. Without it a raised rectangle reads as a flat
+        /// colour change rather than an object with thickness.
+        static let edgeHighlight = Color.white.opacity(0.75)
     }
 
     // MARK: - State Layer Opacities
@@ -238,96 +436,40 @@ enum DS {
 }
 
 // MARK: - Button Styles
-
-/// Primary button — the main call-to-action per screen.
-/// Accent-colored background with white text. One per view maximum.
-/// Used for: "start"/"resume", "let's go", "continue", "verify completion".
+/// The primary action: an ink object pressed into the paper.
+///
+/// Not blue. In a physical system the thing you push is the darkest thing on the surface, and
+/// saving the activity blue for "work in flight" keeps the one saturated colour in the app meaning
+/// exactly one thing.
+///
+/// The dark palette's version swelled to 1.03 on hover and breathed a coloured glow on a 2.5 s loop
+/// while the pointer sat on it. Both are gone: motion here has a cause. Hover darkens the object a
+/// step, press sinks it — less shadow, one point down, on a spring — and nothing moves on its own.
 struct DSPrimaryButtonStyle: ButtonStyle {
     var isFullWidth: Bool = true
 
     @State private var isHovered = false
 
-    // Separate state for the scale expansion so it animates on a slower,
-    // more gradual timeline (0.6s) than the background color snap (0.15s).
-    @State private var isHoverScaleExpanded = false
-
-    // Whether the hover glow shadow is active. Builds up gradually (0.6s)
-    // on hover entry, fades out faster (0.3s) on exit.
-    @State private var isHoverGlowActive = false
-
-    // Continuously toggles while hovered to drive a gentle breathing pulse
-    // in the glow shadow. Creates a living, organic feel — like the button
-    // is softly glowing, not just statically lit.
-    @State private var isGlowBreathingIn = false
-
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 16, weight: .medium))
-            .foregroundColor(DS.Colors.textOnAccent)
+        let pressed = configuration.isPressed
+        return configuration.label
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundColor(DS.Colors.onInk)
             .frame(maxWidth: isFullWidth ? .infinity : nil)
-            .padding(.vertical, 14)
-            .padding(.horizontal, isFullWidth ? 0 : 20)
-            .background(
-                Capsule()
-                    .fill(buttonBackgroundColor(isPressed: configuration.isPressed))
-            )
-            // Hover glow — builds up gradually, then gently breathes while hovered.
-            // The breathing oscillates opacity and radius on a slow 2.5s loop,
-            // creating a candle-flame-like "alive" quality rather than a static highlight.
-            .shadow(
-                color: DS.Colors.accent.opacity(
-                    isHoverGlowActive ? (isGlowBreathingIn ? 0.32 : 0.18) : 0
-                ),
-                radius: isHoverGlowActive ? (isGlowBreathingIn ? 16 : 10) : 0
-            )
-            // Hover: gradually expand to 1.03. Press: snap down to 0.97.
-            .scaleEffect(configuration.isPressed ? 0.97 : (isHoverScaleExpanded ? 1.03 : 1.0))
-            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+            .padding(.vertical, 11)
+            .padding(.horizontal, isFullWidth ? 0 : 18)
+            .physical(pressed ? DS.Colors.actionHover
+                              : (isHovered ? DS.Colors.actionHover : DS.Colors.action),
+                      radius: DS.CornerRadius.medium,
+                      elevation: pressed ? .pressed : .raised,
+                      edge: DS.Colors.ink)
+            .offset(y: pressed ? 1 : 0)
+            .animation(DS.Motion.tap, value: pressed)
+            .animation(DS.Motion.tap, value: isHovered)
             .onHover { hovering in
-                // Background color — fast snap so the button feels responsive
-                withAnimation(.easeOut(duration: 0.15)) {
-                    isHovered = hovering
-                }
-
-                // Scale — slow, gradual expansion (like the button is swelling)
-                withAnimation(.easeInOut(duration: hovering ? 0.6 : 0.3)) {
-                    isHoverScaleExpanded = hovering
-                }
-
-                // Glow — builds up gradually on entry, fades faster on exit
-                withAnimation(.easeInOut(duration: hovering ? 0.6 : 0.3)) {
-                    isHoverGlowActive = hovering
-                }
-
-                // Breathing glow loop — gentle pulse while hovered.
-                // The 2.5s cycle keeps it feeling organic, not mechanical.
-                if hovering {
-                    withAnimation(
-                        .easeInOut(duration: 2.5)
-                        .repeatForever(autoreverses: true)
-                    ) {
-                        isGlowBreathingIn = true
-                    }
-                } else {
-                    // Override the repeating animation with a finite one to stop cleanly
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        isGlowBreathingIn = false
-                    }
-                }
-
+                isHovered = hovering
                 if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
             }
-    }
-
-    private func buttonBackgroundColor(isPressed: Bool) -> Color {
-        if isPressed {
-            // Pressed: brighten slightly beyond hover
-            return DS.Colors.accentHover.blendedWithWhite(fraction: DS.StateLayer.pressed)
-        } else if isHovered {
-            return DS.Colors.accentHover
-        } else {
-            return DS.Colors.accent
-        }
     }
 }
 
@@ -351,8 +493,8 @@ struct DSSecondaryButtonStyle: ButtonStyle {
                     .fill(buttonBackgroundColor(isPressed: configuration.isPressed))
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .animation(.easeOut(duration: DS.Animation.fast), value: configuration.isPressed)
-            .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
+            .animation(DS.Motion.tap, value: configuration.isPressed)
+            .animation(DS.Motion.tap, value: isHovered)
             .onHover { hovering in
                 isHovered = hovering
                 if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
@@ -393,8 +535,8 @@ struct DSTertiaryButtonStyle: ButtonStyle {
                     .fill(buttonBackgroundColor(isPressed: configuration.isPressed))
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .animation(.easeOut(duration: DS.Animation.fast), value: configuration.isPressed)
-            .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
+            .animation(DS.Motion.tap, value: configuration.isPressed)
+            .animation(DS.Motion.tap, value: isHovered)
             .onHover { hovering in
                 isHovered = hovering
                 if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
@@ -431,8 +573,8 @@ struct DSTextButtonStyle: ButtonStyle {
                         ? DS.Colors.textPrimary
                         : DS.Colors.textTertiary
             )
-            .animation(.easeOut(duration: DS.Animation.fast), value: configuration.isPressed)
-            .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
+            .animation(DS.Motion.tap, value: configuration.isPressed)
+            .animation(DS.Motion.tap, value: isHovered)
             .onHover { hovering in
                 isHovered = hovering
                 if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
@@ -466,8 +608,8 @@ struct DSOutlinedButtonStyle: ButtonStyle {
                     )
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .animation(.easeOut(duration: DS.Animation.fast), value: configuration.isPressed)
-            .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
+            .animation(DS.Motion.tap, value: configuration.isPressed)
+            .animation(DS.Motion.tap, value: isHovered)
             .onHover { hovering in
                 isHovered = hovering
                 if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
@@ -501,11 +643,10 @@ struct DSDestructiveButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 16, weight: .medium))
-            .foregroundColor(
-                isHovered || configuration.isPressed
-                    ? .white
-                    : DS.Colors.destructiveText
-            )
+            // Was `.white` while hovered or pressed. The fill is `destructive.opacity(0.30)` over
+            // bone, so white measured ~1.6:1 — the label disappeared exactly when he was aiming at
+            // it. The destructive *text* step is the one that survives both fills.
+            .foregroundColor(DS.Colors.destructiveText)
             .padding(.vertical, 10)
             .padding(.horizontal, 16)
             .background(
@@ -520,8 +661,8 @@ struct DSDestructiveButtonStyle: ButtonStyle {
                     )
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .animation(.easeOut(duration: DS.Animation.fast), value: configuration.isPressed)
-            .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
+            .animation(DS.Motion.tap, value: configuration.isPressed)
+            .animation(DS.Motion.tap, value: isHovered)
             .onHover { hovering in
                 isHovered = hovering
                 if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
@@ -578,8 +719,8 @@ struct DSIconButtonStyle: ButtonStyle {
                     .stroke(circleBorderColor(isPressed: configuration.isPressed), lineWidth: 1)
             )
             .scaleEffect(configuration.isPressed ? 0.93 : 1.0)
-            .animation(.easeOut(duration: DS.Animation.fast), value: configuration.isPressed)
-            .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
+            .animation(DS.Motion.tap, value: configuration.isPressed)
+            .animation(DS.Motion.tap, value: isHovered)
             .contentShape(Circle())
             // Cursor change via AppKit cursor rects — more reliable than NSCursor.push/pop
             // because cursor rects are managed at the window level and don't conflict
@@ -613,35 +754,16 @@ struct DSIconButtonStyle: ButtonStyle {
                     if isTooltipVisible, let text = tooltipText, !text.isEmpty {
                         Text(text)
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(DS.Colors.textSecondary)
+                            .foregroundColor(DS.Colors.ink)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(DS.Colors.surface3.opacity(0.85))
-                            )
-                            .overlay(
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .stroke(Color.white.opacity(0.20), lineWidth: 0.8)
-
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .trim(from: 0, to: 0.5)
-                                        .stroke(
-                                            LinearGradient(
-                                                colors: [
-                                                    Color.white.opacity(0.10),
-                                                    Color.white.opacity(0.02)
-                                                ],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            ),
-                                            lineWidth: 0.8
-                                        )
-                                }
-                            )
-                            .shadow(color: Color.black.opacity(0.42), radius: 14, x: 0, y: 8)
-                            .shadow(color: Color.black.opacity(0.26), radius: 4, x: 0, y: 2)
+                            // Was a glass tooltip: a translucent dark fill with two white hairlines
+                            // and a 42%-black blur. Every one of those layers is invisible on bone, so
+                            // the tooltip now uses the same material as everything else that lifts off
+                            // the paper — and it is opaque, because a tooltip that lets the desktop
+                            // through it is unreadable wherever it lands.
+                            .physical(DS.Colors.raised, radius: DS.CornerRadius.small,
+                                      elevation: .raised)
                             .fixedSize()
                             .offset(y: -(size / 2 + 20))
                             .allowsHitTesting(false)
@@ -654,7 +776,9 @@ struct DSIconButtonStyle: ButtonStyle {
 
     private func iconColor(isPressed: Bool) -> Color {
         if isDestructiveOnHover && (isHovered || isPressed) {
-            return .white
+            // The fill goes solid red under it, so the icon is bone-on-ink rather than the white
+            // that only ever worked on the dark palette's opaque red.
+            return DS.Colors.onInk
         }
         if isPressed {
             return DS.Colors.textPrimary
@@ -747,14 +871,6 @@ extension View {
     }
 }
 
-// MARK: - Buddy Composer Visual Style
-
-enum BuddyComposerVisualStyle {
-    static let waveformLeadingColor = Color(hex: "#F3FBFF")
-    static let waveformTrailingColor = Color(hex: "#8FD2FF")
-    static let waveformGlowColor = Color(hex: "#AEE3FF")
-}
-
 // MARK: - Pointer Cursor (AppKit Bridge)
 
 /// Uses AppKit's cursor rect system to reliably show a pointing hand cursor.
@@ -845,6 +961,12 @@ extension View {
             return AnyView(self)
         }
     }
+
+    /// The dots pen-hatch over a flat field fill. Only ever applied to a solid `DS.Dots` field —
+    /// never over text, never over the notch card.
+    func dotsHatched() -> some View {
+        overlay(DS.Dots.HatchPattern())
+    }
 }
 
 // MARK: - Color Utilities
@@ -876,5 +998,54 @@ extension Color {
         let blue = nsColor.blueComponent + (1.0 - nsColor.blueComponent) * fraction
 
         return Color(red: red, green: green, blue: blue)
+    }
+}
+
+// MARK: - Nautical surface helpers
+
+extension View {
+    /// Wraps a block in the dots card treatment: a fill, the hatch, and one dashed edge.
+    func dotsCard(_ fill: Color, radius: CGFloat = DS.CornerRadius.large,
+                  hatched: Bool = true) -> some View {
+        modifier(DS.Dots.DotsCard(fill: fill, radius: radius, hatched: hatched))
+    }
+
+    /// A dashed edge on its own, for a block that already carries its own fill.
+    func dotsDashBorder(radius: CGFloat = DS.CornerRadius.large) -> some View {
+        overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .strokeBorder(DS.Dots.Dash.color, style: DS.Dots.Dash.style))
+    }
+
+    /// A solid edge, for a control or the outer sheet. Cards are dashed; the things you press are
+    /// not — that distinction is what the mockups draw and what the first all-dashed pass lost.
+    func dotsSolidBorder(radius: CGFloat = DS.CornerRadius.small,
+                         _ color: Color = DS.Dots.controlEdge,
+                         width: CGFloat = 1) -> some View {
+        overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .strokeBorder(color, lineWidth: width))
+    }
+}
+
+/// A dashed rule — the separator between rows and between the footer's three actions on the
+/// nautical surfaces. A `Divider` is a solid hairline, and one solid rule inside an all-dashed
+/// sheet reads as a different system.
+struct DotsDashRule: View {
+    var vertical: Bool = false
+
+    var body: some View {
+        Canvas { context, size in
+            var path = Path()
+            if vertical {
+                path.move(to: CGPoint(x: size.width / 2, y: 0))
+                path.addLine(to: CGPoint(x: size.width / 2, y: size.height))
+            } else {
+                path.move(to: CGPoint(x: 0, y: size.height / 2))
+                path.addLine(to: CGPoint(x: size.width, y: size.height / 2))
+            }
+            context.stroke(path, with: .color(DS.Dots.Dash.color), style: DS.Dots.Dash.style)
+        }
+        .frame(width: vertical ? DS.Dots.Dash.lineWidth : nil,
+               height: vertical ? nil : DS.Dots.Dash.lineWidth)
+        .allowsHitTesting(false)
     }
 }

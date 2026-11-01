@@ -37,7 +37,9 @@ final class NotchPanelManager {
 
     /// Corner radius of the halo, shared with the view's clip shape. The top edge is square
     /// because it meets the top of the display; only the bottom rounds.
-    private static let haloRadius: CGFloat = 14
+    private /// The view clips to `DS.CornerRadius.extraLarge`; this used to say 14 independently, and
+    /// the two disagreed about the same corner.
+    static let haloRadius: CGFloat = DS.CornerRadius.extraLarge
 
     init(model: NotchHUDModel) {
         self.model = model
@@ -144,7 +146,10 @@ final class NotchPanelManager {
         // The shadow is off because the panel's own black shape is the boundary; a shadow
         // around a rectangle that starts at the top of the screen draws a grey line across
         // the notch.
-        created.hasShadow = false
+        // True now that the card is bone. On the black ground the shadow was invisible and the
+        // window server's was a liability; a light sheet hanging off the notch has to be held down by
+        // something, or it reads as a rectangle of dead pixels over the desktop.
+        created.hasShadow = true
         created.hidesOnDeactivate = false
         created.isExcludedFromWindowsMenu = true
         created.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]

@@ -98,6 +98,18 @@ final class BrainGateway {
     /// anyway. That wait, not the model, is most of what "takes minutes" meant.
     private var rateLimiters: [String: RateLimiter] = [:]
 
+    /// Models this process has already been told refuse the `thinking_level` field.
+    ///
+    /// The recognition stays message-driven, never name-driven — a model id is not evidence that a
+    /// deployment changed. What is cached is the *fact that it was refused*, which the next request
+    /// to the same model cannot unlearn. Measured 2026-10-31 on his Mac: `gemini-3.8-flash` answered
+    /// `400 Thinking level THINKING_LEVEL_MINIMAL is not supported` on every turn it was reached, and
+    /// because the flag was reset with the turn, each one paid ~1.7s and a wasted request to find
+    /// that out again before the retry that works. Forgetting this on relaunch is the safe direction:
+    /// a model Google later teaches to accept the field simply keeps answering undieted until the
+    /// next launch, rather than a model that never accepts it being asked forever.
+    private var thinkingRejected: Set<String> = []
+
     private func limiter(for modelID: String) -> RateLimiter {
         if let existing = rateLimiters[modelID] { return existing }
         let fresh = RateLimiter()
@@ -108,6 +120,12 @@ final class BrainGateway {
     /// Wall-clock ceiling for walking the whole fallback chain. A healthy free-tier turn on this
     /// account measures 6.6–12.7s, so this only ever fires on the pathological case.
     static let turnBudgetSeconds: Double = 60
+
+    /// How long a turn will stand still for a model's per-minute bucket before walking on.
+    ///
+    /// Short on purpose: a sub-second refill is free, and a ten-second one is the whole wait the
+    /// next model could have spent answering instead.
+    static let maximumBucketWait: TimeInterval = 3
 
     init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -132,7 +150,7 @@ final class BrainGateway {
         systemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
-        onTextChunk: @MainActor @Sendable (String) -> Void
+        onTextChunk: @escaping @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval) {
 
         let started = Date()
@@ -167,18 +185,54 @@ final class BrainGateway {
         var lastError: Error?
         var attempts = 0
         let chainStarted = Date()
+        // The turn's own expiry, carried *into* the stream rather than checked only between models.
+        // `timeoutInterval = 20` is an idle bound and a server that trickles bytes resets it forever,
+        // which is how one contended model ran three ~90s tries inside a single 202s turn on
+        // 2026-10-23 while four healthy models went untried.
+        //
+        // Measured from the moment the user asked, not the moment the chain starts. Measured
+        // 2026-10-31 in `--probe-protocol`: two turns reported 126.3s and 44.0s while the log shows
+        // the chain itself took 28s and 16s of that — the rest went before the first request, on a
+        // Keychain read and provider resolve made slow by the screen going locked. A budget that
+        // starts after the wait it is meant to bound is not a bound, and the promise in the docs is
+        // "the whole chain carries turnBudgetSeconds", which is the user's wait, not a slice of it.
+        let chainDeadline = started.addingTimeInterval(Self.turnBudgetSeconds)
+        let preChain = chainStarted.timeIntervalSince(started)
+        if preChain > 1 {
+            // Said out loud because it is invisible otherwise: the chain's log lines would read as a
+            // slow model while the minute had already gone before any request was built.
+            Log.write("turn: \(String(format: "%.1f", preChain))s spent before the chain "
+                + "(offline check, key read, provider resolve) — \(Int(Self.turnBudgetSeconds - preChain))s "
+                + "left of the turn's budget")
+        }
+        /// Every model this turn has already been answered by, or refused by.
+        var asked = Set<String>()
         Log.write("turn: chain \(chain.map(\.id).joined(separator: " > "))"
             + " · \(images.count) image(s), \(images.reduce(0) { $0 + $1.data.count } / 1024) KB"
             + " · text \(userPrompt.count + systemPrompt.count) chars")
         modelLoop: for (index, candidate) in chain.enumerated() {
-            attempts = index + 1
+            if asked.contains(candidate.id) {
+                // The hedge asked this model alongside the first one, and its failure is already
+                // known. Asking it a second time costs a full timeout — measured 15.5s on
+                // 2026-10-23, on a turn that then took 51s to answer a question worth 9.
+                Log.write("turn: skipping \(candidate.id) — the hedge already asked it")
+                continue
+            }
+            attempts = asked.count + 1
+            // Some models reject the thinking field outright. Measured 2026-10-29 on his own screen:
+            // `gemini-3.1-flash-lite-preview` answered every request with 400 `Thinking level
+            // THINKING_LEVEL_MINIMAL is not supported for this model`, and a 400 is fatal to a turn —
+            // so the field this app added to halve latency killed the reply instead. The retry that
+            // can clear is the one that changes the request, not the one that changes the model: the
+            // first rejection drops the field for this model and asks the same model again.
+            var thinkingLevelAccepted = !thinkingRejected.contains(candidate.id)
             // Stop before the wait outruns the person waiting. Measured 2026-10-15: a turn spent
             // 281s because one model was allowed to run its full timeout three times, and answered
             // in the last 6 of them. Anything still untried at the budget is a model that was not
             // going to reply in time either, and an honest failure at 60s beats an answer he has
             // walked away from.
-            let spentSoFar = Date().timeIntervalSince(chainStarted)
-            if index > 0, spentSoFar > Self.turnBudgetSeconds {
+            let spentSoFar = Date().timeIntervalSince(started)
+            if spentSoFar > Self.turnBudgetSeconds {
                 Log.write("turn: budget spent after \(String(format: "%.0f", spentSoFar))s — "
                     + "\(chain.count - index) model(s) left untried")
                 throw BrainError.turnBudgetExceeded(used: spentSoFar, models: index)
@@ -188,6 +242,16 @@ final class BrainGateway {
                 // Stay under the free tier's per-model cap rather than walking into it.
                 let limiter = limiter(for: candidate.id)
                 let wait = limiter.delayUntilAvailable()
+                if wait > Self.maximumBucketWait {
+                    // The free tier's window is a minute wide and a turn is not. Waiting 19s for a
+                    // bucket to refill — which the log shows this line did five times — is exactly
+                    // the dead time the 429 rule already refuses to pay for, and every other model
+                    // on the key has its own untouched budget.
+                    Log.write("turn: \(candidate.id) at its per-minute cap for "
+                        + "\(String(format: "%.1f", wait))s — skipping it, not waiting")
+                    lastError = BrainError.transport("\(candidate.id) is at its requests-per-minute cap")
+                    continue modelLoop
+                }
                 if wait > 0 {
                     Log.write("turn: \(candidate.id) at its per-minute cap, waiting "
                         + "\(String(format: "%.1f", wait))s")
@@ -195,15 +259,57 @@ final class BrainGateway {
                 }
                 limiter.consume()
 
+                let tryStarted = Date()
+                // This attempt's own expiry — a slice of what is left, not the whole budget, so a
+                // model that refuses slowly cannot keep the turn from the rest of the chain.
+                let slice = RetryPolicy.attemptSlice(
+                    remaining: chainDeadline.timeIntervalSince(tryStarted),
+                    modelsLeft: chain.count - index)
+                // The budget check above sits at the *model* boundary, and a model gets three
+                // attempts inside its own turn through the loop. Without this, a slow refusal spent
+                // the 60s promise twice over: measured 2026-10-31, one model failed at 34.6s, was
+                // retried without the thinking field on a fresh floored slice, and held the turn
+                // another 66.3s — 120s for a turn that had already run out of budget.
+                guard slice > 0 else {
+                    let spent = Date().timeIntervalSince(started)
+                    Log.write("turn: budget spent after \(String(format: "%.0f", spent))s mid-model "
+                        + "— \(candidate.id) not asked again, \(chain.count - index) model(s) left untried")
+                    throw BrainError.turnBudgetExceeded(used: spent, models: index)
+                }
+                let attemptDeadline = tryStarted.addingTimeInterval(slice)
                 do {
-                    let text = try await stream(
-                        key: key,
-                        model: candidate.id,
-                        systemPrompt: systemPrompt,
-                        history: conversationHistory,
-                        userPrompt: userPrompt,
-                        images: images,
-                        onTextChunk: onTextChunk)
+                    // The first model is asked alongside its successor if it goes quiet, because
+                    // the wait to *discover* a contended model is serial today. Later hops keep
+                    // the plain path: hedging every model would spend the free tier's per-minute
+                    // budget on three copies of one question.
+                    let text: String
+                    if index == 0, let partner = chain.dropFirst().first {
+                        asked.insert(candidate.id)
+                        // The partner is marked only when it is actually asked. It stands down if
+                        // the lead has already streamed, or if its own per-minute bucket is full —
+                        // and marking it in advance skipped the healthy fallback for the whole
+                        // turn, which after the reorder is `gemini-3.1-flash-lite`.
+                        text = try await hedged(key: key, lead: candidate, partner: partner,
+                                                systemPrompt: systemPrompt,
+                                                history: conversationHistory,
+                                                userPrompt: userPrompt, images: images,
+                                                deadline: attemptDeadline,
+                                                asksForThinking: thinkingLevelAccepted,
+                                                markAsked: { asked.insert($0) },
+                                                onTextChunk: onTextChunk)
+                    } else {
+                        asked.insert(candidate.id)
+                        text = try await stream(
+                            key: key,
+                            model: candidate.id,
+                            systemPrompt: systemPrompt,
+                            history: conversationHistory,
+                            userPrompt: userPrompt,
+                            images: images,
+                            deadline: attemptDeadline,
+                            asksForThinking: thinkingLevelAccepted,
+                            onTextChunk: onTextChunk)
+                    }
                     let total = Date().timeIntervalSince(started)
                     Log.write("turn: served by \(candidate.id) in \(String(format: "%.1f", total))s"
                         + " (\(attempts) model(s) tried)")
@@ -230,7 +336,24 @@ final class BrainGateway {
                     lastError = error
                     let waited = Date().timeIntervalSince(attemptStarted)
                     let kind = classify(error)
-                    let decision = RetryPolicy.decide(for: kind, attempt: attempt)
+                    if case .badRequest(let detail) = kind,
+                       RetryPolicy.rejectsThinkingLevel(detail), thinkingLevelAccepted {
+                        thinkingLevelAccepted = false
+                        // Remembered only on a hop with one request behind its errors. The first hop
+                        // is hedged — two models asked at once, sharing one `asksForThinking`, and
+                        // `RaceResult.failed` does not carry which one refused. Marking the lead for
+                        // the partner's 400 would cost the lead the thinking diet forever, and the
+                        // diet is measured to halve a served turn (21–24s against 42–49s), so an
+                        // unattributable refusal is not worth caching.
+                        if index != 0 { thinkingRejected.insert(candidate.id) }
+                        // Said out loud, because a turn that succeeds on the second attempt looks like
+                        // a slow turn in the log and a model that cannot be told to think less looks
+                        // like a contended one.
+                        Log.write("turn: \(candidate.id) rejects thinking_level (\(detail.prefix(90))) "
+                            + "— asking it again without the field")
+                    }
+                    let decision = RetryPolicy.decide(for: kind, attempt: attempt,
+                                                      secondsToFail: Date().timeIntervalSince(tryStarted))
                     // The decision is logged, not guessed at: "failed, retrying" beside a line
                     // that then switched models is how a log stops being worth reading.
                     let action: String
@@ -458,6 +581,129 @@ final class BrainGateway {
         return .other
     }
 
+    /// How long the first model gets to say *anything* before the second is asked alongside it.
+    ///
+    /// Measured 2026-10-18: a turn spent 8.3s waiting to learn that `gemini-3.6-flash` was
+    /// contended, retried it as the policy says, and answered in 17.2s — for a reply that took six
+    /// seconds to generate. The retry rule is right (a 503 clears in seconds on the same model, and
+    /// every model has its own per-minute budget) and is untouched. What is wrong is that the
+    /// *discovery* is serial: the user pays for a model's silence before anyone knows it is silent.
+    static let hedgeAfterSeconds: Double = 3.5
+
+    /// Who is allowed to put text in front of the user.
+    ///
+    /// Two models can be in flight during a hedge and exactly one may speak: a card that receives
+    /// chunks from both interleaves two answers into one unreadable sentence, and a text-to-speech
+    /// queue that hears both says both out loud. The first to produce a chunk owns the reply, and
+    /// the other is cancelled mid-stream.
+    final class StreamClaim: @unchecked Sendable {
+        private let lock = NSLock()
+        private var owner: String?
+
+        var isClaimed: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return owner != nil
+        }
+
+        /// Whether `model` may emit this chunk. Once one model owns the reply, no other does.
+        func claim(_ model: String) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if owner == nil { owner = model; return true }
+            return owner == model
+        }
+    }
+
+    private enum RaceResult: Sendable {
+        case served(String, model: String)
+        case failed(Error)
+        /// The hedge stood down because the lead model started talking first.
+        case abstained
+    }
+
+    /// Ask the lead model, and the partner as well if the lead has not streamed anything within
+    /// `hedgeAfterSeconds`.
+    ///
+    /// Only the first hop of the chain uses this. Beyond that a turn would spend the free tier's
+    /// per-minute budget on three copies of one question, and a model that arrives second in the
+    /// chain has already been chosen as the fallback.
+    private func hedged(key: String, lead: BrainModel, partner: BrainModel,
+                        systemPrompt: String,
+                        history: [(userPlaceholder: String, assistantResponse: String)],
+                        userPrompt: String, images: [(data: Data, label: String)],
+                        deadline: Date,
+                        asksForThinking: Bool,
+                        markAsked: @escaping (String) -> Void,
+                        onTextChunk: @escaping @MainActor @Sendable (String) -> Void) async throws -> String {
+        let claim = StreamClaim()
+        let started = Date()
+
+        func gated(model id: String) -> @MainActor @Sendable (String) -> Void {
+            { chunk in
+                if claim.claim(id) { onTextChunk(chunk) }
+            }
+        }
+
+        func ask(_ model: BrainModel) async -> RaceResult {
+            do {
+                let text = try await stream(key: key, model: model.id, systemPrompt: systemPrompt,
+                                            history: history, userPrompt: userPrompt,
+                                            images: images, deadline: deadline,
+                                            asksForThinking: asksForThinking,
+                                            onTextChunk: gated(model: model.id))
+                return .served(text, model: model.id)
+            } catch {
+                return .failed(error)
+            }
+        }
+
+        return try await withThrowingTaskGroup(of: RaceResult.self) { group in
+            group.addTask { await ask(lead) }
+            group.addTask {
+                // The partner sleeps rather than being scheduled later, because a task group cannot
+                // be added to from inside itself. If the lead has streamed by the time it wakes,
+                // it stands down and costs nothing.
+                try? await Task.sleep(nanoseconds: UInt64(Self.hedgeAfterSeconds * 1_000_000_000))
+                if Task.isCancelled || claim.isClaimed { return .abstained }
+                // The partner has its own per-minute budget, and a hedge that walks into its cap
+                // is worse than waiting: it spends the request and returns a 429. Standing down
+                // keeps the lead's retry path exactly as the policy describes it.
+                let partnerWait = self.limiter(for: partner.id).delayUntilAvailable()
+                guard partnerWait <= 0 else {
+                    Log.write("turn: \(partner.id) is at its per-minute cap — not hedged")
+                    return .abstained
+                }
+                self.limiter(for: partner.id).consume()
+                markAsked(partner.id)
+                Log.write("turn: nothing from \(lead.id) after "
+                    + "\(String(format: "%.1f", Self.hedgeAfterSeconds))s — asking \(partner.id) "
+                    + "alongside it")
+                return await ask(partner)
+            }
+
+            var failure: Error?
+            while !group.isEmpty {
+                let result = try await group.next()
+                switch result {
+                case .served(let text, let model):
+                    group.cancelAll()
+                    if claim.isClaimed {
+                        Log.write("turn: served first by \(model) after "
+                            + "\(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+                    }
+                    return text
+                case .failed(let error):
+                    // Held, not thrown: the other request may still be about to answer, and the
+                    // loser's error is not the user's problem if the winner arrives.
+                    if failure == nil { failure = error }
+                case .abstained, .none:
+                    break
+                }
+            }
+            group.cancelAll()
+            throw failure ?? BrainError.transport("hedged stream ended without a reply")
+        }
+    }
+
     private func stream(
         key: String,
         model: String,
@@ -465,6 +711,13 @@ final class BrainGateway {
         history: [(userPlaceholder: String, assistantResponse: String)],
         userPrompt: String,
         images: [(data: Data, label: String)],
+        /// The turn's expiry. Checked on every line, because an idle timeout cannot see a stream
+        /// that trickles.
+        deadline: Date,
+        /// Whether to ask this model to think less. False after it has said it cannot — the field is
+        /// an optimisation, and a model that rejects it outright is not a model that must be argued
+        /// with twice per turn.
+        asksForThinking: Bool = true,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> String {
 
@@ -492,7 +745,8 @@ final class BrainGateway {
             model: model,
             parts: parts,
             systemPrompt: systemPrompt,
-            history: history)
+            history: history,
+            asksForThinking: asksForThinking)
 
         var urlRequest = URLRequest(url: Self.interactionsURL)
         urlRequest.httpMethod = "POST"
@@ -525,6 +779,17 @@ final class BrainGateway {
 
         var accumulated = ""
         for try await line in bytes.lines {
+            // A hedged turn cancels the loser, and `AsyncBytes` does not notice on its own: without
+            // this the model that lost the race keeps streaming a whole reply into a callback that
+            // ignores it, holding the connection and its rate-limit token.
+            if Task.isCancelled { throw URLError(.cancelled) }
+            // Past the turn's budget this stream is no longer worth finishing, and `.network` is
+            // the classification that moves to the next model instead of asking this one again.
+            // Only a *silent* stream is cut here. A model that has already begun answering is
+            // worth letting finish: aborting mid-sentence and switching made the next model append
+            // to the same `AnswerStreamer`, so one card and one spoken sentence came from two
+            // models — and both models' act tags ran as one plan.
+            if accumulated.isEmpty, Date() >= deadline { throw URLError(.timedOut) }
             for event in GeminiStreamParser.parse(line: String(line)) {
                 if case .textDelta(let delta) = event {
                     accumulated += delta
@@ -550,7 +815,8 @@ final class BrainGateway {
         model: String,
         parts: [GeminiRequestBuilder.ContentPart],
         systemPrompt: String,
-        history: [(userPlaceholder: String, assistantResponse: String)]
+        history: [(userPlaceholder: String, assistantResponse: String)],
+        asksForThinking: Bool = true
     ) -> [String: Any] {
         var all = parts.map(\.json)
         if !history.isEmpty {
@@ -561,7 +827,7 @@ final class BrainGateway {
             all[0] = ["type": "text", "text": "Earlier in this conversation:\n\(transcript)"]
         }
 
-        return [
+        var request: [String: Any] = [
             "model": model,
             "store": false,
             "stream": true,
@@ -570,6 +836,30 @@ final class BrainGateway {
             // "The value is invalid for 'system_instruction'. Expected string".
             "system_instruction": systemPrompt,
         ]
+        // Not every model takes it, and one that does not ends the turn: measured 2026-10-29 on his
+        // own screen, `gemini-3.1-flash-lite-preview` answered every request with 400 `Thinking level
+        // THINKING_LEVEL_MINIMAL is not supported for this model`, and a 400 was fatal — so the field
+        // added to halve latency was the reason "Could not answer" appeared over a question the model
+        // could answer in seconds. The key now goes only when this model has not already refused it.
+        // Gemini 3.x thinks before it speaks, and the dead 20-second silences in the log — a model
+        // streaming nothing while the idle bound counts down — are that thinking, unbudgeted.
+        // `--probe-thinking` measured the shape on 2026-10-28: this field and only this one is
+        // accepted (`none` is not a value; `minimal`, `low`, `medium` and `high` are), and on the
+        // five-turn protocol probe `minimal` halved served-turn seconds (21–24s against 42–49s on the
+        // same prompts). The one tag family it appeared to lose — a "scrolling down to find the
+        // invoice" with no `[SCROLL:]` behind it — went missing at `low` too, on a screen with nothing
+        // scrollable: a promise with no request, not a thinking budget, and `AnswerStreamer
+        // .retractUnbackedPromises` replaces it with an honest line whatever the model thought.
+        //
+        // Not every model takes it, and one that does not ends the turn. Measured 2026-10-29 on his own
+        // screen: `gemini-3.1-flash-lite-preview` answered every request with 400 `Thinking level
+        // THINKING_LEVEL_MINIMAL is not supported for this model`, and a 400 was fatal — so the field
+        // added to halve latency was why "Could not answer" appeared over a question that model could
+        // answer in seconds. The key now goes only when this model has not already refused it.
+        if asksForThinking {
+            request["generation_config"] = ["thinking_level": "minimal"]
+        }
+        return request
     }
 
     private static var interactionsURL: URL {

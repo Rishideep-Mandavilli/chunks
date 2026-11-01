@@ -19,6 +19,18 @@ struct CompanionScreenCapture {
     let displayFrame: CGRect
     let screenshotWidthInPixels: Int
     let screenshotHeightInPixels: Int
+
+    /// The part of the display this picture shows, in AppKit global points, when it is a crop
+    /// rather than a whole screen; `nil` when the picture is a crop whose rectangle on the display
+    /// cannot be known (macOS's own crosshair hands back pixels and nothing else).
+    let cropFrame: CGRect?
+
+    /// The rectangle an aim in this picture is a proportion **of**.
+    ///
+    /// A full-screen capture covers its display, so this is `displayFrame`. A crop covers a
+    /// fraction of it, and mapping a crop's aim as a fraction of the whole display is the failure
+    /// this exists to prevent: the number is plausible and the press is elsewhere.
+    var imageFrame: CGRect { cropFrame ?? displayFrame }
 }
 
 @MainActor
@@ -117,8 +129,13 @@ enum CompanionScreenCaptureUtility {
                 displayWidthInPoints: Int(displayFrame.width),
                 displayHeightInPoints: Int(displayFrame.height),
                 displayFrame: displayFrame,
-                screenshotWidthInPixels: configuration.width,
-                screenshotHeightInPixels: configuration.height
+                // Measured from the image that came back, not from the size asked for:
+                // `SCScreenshotManager` clamps, and the pixel dimensions are printed into the
+                // image label as the space a model may answer in. A declared size that is not the
+                // real one turns that answer into a mis-scaled aim.
+                screenshotWidthInPixels: cgImage.width,
+                screenshotHeightInPixels: cgImage.height,
+                cropFrame: nil
             ))
         }
 

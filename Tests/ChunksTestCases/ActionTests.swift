@@ -51,8 +51,8 @@ public enum ActionTests {
             let p = ResponseParser()
             let ev = p.feed("[ACT:820,540,Run button]") + p.finish()
             expectEqual(acts(ev).count, 1, "act tag did not become an ActionRequest")
-            expectEqual(acts(ev).first?.target.x ?? -1, 820)
-            expectEqual(acts(ev).first?.target.y ?? -1, 540)
+            expectEqual(acts(ev).first?.pointTarget?.x ?? -1, 820)
+            expectEqual(acts(ev).first?.pointTarget?.y ?? -1, 540)
             expectEqual(acts(ev).first?.label ?? "", "Run button")
             expectEqual(texts(ev), "", "the tag leaked into visible text")
         }
@@ -71,8 +71,8 @@ public enum ActionTests {
             expect(!texts(ev).contains("[ACT"), "partial tag leaked to the card while streaming")
             ev += p.feed("34,50,Run]") + p.finish()
             expectEqual(acts(ev).count, 1)
-            expectEqual(acts(ev).first?.target.x ?? -1, 1234, "split delta truncated x")
-            expectEqual(acts(ev).first?.target.y ?? -1, 50)
+            expectEqual(acts(ev).first?.pointTarget?.x ?? -1, 1234, "split delta truncated x")
+            expectEqual(acts(ev).first?.pointTarget?.y ?? -1, 50)
             expectEqual(acts(ev).first?.label ?? "", "Run")
         }
 
@@ -93,6 +93,59 @@ public enum ActionTests {
             expect(acts(ev).isEmpty, "garbage parsed into a press")
             expect(texts(ev).contains("[ACT:somewhere,over]"),
                    "fail-open: an unparseable act must be visible, not silently dropped")
+        }
+
+        test("an aim qualified with an app is a pixel aim, with the app kept") {
+            // Measured 2026-10-25 on a live turn: the reply said "clicking the title now to show
+            // that file in finder" and wrote `[ACT:app=Qoder x=400,50:file title]`. Neither grammar
+            // accepted it — the semantic one because `x` is not a field it knows, the point one
+            // because the body does not start with a number — so the tag sat on the card as markup
+            // while the summary promised the click. A model that has learned to name the app writes
+            // this form, and accepting it is *stricter*: the named app becomes a second thing the
+            // hit test has to answer.
+            let p = ResponseParser()
+            let ev = p.feed("[ACT:app=Qoder x=400,50:file title]") + p.finish()
+            guard let request = acts(ev).first else {
+                expect(false, "the qualified aim was refused by both grammars again"); return
+            }
+            expectEqual(request.pointTarget?.x ?? -1, 400)
+            expectEqual(request.pointTarget?.y ?? -1, 50)
+            expectEqual(request.pointTarget?.label, "file title",
+                        "the words after the coordinates are the label, not part of the aim")
+            expectEqual(request.pointTarget?.appName, "Qoder",
+                        "the app is the corroboration, so dropping it would weaken the press")
+            expectEqual(request.semanticTarget, nil,
+                        "this is a pixel aim with an app attached, not a named-control aim")
+        }
+
+        test("every way the model spells a qualified aim means the same press") {
+            let bodies = ["app=Qoder x=400,50:file title",
+                          "app=Qoder x=400 y=50:file title",
+                          "app=Google Chrome x=900,y=120:address bar"]
+            for body in bodies {
+                let parsed = ActionRequest.parseAct(body)
+                guard let aim = parsed?.pointTarget else {
+                    expect(false, "\"\(body)\" produced no pixel aim"); continue
+                }
+                expect(aim.x > 0 && aim.y > 0, "\"\(body)\" lost its coordinates")
+                expect(aim.appName == "Qoder" || aim.appName == "Google Chrome",
+                       "\"\(body)\" lost the app the model named")
+                expect(!aim.label.isEmpty && !aim.label.contains("="),
+                       "\"\(body)\" left the grammar in the label: \"\(aim.label)\"")
+            }
+        }
+
+        test("a named control still wins over the pixel grammar, and a bare aim still works") {
+            // The order is the whole point: `app=… name=…` is a statement about the accessibility
+            // tree and must never be re-read as a picture proportion.
+            let named = ActionRequest.parseAct("app=WhatsApp name=Send")
+            expect(named?.semanticTarget != nil, "a named aim fell through to the pixel grammar")
+            expect(named?.pointTarget == nil)
+            let bare = ActionRequest.parseAct("420,500:Understand personal build")
+            expectEqual(bare?.pointTarget?.label, "Understand personal build",
+                        "the form the crop turn actually used regressed")
+            expectEqual(bare?.pointTarget?.appName, nil,
+                        "no app was named, so nothing may be refused for naming the wrong one")
         }
 
         test("[ACT:none] is consumed quietly, the same escape [POINT:none] has") {
@@ -121,7 +174,7 @@ public enum ActionTests {
         test("the screen suffix on an ACT selects that display") {
             let p = ResponseParser()
             let ev = p.feed("[ACT:5,6,Send:screen2]") + p.finish()
-            expectEqual(acts(ev).first?.target.display ?? 0, 2)
+            expectEqual(acts(ev).first?.pointTarget?.display ?? 0, 2)
             expectEqual(acts(ev).first?.label ?? "", "Send")
         }
 
@@ -148,7 +201,7 @@ public enum ActionTests {
         test("the middle of the grid is the middle of the display") {
             let got = ScreenshotGeometry.appKitGlobalPoint(x: 500, y: 500,
                                                            imageWidth: 1280, imageHeight: 829,
-                                                           displayFrame: primary)
+                                                           imageFrame: primary)
             expectEqual(got?.x ?? -1, 855)
             expectEqual(got?.y ?? -1, 553.5, "image Y runs from the top; AppKit Y from the bottom")
         }
@@ -156,10 +209,10 @@ public enum ActionTests {
         test("the top of the grid is the top of the display, not the bottom") {
             let top = ScreenshotGeometry.appKitGlobalPoint(x: 0, y: 0,
                                                            imageWidth: 1280, imageHeight: 829,
-                                                           displayFrame: primary)
+                                                           imageFrame: primary)
             let bottom = ScreenshotGeometry.appKitGlobalPoint(x: 0, y: 1000,
                                                               imageWidth: 1280, imageHeight: 829,
-                                                              displayFrame: primary)
+                                                              imageFrame: primary)
             expectEqual(top?.y ?? -1, 1106.5, "Y is inverted exactly once")
             expectEqual(bottom?.y ?? -1, 0.5)
         }
@@ -173,7 +226,7 @@ public enum ActionTests {
             // it lands on the button.
             let aim = ScreenshotGeometry.appKitGlobalPoint(x: 955, y: 975,
                                                            imageWidth: 1280, imageHeight: 829,
-                                                           displayFrame: primary)
+                                                           imageFrame: primary)
             let ax = aim.map { ScreenshotGeometry.axGlobalPoint(appKitGlobalPoint: $0,
                                                                 primaryScreenHeight: 1107) }
             guard let resolved = ax else { expect(false, "the aim did not map at all"); return }
@@ -188,7 +241,7 @@ public enum ActionTests {
             // used the dimensions in the image label. Both axes move together, or the aim shears.
             let pixels = ScreenshotGeometry.appKitGlobalPoint(x: 2400, y: 1500,
                                                               imageWidth: 3420, imageHeight: 2214,
-                                                              displayFrame: primary)
+                                                              imageFrame: primary)
             expectEqual(pixels?.x ?? -1, 1200)
             expectEqual(pixels?.y ?? -1, 357)
             expectEqual(ScreenshotGeometry.aimSpace(x: 2400, y: 1500), .imagePixels)
@@ -203,7 +256,7 @@ public enum ActionTests {
             // ambiguous, and reading it as the grid is the documented choice, not an oversight.
             let anchor = ScreenshotGeometry.appKitGlobalPoint(x: 250, y: 750,
                                                               imageWidth: 1280, imageHeight: 829,
-                                                              displayFrame: primary)
+                                                              imageFrame: primary)
             expectEqual(anchor?.x ?? -1, 427.5)
             expectEqual(anchor?.y ?? -1, 276.75)
 
@@ -212,7 +265,7 @@ public enum ActionTests {
                 let h = primary.height * scale
                 let pixels = ScreenshotGeometry.appKitGlobalPoint(x: w * 0.25, y: h * 0.75,
                                                                   imageWidth: w, imageHeight: h,
-                                                                  displayFrame: primary)
+                                                                  imageFrame: primary)
                 expect(ScreenshotGeometry.aimSpace(x: w * 0.25, y: h * 0.75) == .imagePixels,
                        "a \(scale)x pixel answer was read as the grid")
                 expect(abs((pixels?.x ?? 0) - 427.5) < 0.01, "the pixel fallback drifted at \(scale)x")
@@ -226,10 +279,10 @@ public enum ActionTests {
             // visible input bar answered "that app did not expose a control".
             let left = ScreenshotGeometry.appKitGlobalPoint(x: -500, y: -500,
                                                             imageWidth: 1280, imageHeight: 829,
-                                                            displayFrame: primary)
+                                                            imageFrame: primary)
             let right = ScreenshotGeometry.appKitGlobalPoint(x: 1500, y: 4000,
                                                              imageWidth: 1280, imageHeight: 829,
-                                                             displayFrame: primary)
+                                                             imageFrame: primary)
             expectEqual(left?.x ?? -1, 0.5, "a negative aim must not press off-screen")
             expectEqual(left?.y ?? -1, 1106.5)
             expectEqual(right?.x ?? -1, 1709.5)
@@ -240,7 +293,7 @@ public enum ActionTests {
         test("a zero-size image returns nil rather than NaN") {
             expect(ScreenshotGeometry.appKitGlobalPoint(x: 10, y: 10,
                                                         imageWidth: 0, imageHeight: 0,
-                                                        displayFrame: primary) == nil,
+                                                        imageFrame: primary) == nil,
                    "dividing by a zero-width screenshot gives NaN, which lands nowhere")
         }
 
@@ -248,7 +301,7 @@ public enum ActionTests {
             let second = CGRect(x: 1710, y: 0, width: 1600, height: 1000)
             let got = ScreenshotGeometry.appKitGlobalPoint(x: 500, y: 500,
                                                            imageWidth: 1280, imageHeight: 829,
-                                                           displayFrame: second)
+                                                           imageFrame: second)
             expectEqual(got?.x ?? -1, 2510, "offset display frames lost their origin")
             expectEqual(got?.y ?? -1, 500)
         }
@@ -271,6 +324,83 @@ public enum ActionTests {
             let back = ScreenshotGeometry.axGlobalPoint(appKitGlobalPoint: ax,
                                                         primaryScreenHeight: 1107)
             expectEqual(back, appKit, "the flip is its own inverse")
+        }
+
+        // MARK: The aim inside a crop
+
+        /// The rectangle the user circled, in the space `CaptureEngine` reports it: global
+        /// top-left points on his 1710x1107 display.
+        let cropTopLeft = LogicalRect(x: 100, y: 80, width: 400, height: 300)
+
+        test("a crop's rectangle is turned over once, the same way a point is") {
+            let crop = ScreenshotGeometry.appKitRect(fromTopLeftGlobal: cropTopLeft,
+                                                     primaryScreenHeight: 1107)
+            expectEqual(crop.minX, 100, "X does not flip")
+            expectEqual(crop.minY, 727, "the crop's top edge in top-left space is 380 from the top")
+            expectEqual(crop.height, 300, "a rect flips its origin, not its size")
+            // The whole display flips to itself, which is what makes the full-screen path unchanged.
+            let whole = ScreenshotGeometry.appKitRect(
+                fromTopLeftGlobal: LogicalRect(x: 0, y: 0, width: 1710, height: 1107),
+                primaryScreenHeight: 1107)
+            expectEqual(whole, CGRect(x: 0, y: 0, width: 1710, height: 1107),
+                        "a display-sized picture must map exactly as it did before crops existed")
+        }
+
+        test("an aim inside a circled region lands inside that region") {
+            // The bug this prevents: a crop covers a fraction of the display, and treating the aim
+            // as a fraction of the *whole* display puts the press at the middle of the screen for a
+            // control the user circled in its top-left. Measured with his numbers — a 1710x1107
+            // display, a 400x300 pt crop at (100, 80), sent to the model as an 800x600 px image.
+            let crop = ScreenshotGeometry.appKitRect(fromTopLeftGlobal: cropTopLeft,
+                                                     primaryScreenHeight: 1107)
+            let aimed = ScreenshotGeometry.appKitGlobalPoint(x: 500, y: 500,
+                                                            imageWidth: 800, imageHeight: 600,
+                                                            imageFrame: crop)
+            let ax = aimed.map { ScreenshotGeometry.axGlobalPoint(appKitGlobalPoint: $0,
+                                                                  primaryScreenHeight: 1107) }
+            guard let point = ax else { expect(false, "the crop aim did not map at all"); return }
+            expectEqual(point.x, 300, "the centre of a crop at 100…500 is 300")
+            expectEqual(point.y, 230, "the centre of a crop at 80…380 is 230")
+
+            let asWholeScreen = ScreenshotGeometry.appKitGlobalPoint(
+                x: 500, y: 500, imageWidth: 800, imageHeight: 600,
+                imageFrame: CGRect(x: 0, y: 0, width: 1710, height: 1107))
+            expect(asWholeScreen != aimed,
+                   "a crop aimed as if it were the display is the failure, and it passed silently")
+        }
+
+        test("a pixel answer inside a crop is read against the crop too") {
+            // The same rectangle, the exception path: the model used the image's own dimensions.
+            // A 900x700 pt crop at 2x is an 1800x1400 px image, and only a value over 1000 can
+            // prove that — a 450 in an 800-wide picture is genuinely ambiguous, and stays the grid.
+            let big = LogicalRect(x: 100, y: 80, width: 900, height: 700)
+            let crop = ScreenshotGeometry.appKitRect(fromTopLeftGlobal: big,
+                                                     primaryScreenHeight: 1107)
+            let grid = ScreenshotGeometry.appKitGlobalPoint(x: 250, y: 750,
+                                                            imageWidth: 1800, imageHeight: 1400,
+                                                            imageFrame: crop)
+            let pixels = ScreenshotGeometry.appKitGlobalPoint(x: 450, y: 1050,
+                                                              imageWidth: 1800, imageHeight: 1400,
+                                                              imageFrame: crop)
+            expectEqual(ScreenshotGeometry.aimSpace(x: 450, y: 1050), .imagePixels)
+            expectEqual(pixels?.x ?? -1, grid?.x ?? -2,
+                        "the quarter-across aim came back in pixels and was scaled by the display")
+            expectEqual(pixels?.y ?? -1, grid?.y ?? -2)
+        }
+
+        test("a crop that touches the bottom of the display still aims at a hit-testable point") {
+            let dock = LogicalRect(x: 0, y: 1007, width: 1710, height: 100)   // to the last row
+            let crop = ScreenshotGeometry.appKitRect(fromTopLeftGlobal: dock,
+                                                     primaryScreenHeight: 1107)
+            let aim = ScreenshotGeometry.appKitGlobalPoint(x: 500, y: 1000,
+                                                           imageWidth: 1710, imageHeight: 100,
+                                                           imageFrame: crop)
+            let ax = aim.map { ScreenshotGeometry.axGlobalPoint(appKitGlobalPoint: $0,
+                                                                primaryScreenHeight: 1107) }
+            guard let point = ax else { expect(false, "the dock crop did not map"); return }
+            expect(point.y < 1107, "an aim on the last row of a crop at the screen's foot must "
+                                   + "stay inside the display, or the hit test finds nothing")
+            expect(point.y >= 1007, "and it must stay inside the crop the user actually drew")
         }
 
         // MARK: PolicyGate
@@ -334,10 +464,111 @@ public enum ActionTests {
         // machine, which is the opposite of what this gate exists for.
         test("asking off lets an ordinary press through without a card") {
             let d = PolicyGate.decide(target: ActionTargetInfo(
-                bundleID: "com.apple.mail", appName: "Mail", role: "AXButton"),
+                bundleID: "com.apple.mail", appName: "Mail", role: "AXButton",
+                elementLabel: "Get Mail"),
                 askBeforePressing: false)
             expectEqual(d, .allowedWithoutAsking,
                         "the user asked Chunks to act on what they name, not to question it")
+        }
+
+        // The hole this closes is measured, not hypothetical: 2026-10-18, a plan whose last step came
+        // from `<CONTINUE>press send in the chat with Dad</CONTINUE>` ran that step on the
+        // auto-continuation round and the message went out with nobody watching. "Don't ask" is an
+        // instruction about routine acts; it was never an instruction to send, pay or delete.
+        test("a send is asked about even with asking off") {
+            for label in ["Send", "‎Send", "Submit", "Pay now", "Delete", "Confirm"] {
+                let d = PolicyGate.decide(target: ActionTargetInfo(
+                    bundleID: "net.whatsapp.WhatsApp", appName: "WhatsApp",
+                    role: "AXButton", elementLabel: label),
+                    askBeforePressing: false)
+                expectEqual(d, .needsConsent,
+                            "\"\(label)\" is a commitment, so the standing instruction cannot skip it")
+            }
+        }
+
+        test("an app the user always allows is still asked before it sends") {
+            let d = PolicyGate.decide(target: ActionTargetInfo(
+                bundleID: "com.apple.mail", appName: "Mail", role: "AXButton",
+                elementLabel: "Send"),
+                alwaysAllowedBundleIDs: ["com.apple.mail"], askBeforePressing: false)
+            expectEqual(d, .needsConsent,
+                        "the allowance was about opening things, not about sending what the model wrote")
+        }
+
+        test("a press aimed at words the app never named is asked about with asking off") {
+            // The web case this route exists for: an `AXGroup` whose only words are its child's, which
+            // is why the card has to say "the area that says …" rather than a name. Asking off is the
+            // standing instruction on his machine, and it is an instruction about routine acts — a
+            // press built from an inference about a picture is not one.
+            let web = ActionTargetInfo(bundleID: "com.google.Chrome", appName: "Google Chrome",
+                                       role: "AXGroup", elementLabel: "AXGroup")
+            expectEqual(PolicyGate.decide(target: web, askBeforePressing: false, inferredAim: true),
+                        .needsConsent,
+                        "the card is the only place he learns Chunks guessed at the control")
+            expectEqual(PolicyGate.decide(target: web, askBeforePressing: false),
+                        .allowedWithoutAsking,
+                        "and it is the inference that asks, not the unknown role — a nameless control "
+                        + "resolved from its own published name still runs as it does today")
+        }
+
+        test("an inferred aim is asked about even inside an app he always allows") {
+            let d = PolicyGate.decide(target: ActionTargetInfo(
+                bundleID: "com.google.Chrome", appName: "Google Chrome",
+                role: "AXGroup", elementLabel: "AXGroup"),
+                alwaysAllowedBundleIDs: ["com.google.Chrome"],
+                askBeforePressing: false, inferredAim: true)
+            expectEqual(d, .needsConsent,
+                        "the allowance was for the controls he recognises in that app, and a card "
+                        + "describing a region by its child's words is not one of them")
+        }
+
+        test("an inferred aim never outranks a refusal") {
+            let d = PolicyGate.decide(target: ActionTargetInfo(
+                bundleID: "com.apple.Safari", appName: "Safari", role: "AXSecureTextField"),
+                askBeforePressing: false, inferredAim: true)
+            if case .forbidden = d { } else {
+                expect(false, "asking is not the safety net for a secure field; a resolution that "
+                    + "guesses must not turn a refusal into a question")
+            }
+        }
+
+        test("no tag can ask to be resolved by ranking") {
+            for body in ["app=Chrome name=Send", "app=Chrome role=button name=Send",
+                         "640,910:Send", "app=Chrome x=640,910:Send"] {
+                guard let act = ActionRequest.parseAct(body) else {
+                    expect(false, "\(body) no longer parses, so this check stopped testing anything")
+                    continue
+                }
+                expect(act.rankedAim == nil,
+                       "the ranking is what the app falls back to after a refusal, never something a "
+                       + "reply can request: \(body)")
+                expect(act.pointerClickPoint == nil,
+                       "and neither can a real click that moves his pointer: \(body)")
+            }
+        }
+
+        test("a control that merely contains the word is not a commitment") {
+            // A substring rule would catch "Sender" and stop ordinary flows, which trains the user to
+            // tap Allow without reading — the failure mode the card exists to avoid.
+            expect(!PolicyGate.isConsequential(label: "Sender"))
+            expect(!PolicyGate.isConsequential(label: "Sensitivity"))
+            expect(!PolicyGate.isConsequential(label: "Removed items"))
+            expect(!PolicyGate.isConsequential(label: "Browse"))
+            expect(PolicyGate.isConsequential(label: "‎Send"),
+                   "WhatsApp prefixes its labels with a directional mark; the token test must see through it")
+            expect(PolicyGate.isConsequential(label: "Check out"),
+                   "a two-word commitment is still one")
+            expect(!PolicyGate.isConsequential(label: nil),
+                   "a control with no published name is not refused for it — that is most of the screen")
+        }
+
+        test("an ordinary named field still runs silently when asking is off") {
+            let d = PolicyGate.decide(target: ActionTargetInfo(
+                bundleID: "net.whatsapp.WhatsApp", appName: "WhatsApp",
+                role: "AXTextArea", elementLabel: "Compose message"),
+                askBeforePressing: false)
+            expectEqual(d, .allowedWithoutAsking,
+                        "typing into a field submits nothing, so the standing instruction still applies")
         }
 
         test("asking off does not unlock a secure field") {
@@ -1009,6 +1240,295 @@ public enum ActionTests {
             expectEqual(DoRequest.displayURL(stored), "youtube.com/watch")
         }
 
+        // MARK: The URL-scheme primitive
+
+        test("running one of the user's shortcuts is one sentence, not a walkthrough of the app") {
+            let request = DoRequest.parse("run_shortcut:Focus")
+            expectEqual(request, .runShortcut(name: "Focus"))
+            expectEqual(ToolLayer.question(for: request!), "Run the shortcut \"Focus\"?",
+                        "the shortcut is the user's own, so the card has to say which one by name")
+            expectEqual(ToolLayer.outcomeLine(for: request!, succeeded: false),
+                        "Shortcuts did not take the run request for \"Focus\".",
+                        "an automation that did not run must not be reported as one that might have")
+            expectEqual(DoRequest.parse("shortcut:Evening wind-down"), .runShortcut(name: "Evening wind-down"),
+                        "a shortcut name with spaces is the normal case")
+        }
+
+        test("a name no person gave a shortcut is refused") {
+            // Chunks cannot check a shortcut against a list it owns, so the promise the card makes
+            // is only that the words on it are the words sent. These are the bodies where that is
+            // already false before the encoding starts.
+            for body in ["run_shortcut:",
+                         "run_shortcut:a/b",
+                         "run_shortcut:multi\nline"] {
+                expect(DoRequest.parse(body) == nil,
+                       "\(body) became a request; the user approved a name, not this")
+            }
+            let long = String(repeating: "x", count: 61)
+            expect(DoRequest.parse("run_shortcut:\(long)") == nil,
+                   "a 61-character name is not a shortcut, it is a payload")
+        }
+
+        test("showing one thing in Finder is one sentence about where") {
+            // The gap this fills: "open the memora workspace in finder" had no tool. `open_app`
+            // launches Finder without saying *where*, and an `[ACT]` cannot aim at a window that is
+            // not on screen yet.
+            expectEqual(DoRequest.parse("reveal:Memora"), .reveal(path: "Memora"))
+            expectEqual(DoRequest.parse("open_in_finder:~/Documents/Memora"),
+                        .reveal(path: "~/Documents/Memora"),
+                        "\"open that folder in finder\" is the same request in other words")
+            let request = DoRequest.parse("reveal:/Users/rishi/Documents/Rishi_Projects/Memora")
+            expectEqual(ToolLayer.question(for: request!),
+                        "Show Memora (in Rishi_Projects) in Finder?",
+                        "two folders can share a name; the card has to say which one opens")
+            expectEqual(ToolLayer.outcomeLine(for: request!, succeeded: true),
+                        "Showed Memora (in Rishi_Projects) in Finder.",
+                        "with asking off this runs unannounced, so the spoken line is the only report")
+            expect(ToolLayer.outcomeLine(for: request!, succeeded: false)
+                    .contains("did not open"),
+                   "a Finder window that did not appear must not be reported as one that did")
+        }
+
+        test("a reveal argument that is not one thing is refused") {
+            for body in ["reveal:",
+                         "reveal:file:///etc/passwd",
+                         "reveal:\(String(repeating: "x", count: 201))",
+                         "reveal:two\nlines"] {
+                expect(DoRequest.parse(body) == nil,
+                       "\(body) became a request; a nested scheme or a payload is not a folder")
+            }
+        }
+
+        test("a reveal may name a folder in his work, and never a credential store") {
+            let home = "/Users/rishi"
+            // The roots and the deny-list a read answers to, applied to a window that only *shows*
+            // a folder — because putting `~/.ssh` on screen is a leak even when nothing is read.
+            expectEqual(RevealPolicy.verdict(for: "~/Documents/Rishi_Projects/Memora",
+                                             homeDirectory: home),
+                        .allowed("/Users/rishi/Documents/Rishi_Projects/Memora"))
+            expectEqual(RevealPolicy.verdict(for: "/etc/hosts", homeDirectory: home), .outside,
+                        "another user's files are not a click away")
+            expectEqual(RevealPolicy.verdict(for: "~/.ssh", homeDirectory: home), .secret)
+            expectEqual(RevealPolicy.verdict(for: "~/Documents/keys/id_ed25519",
+                                             homeDirectory: home), .secret,
+                        "the file name is a credential whatever folder it sits in")
+            expectEqual(RevealPolicy.verdict(for: "~/Documents/vault/../../.ssh",
+                                             homeDirectory: home), .secret,
+                        "a `..` that climbs into a denied folder is still that folder")
+            expectEqual(RevealPolicy.verdict(for: "Memora", homeDirectory: home), .lookup("Memora"),
+                        "a bare name is a thing to find, not a path to guess under home")
+            expectEqual(RevealPolicy.verdict(for: "file:///tmp/x", homeDirectory: home), .unreadable,
+                        "a URL handed to Finder would be handed to whatever owns URLs")
+            // A disk image or an app bundle is revealable even though it is unreadable — the format
+            // rules belong to a read, and this is not one.
+            expectEqual(RevealPolicy.verdict(for: "~/Downloads/build.zip", homeDirectory: home),
+                        .allowed("/Users/rishi/Downloads/build.zip"))
+        }
+
+        test("one command, fixed arguments, and no way to write a second one") {
+            expectEqual(DoRequest.parse("run_command:caffeinate -u -t 3600"),
+                        .runCommand(argv: ["caffeinate", "-u", "-t", "3600"]))
+            expectEqual(DoRequest.parse("command:pmset -g batt"),
+                        .runCommand(argv: ["pmset", "-g", "batt"]),
+                        "\"the terminal command that shows the battery\" is the request he means")
+            // Quoting is for an argument with a space in it, which `osascript` needs constantly.
+            expectEqual(DoRequest.parse("run_command:defaults read \"My App\""), nil,
+                        "defaults is privileged and stays refused whatever follows it")
+            expectEqual(DoRequest.parse("run_command:say \"hello there\""),
+                        .runCommand(argv: ["say", "hello there"]))
+            expectEqual(ToolLayer.question(for: .runCommand(argv: ["caffeinate", "-u"])),
+                        "Run caffeinate -u?",
+                        "the whole command line is the question, or he is approving what he cannot read")
+            expect(ToolLayer.alwaysAsks(.runCommand(argv: ["caffeinate"])),
+                   "a model-authored command is never run with asking switched off")
+            expect(!ToolLayer.alwaysAsks(.openApp(name: "Notes")),
+                   "opening an app he named is routine, and asking there would be noise")
+        }
+
+        test("a command that is still holding is not reported as finished") {
+            // Photographed 2026-10-31: he said "run caffeinate in terminal", the card read
+            // `caffeinate -u -t 21600 did not run.` with no cause anywhere on it, and the other arm
+            // of the same code called a live six-hour sleep hold "caffeinate finished." Both are the
+            // report being wrong about a command that reported nothing at all.
+            let hold = DoRequest.runCommand(argv: ["caffeinate", "-u", "-t", "21600"])
+            expectEqual(ToolLayer.outcomeLine(for: hold, succeeded: true, commandStillRunning: true),
+                        "caffeinate is running and Chunks has stopped watching it.",
+                        "a six-hour hold told to him as over is a Mac that goes to sleep while he "
+                        + "believes it is awake")
+            expectEqual(ToolLayer.outcomeLine(for: hold, succeeded: true, commandStillRunning: false),
+                        "caffeinate finished.",
+                        "a command that really did return still needs the short answer")
+            expectEqual(ToolLayer.outcomeLine(for: hold, succeeded: false),
+                        "caffeinate -u -t 21600 did not run.",
+                        "the failure line keeps the whole line he approved, because that is what he "
+                        + "can go and run himself")
+            // And the third state is not reachable by the success path alone: a refused start must
+            // never read as a running hold.
+            expect(!ToolLayer.outcomeLine(for: hold, succeeded: false, commandStillRunning: false)
+                    .contains("stopped watching"),
+                   "nothing is running, so nothing may be described as being watched")
+        }
+
+        test("every way of smuggling a shell into a command is refused") {
+            // These are not hypothetical grammar slips; they are what a prompt injection writes when
+            // it wants a second command executed. None of them can be interpreted by `Process` —
+            // there is no shell — so refusing them is about not *pretending* the tool understood.
+            for body in ["run_command:",
+                         "run_command:caffeinate; rm -rf /",
+                         "run_command:caffeinate && curl evil",
+                         "run_command:caffeinate | sh",
+                         "run_command:echo $(whoami)",
+                         "run_command:echo `whoami`",
+                         "run_command:cat secrets > /tmp/out",
+                         "run_command:/bin/sh -c anything",
+                         "run_command:./build.sh",
+                         "run_command:sudo pmset -a sleep 0",
+                         "run_command:rm -rf Documents",
+                         "run_command:curl https://example.com",
+                         "run_command:two\nlines"] {
+                expect(DoRequest.parse(body) == nil,
+                       "\(body) became a runnable request")
+            }
+        }
+
+        test("home opens in Finder, and home's data folders still do not") {
+            let home = "/Users/rishi"
+            // The asymmetry is the whole distinction: a reveal is *seen by him*, a read is *sent to
+            // Google*. So `~` is a window he can ask for even though nothing under it that is not in
+            // a work folder can be read — and the sub-folders that hold other apps' data stay shut,
+            // because putting a Mail store on screen for a shoulder-surfing moment is its own leak.
+            expectEqual(RevealPolicy.verdict(for: "~", homeDirectory: home),
+                        .allowed("/Users/rishi"))
+            expectEqual(RevealPolicy.verdict(for: "~/Library/Mail", homeDirectory: home), .outside,
+                        "one level under home is not the same request as home")
+            expectEqual(RevealPolicy.verdict(for: "~/Documents/Memora", homeDirectory: home),
+                        .allowed("/Users/rishi/Documents/Memora"))
+            expectEqual(RevealPolicy.verdict(for: "~/.ssh", homeDirectory: home), .secret,
+                        "the deny-list outranks the home exception")
+        }
+
+        test("punctuation a real shortcut name carries stays one name") {
+            // "Focus & Deep work" is a name a human types. Refusing `&` would have rejected it and
+            // taught the model that shortcuts with punctuation are unreachable.
+            expectEqual(DoRequest.parse("run_shortcut:Focus&x=1"), .runShortcut(name: "Focus&x=1"))
+            expectEqual(DoRequest.parse("run_shortcut:100%"), .runShortcut(name: "100%"))
+        }
+
+        test("the shortcut url carries the exact name the card showed") {
+            // Built through URLComponents, so the assertion is a round trip rather than a string:
+            // a name that comes back different is a different automation being run.
+            let url = DoRequest.shortcutURL(name: "Focus & Deep work")
+            expectEqual(url?.scheme ?? "-", "shortcuts")
+            expectEqual(url?.host ?? "-", "run-shortcut")
+            let items = url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems }
+            expectEqual(items?.first?.value ?? "-", "Focus & Deep work",
+                         "the name has to survive encoding, not be truncated at the ampersand")
+        }
+
+        test("an email request fills a message and stops at the address") {
+            let request = DoRequest.parse("email:rick@studio.com")
+            expectEqual(request, .email(to: "rick@studio.com"))
+            expectEqual(ToolLayer.question(for: request!), "Start an email to rick@studio.com?")
+            expectEqual(DoRequest.mailtoURL(address: "rick@studio.com")?.absoluteString,
+                        "mailto:rick@studio.com")
+        }
+
+        test("a string that is not an address does not open a compose window") {
+            for body in ["email:hey", "email:two@words@studio.com", "email:@studio.com",
+                         "email:rick@studio", "email:rick@.com", "email:mailto:x@y.com"] {
+                expect(DoRequest.parse(body) == nil,
+                       "\(body) became a request; an address the user did not say is not a recipient")
+            }
+        }
+
+        // MARK: The schedule, from a spoken sentence
+
+        test("a routine is added from three named parts") {
+            let body = "routine_add:Morning glance|daily at 08:00|brief me on what is open"
+            let request = DoRequest.parse(body)
+            expectEqual(request, .addRoutine(title: "Morning glance",
+                                             cadence: .daily(at: "08:00"),
+                                             prompt: "brief me on what is open"))
+            // The card has to carry the question, not just the time: approving a schedule without
+            // reading what it asks is approving something unread.
+            expectEqual(ToolLayer.question(for: request!),
+                        "Add \"Morning glance\" — every day at 08:00 — asking "
+                        + "\"brief me on what is open\"?")
+            expectEqual(ToolLayer.outcomeLine(for: request!, succeeded: true),
+                        "Added \"Morning glance\", every day at 08:00.")
+        }
+
+        test("the four cadences a person actually says") {
+            expectEqual(DoRequest.routineCadence(from: "daily at 08:00"), .daily(at: "08:00"))
+            expectEqual(DoRequest.routineCadence(from: "every day at 8:00"), .daily(at: "08:00"),
+                        "a model writes \"8:00\"; the store keeps one shape so the panel can read "
+                        + "back the time the scheduler will use")
+            expectEqual(DoRequest.routineCadence(from: "weekdays at 09:30"),
+                        .weekdays(at: "09:30"))
+            expectEqual(DoRequest.routineCadence(from: "every 30 minutes"), .every(minutes: 30))
+            expectEqual(DoRequest.routineCadence(from: "every 2 hours"), .every(minutes: 120))
+        }
+
+        test("a cadence Chunks cannot honour is refused at parse, not guessed") {
+            // A routine that fires at a time the model invented is a notification at the wrong hour,
+            // and the schedule outlives the conversation that made it.
+            for words in ["daily at 25:00", "daily at morning", "someday at 08:00",
+                          "every 40 seconds", "weekly at 08:00", "at 08:00", ""] {
+                expect(DoRequest.routineCadence(from: words) == nil,
+                       "\"\(words)\" became a schedule; it should have stayed a sentence")
+            }
+        }
+
+        test("a malformed routine body shows the user the tag rather than doing nothing") {
+            for body in ["routine_add:daily at 08:00|brief me",
+                         "routine_add:Morning glance|whenever|brief me",
+                         "routine_add:|daily at 08:00|brief me",
+                         "routine_add:Morning glance|daily at 08:00|"] {
+                expect(DoRequest.parse(body) == nil,
+                       "\(body) parsed into a routine the panel could not show")
+            }
+        }
+
+        test("a routine question longer than the card can show is not added") {
+            let long = String(repeating: "word ", count: 40)
+            expect(!DoRequest.routinePromptIsValid(long),
+                   "the store allows 400 characters; the card shows two lines, so the tool is the "
+                   + "stricter door")
+            expect(DoRequest.routinePromptIsValid("brief me on what is open"))
+            expect(DoRequest.parse("routine_add:T|daily at 08:00|\(long)") == nil)
+        }
+
+        test("a routine whose card sentence runs past two lines is refused") {
+            // Each part is legal on its own; the pair is not readable in the space the card has.
+            let longTitle = Array(repeating: "morning", count: 7).joined(separator: " ")   // 55 chars
+            let body = "routine_add:\(longTitle)|daily at 08:00|brief me on what is open"
+            expect(DoRequest.routineTitleIsValid(longTitle),
+                   "the title alone is inside the store's own limit")
+            expect(DoRequest.parse(body) == nil,
+                   "a clipped question is an approval given for words nobody read")
+        }
+
+        test("removing a routine names the effect and the failure") {
+            let request = DoRequest.parse("routine_remove:Morning glance")
+            expectEqual(request, .removeRoutine(title: "Morning glance"))
+            expectEqual(ToolLayer.question(for: request!), "Remove the routine \"Morning glance\"?")
+            expectEqual(ToolLayer.outcomeLine(for: request!, succeeded: false),
+                        "There is no routine called \"Morning glance\".")
+        }
+
+        test("every tool is asked about, because every tool changes something") {
+            for request in [DoRequest.parse("open_app:Notes"), DoRequest.parse("set_volume:40"),
+                            DoRequest.parse("open_url:youtube.com"),
+                            DoRequest.parse("run_shortcut:Focus"),
+                            DoRequest.parse("email:rick@studio.com"),
+                            DoRequest.parse("routine_add:T|daily at 08:00|p"),
+                            DoRequest.parse("routine_remove:T")] {
+                expect(request != nil, "a tool stopped parsing")
+                expectEqual(ToolLayer.effect(of: request!), .changesSystemState,
+                            "a new tool must be asked about by default, not allowed silently")
+            }
+        }
+
         // MARK: Chromium's actions arrive late
 
         test("a web element that published no action is read again before it is refused") {
@@ -1040,6 +1560,21 @@ public enum ActionTests {
                    "desktop icons publish no frame; refusing them would break the presses that work")
             expect(AXTDriver.isOnScreen(CGRect(x: 0, y: 33, width: 40, height: 40), in: window),
                    "one point of tolerance, because a window edge is measured not drawn")
+        }
+
+        test("a name never reaches inside a menu, and still reaches the button that opens it") {
+            // Measured 2026-10-24 on a spoken plan: asked to "click the Memora workspace" — a tile in
+            // the Qoder window — the named route answered `AXMenuItem/Memora verb=AXPress at
+            // (0.0, 1107.0)`, said "Pressed Memora." and opened a Finder window for a folder of that
+            // name. `isOnScreen` passed it because a menu bar's rows sit on the edge of the display.
+            expect(AXTDriver.isMenuRole("AXMenuItem"),
+                   "a closed menu keeps its rows addressable; a name finding one is pressing blind")
+            expect(AXTDriver.isMenuRole("AXMenu"))
+            expect(!AXTDriver.isMenuRole("AXMenuButton"),
+                   "the button the user can see and that opens the menu is a real control — "
+                     + "refusing it would be a false negative, not a safety win")
+            expect(!AXTDriver.isMenuRole("AXButton"),
+                   "a workspace row, a tile and a toolbar item all answer as AXButton")
         }
 
         test("a Catalyst field is a field even when its role says otherwise") {
@@ -1159,8 +1694,8 @@ public enum ActionTests {
             expectEqual(acts(events)[0].verb, .type(text: "good night"),
                         "the words after the bar are the payload, not part of the label")
             expectEqual(acts(events)[0].label, "message box")
-            expectEqual(acts(events)[0].target.x, 1180)
-            expectEqual(acts(events)[0].target.y, 1002)
+            expectEqual(acts(events)[0].pointTarget?.x ?? -1, 1180)
+            expectEqual(acts(events)[0].pointTarget?.y ?? -1, 1002)
             expect(!texts(events).contains("[TYPE:"), "the tag leaked into the shown text")
         }
 
@@ -1211,15 +1746,128 @@ public enum ActionTests {
                         ActionRequest.maxTypedCharacters)
         }
 
+        // A line break is a newline in an editor and a Send in a one-line box. His own proven typer
+        // presses Enter between lines on purpose, in an editor; in a chat composer the same key
+        // submits half the code to half the wrong people, so the whole act refuses instead.
+        test("a line break is a newline in an editor and a send in a one-line box") {
+            expectEqual(AXTDriver.newlinePolicy(text: "line one\nline two", role: "AXTextArea"), .ok,
+                        "a multiline editor must take the code with its line breaks")
+            expectEqual(AXTDriver.newlinePolicy(text: "line one\nline two", role: "AXTextField"),
+                        .refused(lineBreaks: 1),
+                        "a one-line box would send the first line and swallow the rest")
+            expectEqual(AXTDriver.newlinePolicy(text: "one line only", role: "AXTextField"), .ok,
+                        "ordinary messages must not pay for a rule about line breaks")
+            expect(AXTDriver.TypeResult.postedUnverified(appName: "Google Chrome", characters: 1489)
+                     .userFacingReason.contains("would not confirm"),
+                   "an unconfirmed post must say to look at the field, not claim it typed")
+            expect(AXTDriver.TypeResult.multilineWithoutWitness(appName: "Google Chrome",
+                                                                lineBreaks: 3)
+                     .userFacingReason.contains("nothing was typed"),
+                   "line breaks with no witness must refuse, not send")
+            expect(AXTDriver.TypeResult.postedUnverified(appName: "Google Chrome", characters: 1)
+                     .didType,
+                   "posted keystrokes are a completed step, or a plan stops over work that landed")
+        }
+
+        // The focus click into web content is the shell's decision, made while resolving a question
+        // he already answered — never something a tag can ask for.
+        test("the focus click is the shell's decision, never the model's") {
+            expect(ActionRequest.parseType("640,910:editor|code")?.webFocusClick == false,
+                   "a tag must not be able to request a click")
+            let question = ActionRequest.webTypeQuestion(label: "editor", appName: "Google Chrome",
+                                                         characters: 1489,
+                                                         point: CGPoint(x: 640, y: 910))
+            expect(question.contains("Click the editor at (640,910) in Google Chrome")
+                   && question.contains("1489 characters"),
+                   "the question must name the click and the size he is approving: \(question)")
+        }
+
+        // CodeMirror indents on Return, so the value of a successfully typed file carries more
+        // leading whitespace than the payload did. A strict equality on the read-back would
+        // report that act as refused — the lie the line-wise witness exists to prevent.
+        test("the read-back witness tolerates the editor re-indenting each line") {
+            let payload = "#include <a.h>\nint main(void) {\nreturn 0;\n}"
+            let value = "#include <a.h>\n    int main(void) {\n        return 0;\n    }"
+            expect(AXTDriver.allLinesPresent(value: value, payload: payload),
+                   "an editor that indented the code he typed must still be reported as typed")
+            expect(!AXTDriver.allLinesPresent(value: "#include <a.h>", payload: payload),
+                   "half a file arriving must not be reported as the whole of it")
+            // The 22:00 Programiz case: the value holds the visible viewport of a 31-line file.
+            let viewport = "int main(void) {\n    return 0;\n}\n\nstruct node_state {"
+            expect(AXTDriver.mostPayloadLinesPresent(value: viewport, payload: payload),
+                   "a field showing most of the on-screen code must not report itself refused")
+            expect(!AXTDriver.mostPayloadLinesPresent(value: "hello world", payload: payload),
+                   "an editor must not be called successful when it shows unrelated words")
+        }
+
+        // The 2026-10-30 Examlly failure, photographed in the log: focus verified, 200 characters
+        // posted, and the card answering "the text area took the keystrokes and then refused the
+        // text" fourteen times in a row. A Chromium `AXTextArea` answers `kAXValueAttribute` with an
+        // empty string even when it took everything, so an empty read-back is *no witness* — and a
+        // refusal is a claim this app cannot support. The three-way split is asserted here because
+        // it cannot be tested while it is welded to a live AXUIElement.
+        test("an empty read-back is no witness, not a refusal") {
+            let payload = "SELECT *\nFROM adopters;"
+            expectEqual(AXTDriver.witness(value: nil, payload: payload), .silent,
+                        "an absent attribute has always meant 'cannot check', not 'refused'")
+            expectEqual(AXTDriver.witness(value: "", payload: payload), .silent,
+                        "a Chromium editor that answers the empty string must not be reported as "
+                        + "having refused text it may well have taken")
+            expectEqual(AXTDriver.witness(value: "   \n ", payload: payload), .silent,
+                        "whitespace is the same silence with newlines in it")
+        }
+
+        test("a field that shows other words is still a real refusal") {
+            // The half that must NOT loosen: a value that came back with content and does not hold
+            // the payload is evidence, and the act has to be reported as it reads.
+            let payload = "SELECT *\nFROM adopters;"
+            expectEqual(AXTDriver.witness(value: "the old answer is here", payload: payload),
+                        .contradicts,
+                        "a field that answers with different words did refuse the text — that is "
+                        + "the one case allowed to say so")
+            expectEqual(AXTDriver.witness(value: payload, payload: payload), .confirmed,
+                        "an exact match is still the ordinary success")
+            expectEqual(AXTDriver.witness(value: "prefix " + payload + " suffix", payload: payload),
+                        .confirmed,
+                        "an editor that added its own surrounding text still took his code")
+            expectEqual(AXTDriver.witness(value: "    SELECT *\n        FROM adopters;",
+                                          payload: payload), .confirmed,
+                        "a re-indented multi-line payload is a success, not a contradiction")
+        }
+
+        // The qualified-coordinate form ACT learned in October, photographed written into a
+        // `[TYPE:]` on 2026-10-28 — where it failed open as raw text over an empty editor.
+        test("a TYPE aimed at app plus coordinates is the same qualified aim ACT accepts") {
+            let request = ActionRequest.parseType("app=Google Chrome x=200,y=400|hello there")
+            expectEqual(request?.textToType, "hello there",
+                        "the model named the app and the point; the words must ride with them")
+            expectEqual(request?.pointTarget?.appName, "Google Chrome",
+                        "the named app is the corroboration the press path checks against")
+            expectEqual(request?.pointTarget?.x ?? -1, 200, "the aim must keep its x")
+            expectEqual(request?.pointTarget?.y ?? -1, 400, "the aim must keep its y")
+        }
+
+        // He named typing the whole code into an editor as the capability the product is for, the
+        // day he watched a buffer struct get offered for copy instead. This is the case that stops
+        // the cap quietly shrinking back under a snippet.
+        test("a whole code snippet fits in one type act, newlines included") {
+            expect(ActionRequest.maxTypedCharacters >= 6_000,
+                   "a 1,200-character cap turns the headline capability into a copy button")
+            let code = "typedef struct Node { void *data; } Node;\n"
+                + "void enqueue(void *q, void *data) { Node *n = malloc(sizeof(Node)); n->data = data; }"
+            expectEqual(ActionRequest.parseType("640,910:editor|\(code)")?.textToType, code,
+                        "the tag must carry every character it promises")
+        }
+
         test("a screen suffix on a type tag picks the display, not the message") {
             // The prompt says the tag follows [ACT:…]'s rules *including* `:screenN`, and a model
             // writes that suffix at the end of the tag — which is inside the words after a `|`.
             // Sending "good night:screen2" to a friend is the whole bug.
             let afterLabel = ActionRequest.parseType("640,910:box:screen2|good night")
             let afterText = ActionRequest.parseType("640,910:box|good night:screen2")
-            expectEqual(afterLabel?.target.display, 2)
+            expectEqual(afterLabel?.pointTarget?.display ?? 0, 2)
             expectEqual(afterLabel?.textToType ?? "", "good night")
-            expectEqual(afterText?.target.display, 2,
+            expectEqual(afterText?.pointTarget?.display ?? 0, 2,
                         "the second display was typed into instead of the first")
             expectEqual(afterText?.textToType ?? "", "good night",
                         "the screen suffix leaked into the message the user asked to send")

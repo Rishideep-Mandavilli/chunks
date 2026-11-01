@@ -1,17 +1,13 @@
 #!/bin/bash
-# Assemble Chunks.app from the SwiftPM executable.
-#
-# SwiftPM produces a bare Mach-O binary. A menu-bar app needs a bundle with an
-# Info.plist (LSUIElement for no Dock tile, plus the usage descriptions macOS
-# reads before it will prompt) and, for the capture and accessibility work, an
-# ad-hoc signature.
-#
-# Usage:  swift build -c release && ./scripts/make-app.sh
+# Build and seal a universal Chunks.app outside the iCloud-synced repository.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-debug}"
+case "$CONFIG" in debug|release) ;; *) printf 'usage: %s [debug|release]\n' "$0" >&2; exit 2 ;; esac
+ENTITLEMENTS="$PWD/scripts/Chunks.entitlements"
+MINIMUM_SYSTEM_VERSION="$(swift package dump-package | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["platforms"] if p["platformName"] == "macos"))')"
 
 # Staged outside the repo on purpose. This project lives under ~/Documents, which iCloud syncs,
 # and a bundle rewritten in place inside a synced folder gets conflict copies — `Chunks 2.app`,
@@ -20,14 +16,17 @@ CONFIG="${1:-debug}"
 # the one installed app. `install.sh` reads the same path.
 APP="${CHUNKS_STAGING_DIR:-$HOME/.chunks-build}/Chunks.app"
 
-if [ "$CONFIG" = "release" ]; then
-  BIN_DIR=".build/release"
-else
-  BIN_DIR=".build/debug"
-fi
-
-if [ ! -f "$BIN_DIR/chunks" ]; then
-  echo "error: $BIN_DIR/chunks not found — run 'swift build -c $CONFIG' first" >&2
+SOURCE_FINGERPRINT="$(python3 scripts/build-fingerprint.py)"
+BINS=()
+for ARCH in arm64 x86_64; do
+  TRIPLE="$ARCH-apple-macosx$MINIMUM_SYSTEM_VERSION"
+  SCRATCH="$(dirname "$APP")/swift-$ARCH"
+  swift build -c "$CONFIG" --scratch-path "$SCRATCH" --triple "$TRIPLE" --product chunks
+  BIN_DIR="$(swift build -c "$CONFIG" --scratch-path "$SCRATCH" --triple "$TRIPLE" --show-bin-path)"
+  BINS+=("$BIN_DIR/chunks")
+done
+if [ "$SOURCE_FINGERPRINT" != "$(python3 scripts/build-fingerprint.py)" ]; then
+  printf 'error: sources changed during the build; run make-app.sh again\n' >&2
   exit 1
 fi
 
@@ -36,10 +35,15 @@ echo "==> Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
+printf '%s\n' "$SOURCE_FINGERPRINT" > "$APP/Contents/Resources/BuildInputs.sha256"
 
-cp "$BIN_DIR/chunks" "$APP/Contents/MacOS/Chunks"
+lipo -create "${BINS[@]}" -output "$APP/Contents/MacOS/Chunks"
+# One arch per invocation: `-verify_arch arm64 x86_64 file` reads the second arch as a second
+# input file and dies, because the flag accepts exactly one input.
+lipo -verify_arch arm64 "$APP/Contents/MacOS/Chunks"
+lipo -verify_arch x86_64 "$APP/Contents/MacOS/Chunks"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -51,7 +55,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleShortVersionString</key>    <string>0.1.0</string>
     <key>CFBundleVersion</key>               <string>1</string>
     <key>CFBundlePackageType</key>           <string>APPL</string>
-    <key>LSMinimumSystemVersion</key>        <string>14.2</string>
+    <key>LSMinimumSystemVersion</key>        <string>$MINIMUM_SYSTEM_VERSION</string>
 
     <!-- Menu-bar only: no Dock tile, no app switcher entry. -->
     <key>LSUIElement</key>                   <true/>
@@ -93,7 +97,8 @@ if [ -z "${CHUNKS_SIGN_IDENTITY:-}" ]; then
   if security find-identity -p codesigning 2>/dev/null | grep -q '"Chunks Local"'; then
     CHUNKS_SIGN_IDENTITY="Chunks Local"
   else
-    CHUNKS_SIGN_IDENTITY="-"
+    printf 'error: no Chunks Local identity; provide CHUNKS_SIGN_IDENTITY explicitly (ad-hoc: -)\n' >&2
+    exit 1
   fi
 fi
 SIGN_IDENTITY="$CHUNKS_SIGN_IDENTITY"
@@ -111,8 +116,8 @@ fi
 SEALED=0
 for _ in 1 2 3; do
   xattr -cr "$APP" 2>/dev/null || true
-  if codesign --force --deep --sign "$SIGN_IDENTITY" "$APP" >/dev/null 2>&1 \
-     && codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+  if codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP" \
+     && codesign --verify --deep --strict "$APP"; then
     SEALED=1
     break
   fi

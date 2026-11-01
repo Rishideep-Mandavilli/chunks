@@ -19,6 +19,10 @@ public enum DisplayEnumerationTests {
         TestRunner.currentSuite = "Display enumeration (live)"
 
         test("every display reports a backing scale of 1 or more") {
+            // A loop over an empty array is a test that passes for free, and this one found
+            // nothing to check on a sleeping display while still printing a tick.
+            expect(!CaptureEngine.displays().isEmpty,
+                   "no displays were enumerated — every loop below would pass with nothing in it")
             for display in CaptureEngine.displays() {
                 expect(display.backingScale >= 1,
                        "display \(display.displayID) reported scale \(display.backingScale)")
@@ -29,7 +33,16 @@ public enum DisplayEnumerationTests {
 
         // The bug itself. A Retina display must not report 1.0.
         test("a Retina display does not report a backing scale of 1") {
-            for display in CaptureEngine.displays() {
+            let all = CaptureEngine.displays()
+            expect(!all.isEmpty, "nothing enumerated, so the assertion cannot fail")
+            // The loop below can only say something if a display is actually scaled. It used to
+            // ask `CGDisplayPixelsWide > frame.width`, which is never true — that API returns
+            // *points*, the exact trap invariant 1 records — so the loop body never ran and the
+            // test ticked green while checking nothing. The scale itself is the honest question.
+            expect(all.contains { $0.backingScale > 1 },
+                   "no display on this Mac reports a scale above 1, so the Retina assertion below "
+                     + "has nothing to check — run this on the built-in display, or delete the case")
+            for display in all {
                 let capturedPixelsWide = CGDisplayPixelsWide(display.displayID)
                 let pointWidth = Int(display.frame.width)
                 if capturedPixelsWide > pointWidth {
@@ -48,7 +61,10 @@ public enum DisplayEnumerationTests {
             // pixel width against the reported scale. This is why `ScreenCapture` measures
             // its own scale rather than trusting the display's.
             guard CaptureEngine.hasScreenRecordingPermission() else {
-                expect(true, "skipped: no Screen Recording permission")
+                // Reported as a skip, not a pass. This is the only check that cannot lie about the
+                // scale, and a run that reports it green without capturing anything is the exact
+                // false assurance that let the `CGDisplayPixelsWide` bug through.
+                skipTest("no Screen Recording permission for this binary")
                 return
             }
             guard let display = CaptureEngine.mainDisplay() else {
@@ -95,6 +111,7 @@ public enum DisplayEnumerationTests {
         }
 
         test("display frames use the CoreGraphics top-left origin") {
+            expect(!CaptureEngine.displays().isEmpty, "nothing enumerated to check the origin of")
             // The main display's origin is (0,0) in CG space. A second display to the left
             // would be negative. This test documents the convention so a future change to
             // AppKit's bottom-left convention cannot slip in unnoticed.

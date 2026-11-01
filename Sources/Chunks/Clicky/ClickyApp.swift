@@ -21,23 +21,133 @@ struct leanring_buddyApp: App {
     ///
     /// `SelfTest.run()` never returns: it drives the run loop itself and exits with a status.
     init() {
+        // The probes are the developer's harness, not a surface for whoever holds the machine: they
+        // name any point on the screen, print which file a sentence resolves to, and read one end to
+        // end. In a release build they are inert unless `CHUNKS_DEV=1`, so sharing the app does not
+        // ship a door. `--self-test` stays open — it reports only what this build can see.
+        if !AXProbe.developmentToolsAllowed, AXProbe.developmentFlagRequested {
+            print("Chunks: the --probe-* and --render-* tools are development-only. "
+                + "Run a debug build, or set CHUNKS_DEV=1, to use them.")
+            exit(2)
+        }
         if CommandLine.arguments.contains("--self-test") {
             SelfTest.run()
         }
         if let point = AXProbe.requestedPoint() {
             AXProbe.run(at: point)
         }
+        if let crop = AXProbe.requestedCropAim() {
+            AXProbe.runCrop(crop: crop.crop, aim: crop.aim)
+        }
+        if let target = AXProbe.requestedReveal() {
+            AXProbe.runReveal(target)
+        }
         if AXProbe.isVoiceProbeRequested {
             AXProbe.runVoiceProbe()
         }
+        if AXProbe.isMicProbeRequested {
+            AXProbe.runMicProbe()
+        }
         if AXProbe.isRequested {
             AXProbe.runDesktop()
+        }
+        if let body = AXProbe.requestedSemanticBody() {
+            AXProbe.runSemantic(body)
+        }
+        if let app = AXProbe.requestedFieldApp() {
+            AXProbe.runFields(app)
+        }
+        if let app = AXProbe.requestedControlApp() {
+            AXProbe.runControls(app)
+        }
+        if let request = AXProbe.requestedCandidates() {
+            AXProbe.runCandidates(request.target, aim: request.aim)
+        }
+        if AXProbe.isCommandProbeRequested {
+            AXProbe.runCommandProbe()
+        }
+        if AXProbe.isMemoryProbeRequested {
+            AXProbe.runMemoryProbe()
+        }
+        if let body = AXProbe.requestedReminderBody() {
+            AXProbe.runReminder(body)
+        }
+        if AXProbe.isAwakeProbeRequested {
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { AXProbe.runAwakeProbe() }
+            } else {
+                DispatchQueue.main.sync {
+                    MainActor.assumeIsolated { AXProbe.runAwakeProbe() }
+                }
+            }
+        }
+        if UIRenderProbe.isRequested {
+            // Hopped to the main thread and then the run loop is spun, because drawing an
+            // `NSHostingView` offscreen is main-thread work and this `init` is not guaranteed to
+            // run on main. `run` never returns: a probe that also opened the menu bar item would
+            // leave a second Chunks in the dock for whoever read the output.
+            // Synchronous, and it never returns: an async hop would let `init` carry on into the
+            // single-instance guard, which stands this copy down before the render is ever drawn.
+            let path = UIRenderProbe.requestedPath()
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { UIRenderProbe.run(to: path) }
+            } else {
+                DispatchQueue.main.sync {
+                    MainActor.assumeIsolated { UIRenderProbe.run(to: path) }
+                }
+            }
+        }
+        if UIRenderProbe.isPanelRequested {
+            // Constructs a `CompanionManager`, which is what the delegate does at launch anyway;
+            // the probe exits before `start()`, so no event tap, no prompt and no request runs.
+            let path = UIRenderProbe.requestedPanelPath()
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { UIRenderProbe.runPanel(to: path) }
+            } else {
+                DispatchQueue.main.sync {
+                    MainActor.assumeIsolated { UIRenderProbe.runPanel(to: path) }
+                }
+            }
+        }
+        if UIRenderProbe.isWindowRequested {
+            // The same main-thread hop and the same never-returning `run`, for the same reason:
+            // the window's layout is a visual claim, and a shell cannot screenshot it.
+            let path = UIRenderProbe.requestedWindowPath()
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { UIRenderProbe.runWindow(to: path) }
+            } else {
+                DispatchQueue.main.sync {
+                    MainActor.assumeIsolated { UIRenderProbe.runWindow(to: path) }
+                }
+            }
+        }
+        if UIRenderProbe.isSetupRequested {
+            let path = UIRenderProbe.requestedSetupPath()
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { UIRenderProbe.runSetup(to: path) }
+            } else {
+                DispatchQueue.main.sync {
+                    MainActor.assumeIsolated { UIRenderProbe.runSetup(to: path) }
+                }
+            }
         }
         if STTProbe.isRequested {
             STTProbe.run()
         }
         if FileReadProbe.isRequested {
             MainActor.assumeIsolated { FileReadProbe.run() }
+        }
+        if FileFindProbe.isRequested {
+            MainActor.assumeIsolated { FileFindProbe.run() }
+        }
+        if PromptProbe.isRequested {
+            MainActor.assumeIsolated { PromptProbe.run() }
+        }
+        if ProtocolProbe.isRequested {
+            MainActor.assumeIsolated { ProtocolProbe.run() }
+        }
+        if ThinkingProbe.isRequested {
+            MainActor.assumeIsolated { ThinkingProbe.run() }
         }
         if AnnotationSafetyProbe.isRequested {
             // Hopped to the main thread, not `assumeIsolated`. This `init` is not guaranteed to run
@@ -75,6 +185,12 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     private var notchPanelManager: NotchPanelManager?
 
+    private var appWindowManager: AppWindowManager?
+    private var firstRunWindow: FirstRunWindow?
+
+    /// Kept because a Combine subscription without a handle is cancelled the instant it is made.
+    private var windowToggleCancellable: AnyCancellable?
+
     override init() {
         companionManager = CompanionManager()
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
@@ -96,10 +212,18 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         // does nothing at all" turned out to be worth protecting against — the staged bundle
         // (`~/.chunks-build`) and the installed one (`~/Applications`) are both `app.chunks.mac`,
         // so refuse to run twice instead of leaving the ambiguity to be debugged from a log.
-        let alreadyRunning = NSWorkspace.shared.runningApplications.filter {
-            $0.bundleIdentifier == Bundle.main.bundleIdentifier
-                && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
-        }
+        // The comparison needs an identifier to compare. A bare SwiftPM binary has none —
+        // `Bundle.main.bundleIdentifier` is nil there — and `nil == nil` is true for every other
+        // process that also lacks one, so a probe run from `.build/debug` was standing down in front
+        // of `/usr/sbin/universalaccessd`. Measured 2026-10-27. Two copies of the *same signed app*
+        // is the ambiguity this guard exists to refuse; an unrelated system daemon is not.
+        let thisBundle = Bundle.main.bundleIdentifier
+        let alreadyRunning: [NSRunningApplication] = thisBundle.map { identifier in
+            NSWorkspace.shared.runningApplications.filter {
+                $0.bundleIdentifier == identifier
+                    && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+            }
+        } ?? []
         if let existing = alreadyRunning.first {
             Log.write("chunks: already running as pid \(existing.processIdentifier) from "
                 + "\(existing.bundleURL?.path ?? "an unknown bundle") — this copy is standing down")
@@ -120,6 +244,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         ClickyAnalytics.trackAppOpened()
 
         setupNotchHUD()
+        setUpAppWindow()
 
         // Look at the notch without running a turn: no microphone, no event tap, no API call,
         // and no login-item registration. Quit-and-relaunch is the early `return`, not a
@@ -153,12 +278,11 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             menuBarPanelManager.showPanelOnLaunch()
         }
-        // Only once onboarding is done. Registering on every launch made each rebuilt
-        // binary a login item, and an ad-hoc-signed rebuild is a different app to macOS,
-        // so the list filled up with entries that could never run.
-        if companionManager.hasCompletedOnboarding {
-            registerAsLoginItemIfNeeded()
-        }
+        // Launch-at-login is a choice, not a default. This used to call
+        // `SMAppService.mainApp.register()` on every launch once onboarding was done, which made
+        // each rebuilt binary a new login item — an ad-hoc signature is a different app to macOS —
+        // and left entries in System Settings that could never run. The row in the panel now owns
+        // it, and `LoginItem` reads the state back instead of remembering a wish.
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -175,7 +299,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         let manager = NotchPanelManager(model: companionManager.hud)
         manager.onSelectAction = { [weak companionManager] suggestion in
             Task { @MainActor in
-                companionManager?.ask(text: suggestion)
+                companionManager?.ask(text: suggestion, source: .chip)
             }
         }
         // The pill's one job beyond status: take the user to the panel. Cheaper than making
@@ -186,19 +310,31 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         notchPanelManager = manager
     }
 
-    /// Registers the app as a login item so it launches automatically on
-    /// startup. Uses SMAppService which shows the app in System Settings >
-    /// General > Login Items, letting the user toggle it off if they want.
-    private func registerAsLoginItemIfNeeded() {
-        let loginItemService = SMAppService.mainApp
-        if loginItemService.status != .enabled {
-            do {
-                try loginItemService.register()
-                print("🎯 Chunks: registered as login item")
-            } catch {
-                print("⚠️ Chunks: failed to register as login item: \(error)")
-            }
+    /// The window that holds the history, and the chord that opens it.
+    ///
+    /// Subscribed here rather than inside `AppWindowManager` because the event tap is already the
+    /// delegate's business — a manager holding its own second monitor would be a second permission
+    /// story for the same keystrokes.
+    private func setUpAppWindow() {
+        let manager = AppWindowManager(companionManager: companionManager)
+        // The panel's row and the notch both reach the same `show()` through this closure, so
+        // there is one definition of "open the window".
+        companionManager.openWindow = { [weak manager] in
+            manager?.show()
         }
+        windowToggleCancellable = companionManager.globalPushToTalkShortcutMonitor
+            .windowTogglePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak manager] in
+                manager?.toggle()
+            }
+        appWindowManager = manager
+        // The setup flow: shown on first launch, re-openable from the panel row, and closed only
+        // by Done. It is a separate window from the history window on purpose — a stranger's
+        // first screen should not also be the app's deepest surface.
+        let firstRun = FirstRunWindow(manager: companionManager)
+        companionManager.showFirstRun = { [weak firstRun] in firstRun?.show() }
+        firstRunWindow = firstRun
+        firstRun.showIfNeeded()
     }
-
 }

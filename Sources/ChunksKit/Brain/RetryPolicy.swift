@@ -11,6 +11,38 @@ import Foundation
 /// clock, so it stays testable with no sleeping and no networking.
 public enum RetryPolicy: Sendable {
 
+    /// How much of the turn's remaining time one attempt may take.
+    ///
+    /// A slice, not the whole budget. Handing a model the turn's full deadline means the first one
+    /// that refuses slowly keeps it: measured 2026-10-23, `gemini-3.6-flash` held a turn for 64s,
+    /// the chain said "switching away from it", and then "budget spent — 4 model(s) left untried".
+    /// Dividing what is left by the models still to come gives every one a chance to answer inside
+    /// the wait the user agreed to.
+    ///
+    /// The floor is there because a model needs about six seconds to answer a real screen turn at
+    /// all — a 2-second slice is a request that cannot succeed, and asking it wastes the slot.
+    ///
+    /// A spent budget is **not** a small remaining budget. The floor exists to stop a healthy turn
+    /// from handing a model two seconds; it must not hand one eight more seconds after the person has
+    /// already been kept too long. Measured 2026-10-31 on his Mac against a 60s budget: three turns
+    /// died at 62s, 103s and 120s, because the retry loop ran attempts two and three of one model on
+    /// floored slices after the budget was gone. `0` is the caller's signal to stop asking.
+    public static func attemptSlice(remaining: TimeInterval, modelsLeft: Int) -> TimeInterval {
+        guard remaining > 0 else { return 0 }
+        return max(minimumAttemptSeconds, remaining / Double(max(1, modelsLeft)))
+    }
+
+    /// The shortest slice worth asking a model for.
+    public static let minimumAttemptSeconds: TimeInterval = 8
+
+    /// A 503 that arrives later than this is not "high demand, ask again in a second".
+    ///
+    /// The retry rule was measured against fast refusals — a contended flash model says so in under
+    /// two seconds and clears inside ten. A refusal that took a minute and a half means the request
+    /// was never going to be answered, and the next model in the chain is the only thing that can
+    /// still save the turn.
+    public static let slowContentationSeconds: TimeInterval = 10
+
     /// Why a call failed.
     public enum Failure: Equatable, Sendable {
         /// Contention at the provider. Retry, then fall back to another model.
@@ -51,14 +83,24 @@ public enum RetryPolicy: Sendable {
     }
 
     /// Attempt is 0-based.
+    ///
+    /// `secondsToFail` is how long the model took to produce this error. It decides whether a 503 is
+    /// still the failure the retry rule was written for.
     public static func decide(for failure: Failure,
                               attempt: Int,
-                              maxAttemptsPerModel: Int = 3) -> Decision {
+                              maxAttemptsPerModel: Int = 3,
+                              secondsToFail: TimeInterval = 0) -> Decision {
 
         switch failure {
 
         case .serviceUnavailable:
-            // Contention is per-model, so moving on is usually faster than waiting.
+            // Contention is per-model, so a *fast* 503 is worth asking again: it clears in seconds
+            // and every model has its own budget. A 503 that took a minute and a half to arrive is
+            // not that failure wearing a hat — it is a model that spent the whole window and then
+            // said no, and asking it again spends the turn. Measured 2026-10-23: one contended
+            // `gemini-3.6-flash` ran three ~90s tries inside a single turn and the turn died at 202s
+            // with four healthy models untried.
+            if secondsToFail > slowContentationSeconds { return .fallBackToNextModel }
             if attempt >= maxAttemptsPerModel - 1 { return .fallBackToNextModel }
             return .retrySameModel(afterSeconds: backoff(attempt: attempt, base: 0.6, cap: 4.0))
 
@@ -77,6 +119,13 @@ public enum RetryPolicy: Sendable {
             // `gemini-3.8-flash`, each allowed to run its full timeout, while the model that
             // eventually answered needed 6 seconds.
             return .fallBackToNextModel
+
+        case .badRequest(let detail) where rejectsThinkingLevel(detail):
+            // One retry, and the caller drops the field between the two attempts. Deciding this here
+            // rather than letting a 400 be fatal is the difference between "Could not answer" and an
+            // answer: the request is wrong in exactly one key, and that key is one this app added for
+            // speed on the models that think. A second rejection is a real bad request, and fails.
+            return attempt >= 1 ? .fail : .retrySameModel(afterSeconds: 0)
 
         case .unauthorised, .badRequest:
             return .fail
@@ -143,6 +192,22 @@ public enum RetryPolicy: Sendable {
         if error is CancellationError { return true }
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
+    /// Whether a rejected request is rejecting the *thinking field* rather than the request itself.
+    ///
+    /// Measured 2026-10-29 on the user's own screen: every live request now carries
+    /// `generation_config.thinking_level = "minimal"` — added because it halves served-turn seconds on
+    /// the models that deliberate — and `gemini-3.1-flash-lite-preview` answered all of them with
+    /// `400 Thinking level THINKING_LEVEL_MINIMAL is not supported for this model`. A 400 was fatal, so
+    /// the card said "Could not answer" about a question the model could have answered in seconds.
+    /// Three spellings because the API names the field, the enum value and the concept in different
+    /// places in one message; nothing about *which* model, so the next one that draws the line is
+    /// handled by the same rule.
+    public static func rejectsThinkingLevel(_ detail: String) -> Bool {
+        let text = detail.lowercased()
+        return text.contains("thinking_level") || text.contains("thinking level")
+            || text.contains("thinkinglevel")
     }
 
     /// A message worth showing the user. Deliberately honest about *what* went wrong —

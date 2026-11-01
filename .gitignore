@@ -11,3 +11,4 @@ secrets.plist
 
 .DS_Store
 build/
+.impeccable/

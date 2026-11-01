@@ -53,6 +53,27 @@ public enum OpenAICompatibleTransport {
         }
     }
 
+    /// What these bytes actually are, from their own first characters.
+    ///
+    /// The live captures are JPEG and the old code said `image/png`, which a lenient server ignored
+    /// and a strict one can reject. A file attached from disk makes the bytes more varied still —
+    /// JPEG, PNG, or a HEIC that no server was ever told about — so the header is read rather than
+    /// assumed.
+    static func mimeType(of data: Data) -> String {
+        let head = [UInt8](data.prefix(12))
+        if head.count >= 3, head[0] == 0xFF, head[1] == 0xD8, head[2] == 0xFF { return "image/jpeg" }
+        if head.count >= 8, head[0] == 0x89, head[1] == 0x50, head[2] == 0x4E, head[3] == 0x47 {
+            return "image/png"
+        }
+        if head.count >= 12, Array(head[4...7]) == Array("ftyp".utf8),
+           Array(head[8...10]) == Array("hei".utf8) || Array(head[8...10]) == Array("mif".utf8) {
+            return "image/heic"
+        }
+        if head.count >= 3, head[0] == 0x47, head[1] == 0x49, head[2] == 0x46 { return "image/gif" }
+        if head.count >= 2, head[0] == 0x42, head[1] == 0x4D { return "image/bmp" }
+        return "image/jpeg"
+    }
+
     public static func body(model: String,
                             request: TurnRequest,
                             stream: Bool,
@@ -95,11 +116,15 @@ public enum OpenAICompatibleTransport {
         for image in images {
             userContent.append([
                 "type": "text",
-                "text": image.label.isEmpty ? "A screenshot." : "Screenshot of \(image.label):",
+                // The label verbatim, as the Gemini path sends it. "Screenshot of …" was wrong twice:
+                // it disagreed with the other transport, and a file he asked about is not part of his
+                // screen — a model told otherwise offers to click something inside the photograph.
+                "text": image.label.isEmpty ? "An image." : image.label,
             ])
             userContent.append([
                 "type": "image_url",
-                "image_url": ["url": "data:image/png;base64,\(image.data.base64EncodedString())"],
+                "image_url": ["url": "data:\(mimeType(of: image.data));base64,"
+                    + image.data.base64EncodedString()],
             ])
         }
         userContent.append(["type": "text", "text": userPrompt])

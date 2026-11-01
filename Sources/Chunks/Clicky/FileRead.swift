@@ -15,6 +15,12 @@ enum FileRead {
         /// Which part of a larger file this is, phrased for the model. `nil` means the whole file,
         /// which is the common case and the one that needs no caveat.
         let slice: String?
+        /// JPEG bytes, when the file is read by looking at it rather than by decoding it.
+        ///
+        /// Carried here so both doors do the same thing: the automatic attach already sends a photo
+        /// as pixels, while the model's own `[READ:x.png]` came back with "that is not a text file"
+        /// — one capability, two answers, depending on who asked.
+        var image: Data? = nil
     }
 
     enum Failure: Equatable, Error {
@@ -22,11 +28,17 @@ enum FileRead {
         case refused(ReadRequest.Refusal)
         /// The policy said yes and the disk disagreed.
         case unreadable(String)
+        /// A document opened and had nothing in it to read — a scan, or a file too large to open.
+        case document(DocumentReading.Failure)
+        /// No complete line fits, or complete lines are not valid UTF-8.
+        case input(ReadInputBudget.Failure)
 
         var description: String {
             switch self {
             case .refused(let why): return why.description
             case .unreadable(let detail): return "Chunks could not read that file: \(detail)."
+            case .document(let why): return why.description
+            case .input(let why): return why.description
             }
         }
     }
@@ -59,44 +71,93 @@ enum FileRead {
                 // looking for something that was there all along.
                 return .failure(.unreadable("that is a folder, not a file"))
             }
+            // A picture is read by looking at it. Resized to the capture's own ceiling first, so a
+            // 12 MB phone photo costs what a screenshot costs and nothing else.
+            if ReadRequest.isImage(path) {
+                guard let data = FileAttachment.jpeg(fromFileAt: path) else {
+                    return .failure(.unreadable("it is a picture this Mac could not decode"))
+                }
+                return .success(Content(path: path, text: "", slice: nil, image: data))
+            }
+            // A document is read through an extractor, not through a handle. Its bytes are a
+            // container, and the question that motivated it — "what does clause 9 say" — has its
+            // answer in the text layer underneath them.
+            if ReadRequest.isDocument(path) {
+                return DocumentRead.perform(request, path: path)
+            }
+            // A Word or RTF file is a container too, and reading its bytes answers "is this text?"
+            // with no — a .docx is a zip, which is full of zero bytes, and the refusal that came back
+            // was "that is not a text file" about a document with nothing but text in it.
+            if ReadRequest.isOfficeDocument(path) {
+                return OfficeRead.perform(request, path: path)
+            }
             guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
                 return .failure(.unreadable("it is not readable by this app"))
             }
             defer { try? handle.close() }
-            let size = Int((try? handle.seekToEnd()) ?? 0)
-            try? handle.seek(toOffset: 0)
-
-            // A file longer than one turn is sliced, not refused, and the slice is chosen by what
-            // the file is for. `ReadRequest.maxBytes` refused `context.md` outright on the first
-            // real run of this probe — and the question that motivates the feature at all, "why
-            // did my build fail", has its answer at the *end* of a log. Refusing the big file is
-            // the same as refusing the question.
             let wantsTail = FileRead.tailExtensions.contains((path as NSString).pathExtension.lowercased())
-            let data: Data
-            let slice: String?
-            if size <= ReadRequest.maxBytes {
-                data = (try? handle.read(upToCount: size)) ?? Data()
-                slice = nil
-            } else if wantsTail {
-                try? handle.seek(toOffset: UInt64(size - ReadRequest.maxBytes))
-                data = (try? handle.read(upToCount: ReadRequest.maxBytes)) ?? Data()
-                slice = "the last \(data.count / 1000) KB of a \(size / 1000) KB file"
-            } else {
-                data = (try? handle.read(upToCount: ReadRequest.maxBytes)) ?? Data()
-                slice = "the first \(data.count / 1000) KB of a \(size / 1000) KB file"
+            do {
+                let size = Int(try handle.seekToEnd())
+                let count = min(size, ReadRequest.maxBytes)
+                let offset = wantsTail ? size - count : 0
+                try handle.seek(toOffset: UInt64(offset))
+                let data = try handle.read(upToCount: count) ?? Data()
+                guard data.count == count else {
+                    return .failure(.unreadable("the file changed while it was being read; try again"))
+                }
+                // The disk window and model budget are separate limits. Boundary fragments are
+                // removed as bytes by the pure selector, before any UTF-8 decoding happens.
+                return selectText(data, path: path, fromTail: wantsTail,
+                                  startsAtFileStart: offset == 0,
+                                  endsAtFileEnd: offset + data.count == size)
+            } catch {
+                return .failure(.unreadable(error.localizedDescription))
             }
-
-            guard !data.contains(0) else { return .failure(.refused(.binary)) }
-            guard let text = String(data: data, encoding: .utf8) else {
-                return .failure(.unreadable("it is not UTF-8 text"))
-            }
-            return .success(Content(path: path, text: text, slice: slice))
         }
+    }
+
+    static func selectText(_ data: Data, path: String, fromTail: Bool,
+                           startsAtFileStart: Bool, endsAtFileEnd: Bool) -> Result<Content, Failure> {
+        guard !data.contains(0) else { return .failure(.refused(.binary)) }
+        return ReadInputBudget.selectLines(data: data, path: path, fromTail: fromTail,
+                                           startsAtFileStart: startsAtFileStart,
+                                           endsAtFileEnd: endsAtFileEnd)
+            .map { Content(path: path, text: $0.text, slice: $0.slice) }
+            .mapError { .input($0) }
     }
 
     private static func refusal(of request: ReadRequest, home: String) -> ReadRequest.Refusal {
         if case .failure(let why) = request.resolved(homeDirectory: home) { return why }
         return .outsideAllowedDirectories
+    }
+}
+
+/// A Word, RTF or OpenDocument file, read through the importer TextEdit itself uses.
+///
+/// `NSAttributedString(url:)` is the only text route for a `.docx` that needs no dependency — a
+/// Word file is a zip of XML, so `FileHandle` hands back bytes full of NULs and the honest answer
+/// from a byte reader is "that is not a text file", about a document with nothing but text in it.
+/// What the importer cannot open is *said* as that, rather than as a binary refusal.
+@MainActor
+enum OfficeRead {
+
+    static func perform(_ request: ReadRequest,
+                        path: String) -> Result<FileRead.Content, FileRead.Failure> {
+        let url = URL(fileURLWithPath: path)
+        guard let attributed = try? NSAttributedString(url: url, options: [:],
+                                                      documentAttributes: nil) else {
+            return .failure(.unreadable("Chunks could not open that document — "
+                + "it may be an older format or written by something else"))
+        }
+        let whole = attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !whole.isEmpty else {
+            return .failure(.unreadable("that document has no text in it"))
+        }
+        // The importer has already opened the container. Bound its extracted UTF-8 window, then
+        // use the same whole-line selection and exact framed budget as plain text.
+        let data = Data(whole.utf8.prefix(ReadRequest.maxBytes))
+        return FileRead.selectText(data, path: path, fromTail: false, startsAtFileStart: true,
+                                   endsAtFileEnd: whole.utf8.count <= ReadRequest.maxBytes)
     }
 }
 
@@ -127,13 +188,23 @@ enum FileReadProbe {
         }
         var failures = 0
         for raw in paths {
-            let request = ReadRequest(path: raw, question: "probe")
+            // Parsed through the same door a spoken turn uses, so a probe can carry a question —
+            // and for a long PDF the question is what decides which pages get read.
+            let request = ReadRequest.parse(raw) ?? ReadRequest(path: raw, question: "probe")
             switch FileRead.perform(request) {
             case .success(let content):
+                if let image = content.image {
+                    out("probe-read: \(raw) → READ as an image, \(image.count / 1024) KB of JPEG, "
+                        + "resolved \(content.path)")
+                    continue
+                }
                 let firstLine = content.text.split(separator: "\n", omittingEmptySubsequences: true)
                     .first.map(String.init) ?? "(empty)"
                 out("probe-read: \(raw) → READ \(content.text.utf8.count) bytes, "
                     + "resolved \(content.path), first line \"\(firstLine.prefix(48))\"")
+                // Printed because "which pages of a 60-page PDF did I just send to a model" is the
+                // question anyone debugging this has, and it is not answerable from a byte count.
+                if let slice = content.slice { out("probe-read:   slice — \(slice)") }
             case .failure(let failure):
                 failures += 1
                 out("probe-read: \(raw) → REFUSED (\(failure.description))")

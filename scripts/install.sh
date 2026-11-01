@@ -52,8 +52,9 @@ if ! codesign --verify --deep --strict "$APP_DEST" >/dev/null 2>&1 \
   fi
   if [ -n "$IDENTITY" ] && [ "$IDENTITY" != "-" ]; then
     xattr -cr "$APP_DEST" 2>/dev/null || true
-    if codesign --force --deep --sign "$IDENTITY" "$APP_DEST" >/dev/null 2>&1 \
-       && codesign --verify --deep --strict "$APP_DEST" >/dev/null 2>&1; then
+    if codesign --force --options runtime --entitlements "$PWD/scripts/Chunks.entitlements" \
+         --sign "$IDENTITY" "$APP_DEST" \
+       && codesign --verify --deep --strict "$APP_DEST"; then
       echo "    re-sealed here as \"$IDENTITY\" (the repo is iCloud-synced and refuses the seal)"
     else
       echo "warning: could not seal the installed bundle with '$IDENTITY' — permissions will not stick" >&2
@@ -63,8 +64,9 @@ if ! codesign --verify --deep --strict "$APP_DEST" >/dev/null 2>&1 \
   fi
 fi
 
-if ! codesign --verify --deep --strict "$APP_DEST" >/dev/null 2>&1; then
-  echo "warning: the installed bundle does not verify — permissions will not stick" >&2
+if ! codesign --verify --deep --strict "$APP_DEST"; then
+  echo "error: the installed bundle does not verify; the previous installation is preserved alongside it" >&2
+  exit 1
 fi
 echo "==> installed $APP_DEST"
 

@@ -173,16 +173,195 @@ public enum ResponseParserTests {
             expectEqual(proposal.add.first?.fact, "y")
         }
 
-        // MARK: <NOTE>
+        // MARK: Unknown tags
 
-        test("parses a notebook save offer") {
+        test("an unknown NOTE block round-trips as plain text, even across deltas") {
+            let reply = "Before <NOTE> Debug Navigator\n </NOTE> after."
+            let whole = ResponseParser()
+            let wholeEvents = whole.feed(reply) + whole.finish()
+            expectEqual(wholeEvents, [.text(reply)],
+                        "old NOTE offers must remain visible instead of being silently consumed")
+
+            let streamed = ResponseParser()
+            let streamedEvents = ResponseParserTests.feedAll(streamed, reply) + streamed.finish()
+            expectEqual(ResponseParserTests.texts(streamedEvents), reply,
+                        "splitting a retired tag across deltas must not lose its markup or content")
+            expect(streamedEvents.allSatisfy { if case .text = $0 { return true }; return false },
+                   "NOTE is unknown text, not an instruction to save or speak anything")
+        }
+
+        test("an unterminated NOTE block is preserved as unknown text") {
+            let parser = ResponseParser()
+            let reply = "The answer is 42. <NOTE>save this"
+            let events = parser.feed(reply) + parser.finish()
+            expectEqual(events, [.text(reply)],
+                        "an incomplete legacy NOTE must not swallow the answer or its own contents")
+        }
+
+        // MARK: <DRAFT>
+
+        test("a drafted message becomes a draft, whole and not spoken") {
             let p = ResponseParser()
-            let ev = p.feed("<NOTE>Debug Navigator</NOTE>") + p.finish()
-            guard case .noteOffer(let title) = ev.first else {
-                expect(false, "no note offer in \(ev)")
+            let ev = p.feed("<DRAFT>Hi Dad — I'll be there at seven.</DRAFT>") + p.finish()
+            guard case .draft(let text) = ev.first else {
+                expect(false, "no draft in \(ev)")
                 return
             }
-            expectEqual(title, "Debug Navigator")
+            expectEqual(text, "Hi Dad — I'll be there at seven.",
+                        "the words he copies have to arrive exactly as written")
+            let spoken = ev.compactMap { if case .speech(let t) = $0 { t } else { nil } }.joined()
+            expect(!spoken.contains("Dad"),
+                   "a draft leaked into the spoken answer — it is a payload, not narration")
+        }
+
+        test("a draft split across deltas or one character at a time still arrives") {
+            let p = ResponseParser()
+            var ev = p.feed("<DRA")
+            ev += p.feed("FT>call the bank</DRAFT>")
+            ev += p.finish()
+            expect(ev.contains(.draft("call the bank")), "a split DRAFT was lost: \(ev)")
+
+            let slow = ResponseParser()
+            let letters = ResponseParserTests.feedAll(slow, "<DRAFT>two words</DRAFT>")
+            expect(letters.contains(.draft("two words")),
+                   "a DRAFT streamed one character at a time is the normal case for a real model")
+        }
+
+        // Photographed twice on his machine over an empty editor: a contended model writes the
+        // aim, closes the bracket, and puts the code after it as plain text. The head is a real
+        // aim, so the words that follow are a real payload — gathered from the text stream and
+        // turned into the act at finish, because a type that never parses is his words vanishing.
+        test("a pipe-less TYPE tag gathers its words from the text that follows") {
+            let parser = ResponseParser()
+            let events = parser.feed("[TYPE:248,349]#include <stdatomic.h>\nint main(void) { return 0; }")
+                + parser.finish()
+            let typed = events.compactMap { event -> String? in
+                if case .act(let request) = event, let text = request.textToType { return text }
+                return nil
+            }
+            expectEqual(typed.first, "#include <stdatomic.h>\nint main(void) { return 0; }",
+                        "the code after the bracket is the payload he asked to type: \(events)")
+            expect(events.contains(.text("[TYPE:248,349]")),
+                   "the tag itself still reaches him as text — fail-open, unchanged")
+        }
+
+        // The exact tag from the 21:39 screenshot: qualified aim, no pipe, code after the
+        // bracket. Every part of that shape must survive into one act.
+        test("a pipe-less qualified TYPE gathers its code from the text that follows") {
+            let streamer = AnswerStreamer()
+            streamer.push("[TYPE:app=Google Chrome x=200,y=400]#include <stdio.h>\nint main(void) { return 0; }")
+            streamer.finish()
+            let request = streamer.actionRequests.first
+            expectEqual(request?.textToType, "#include <stdio.h>\nint main(void) { return 0; }",
+                        "the code after the bracket is the payload: \(request?.textToType ?? "nil")")
+            expectEqual(request?.pointTarget?.appName, "Google Chrome",
+                        "the named app must survive the gather, not just the coordinates")
+        }
+
+        test("an x= prefix on coordinates is the same aim, not a malformed tag") {
+            let parser = ResponseParser()
+            let events = parser.feed("[TYPE:x=200,380|hello there]") + parser.finish()
+            let request = events.compactMap { event -> ActionRequest? in
+                if case .act(let r) = event { return r }
+                return nil
+            }.first
+            expectEqual(request?.textToType, "hello there",
+                        "a contended model's keyed coordinates must not cost him the act")
+            expectEqual(request?.pointTarget?.x ?? -1, 200, "the x= aim must keep its x")
+        }
+
+        // Code contains `]`, which is what used to end the tag — so a payload with an array bracket
+        // was typed up to the bracket and lost the rest, and the rejoin that recovered it put a
+        // literal `]` into his file. A `]` now closes a type tag only where the reply's structure
+        // ends it, so the code keeps its brackets and the payload keeps no stray one.
+        test("code after the tag's first closing bracket rejoins the payload") {
+            let streamer = AnswerStreamer()
+            streamer.push("[TYPE:1,2:box|int x[4];\nreturn x[0];]")
+            streamer.finish()
+            let typed = streamer.actionRequests.first?.textToType ?? ""
+            expect(typed.contains("int x[4];") && typed.contains("return x[0];"),
+                   "both brackets in the code are content, not the tag: \(typed)")
+            expect(!typed.hasSuffix("]"),
+                   "and the tag's own closing bracket must not be typed into the editor: \(typed)")
+        }
+
+        test("an act tag that follows a type tag survives it") {
+            // Measured 2026-10-29 in his history: a reply asked for code and then for the Run button,
+            // and "when i said to click it must perform the click action" is the whole complaint —
+            // the type tag's payload ran into the next construct and the click never arrived.
+            let streamer = AnswerStreamer()
+            streamer.push("[TYPE:1,2:box|int x[4];\n}\n]\n[ACT:9,9:Run button]")
+            streamer.finish()
+            expectEqual(streamer.actionRequests.count, 2,
+                        "two requests, not one: \(streamer.actionRequests.count)")
+            let typed = streamer.actionRequests.first?.textToType ?? ""
+            expect(typed.contains("int x[4];") && !typed.contains("Run button"),
+                   "the field gets the program and none of the next tag: \(typed)")
+            expectEqual(streamer.actionRequests.last?.pointTarget?.label, "Run button",
+                        "the click survives as its own act")
+        }
+
+        test("the aim shapes his replies actually carry all resolve to the same pixel") {
+            // Every one of these came out of his own history, and four of the twelve `[TYPE:]` tags
+            // this build has been asked to run carried an axis letter the grammar never defined —
+            // each failing open as raw markup over an empty editor is the user asking twice.
+            for (body, x, y) in [("x:235,y:400", 235.0, 400.0), ("x,625,320", 625.0, 320.0),
+                                 ("x=200,380", 200.0, 380.0), ("625,320", 625.0, 320.0),
+                                 ("x,230,y:360", 230.0, 360.0)] {
+                let request = ActionRequest.parseType("\(body)|select 1;")
+                expectEqual(request?.pointTarget?.x ?? -1, x, "\(body) lost its x")
+                expectEqual(request?.pointTarget?.y ?? -1, y, "\(body) lost its y")
+                expectEqual(request?.textToType, "select 1;", "\(body) lost its payload")
+            }
+            // The label is the exception: `x,230,y:360:main.c` names the file as well as the point.
+            let labelled = ActionRequest.parseType("x,230,y:360:main.c|int main();")
+            expectEqual(labelled?.pointTarget?.label, "main.c",
+                        "an axis-named aim still has to keep its label")
+            // And a colon that is genuinely a label separator with nothing after it stays a refusal,
+            // so this leniency does not quietly accept a broken tag.
+            expect(ActionRequest.parseType("640,910:|select 1;") == nil,
+                   "an explicitly empty label is a broken tag, not a terse one")
+            // A label that starts with an axis letter is still a label.
+            expectEqual(ActionRequest.parseType("10,20:x-ray machine|hi")?.pointTarget?.label,
+                        "x-ray machine", "axis stripping must not eat a real label")
+        }
+
+        test("a raw tag line ends a gathered payload instead of joining it") {
+            let streamer = AnswerStreamer()
+            streamer.push("[TYPE:1,2:box]part one\nrest of it\n[ACT:x=9,9:not a real act]")
+            streamer.finish()
+            let typed = streamer.actionRequests.first?.textToType ?? ""
+            expect(typed.contains("part one") && typed.contains("rest of it"),
+                   "the payload is the code, whole: \(typed)")
+            expect(!typed.contains("[ACT:"),
+                   "a following raw tag must not be typed into the field: \(typed)")
+        }
+
+        test("prose on the next line after a well-formed type tag is not typed") {
+            let streamer = AnswerStreamer()
+            streamer.push("[TYPE:1,2:box|good night]\nthen press send when i say")
+            streamer.finish()
+            expectEqual(streamer.actionRequests.first?.textToType, "good night",
+                        "the extension must re-join same-line code, not the sentence after it")
+        }
+
+        test("a draft too long or empty is shown, never swallowed or clipped") {
+            let long = ResponseParser()
+            let body = String(repeating: "x", count: ResponseParser.maxDraftCharacters + 1)
+            let ev = long.feed("<DRAFT>\(body)</DRAFT>") + long.finish()
+            let echoed = ev.compactMap { if case .text(let t) = $0 { t } else { nil } }.joined()
+            expect(echoed.contains("<DRAFT>"),
+                   "an over-long draft must reach the user as text: half a sentence pasted into a chat "
+                        + "is the failure this refuses")
+            expect(!ev.contains(where: { if case .draft = $0 { return true } else { return false } }),
+                   "an over-cap body must not become a payload")
+
+            let empty = ResponseParser()
+            let blank = empty.feed("<DRAFT>   </DRAFT>") + empty.finish()
+            expect(blank.contains(where: { event in
+                if case .text(let t) = event { return t.contains("<DRAFT>") }
+                return false
+            }), "an empty draft is a model mistake and he should see it: \(blank)")
         }
 
         // MARK: Streaming — the hard part

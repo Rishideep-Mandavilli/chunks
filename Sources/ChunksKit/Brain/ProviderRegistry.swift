@@ -88,21 +88,31 @@ public struct ProviderRegistry: Sendable {
     /// Rate limit observed on the free tier: 5 requests/minute per model.
     public static let freeTierRequestsPerMinute = 5
 
-    /// Order matters — `fallbackChain` walks it, and a turn is only as fast as the model it
-    /// lands on. This order is measured, not assumed: across every completed turn on one key,
-    /// `gemini-3.8-flash` returned `429` five times and served nothing, while
-    /// `gemini-3.6-flash` served all three finished turns (7.8s, 6.5s, 12.7s). Leading with the
-    /// newest model therefore paid one guaranteed failure and one pointless switch every single
-    /// turn. Pro stays last: measured 55 seconds on the same screenshot and still came back
-    /// contended, which is longer than the wait that would have cleared a Flash tier.
+    /// Order matters — `fallbackChain` walks it, and a turn is only as fast as the model it lands
+    /// on. This order is measured on one key across 161 finished turns (2026-10-23/24), not assumed:
+    ///
+    /// | model | turns served | median | p90 | failures | median time to fail |
+    /// |---|---|---|---|---|---|
+    /// | `gemini-3.6-flash` | 73 | **10.5s** | 17.8s | 136 | **1.5s** |
+    /// | `gemini-3.1-flash-lite` | 62 | 14.5s | 47.8s | **9** | 5.2s |
+    /// | `gemini-3.8-flash` | 25 | 24.2s | 61.6s | 116 | 4.8s |
+    /// | `gemini-flash-lite-latest` | 1 | 51.4s | — | 0 | — |
+    ///
+    /// So: the fastest model first, because its refusal costs 1.5s and trying it is nearly free.
+    /// **The reliable one second**, because that is where the chain lands after the first refusal —
+    /// and because the hedge asks this slot alongside the leader, the partner is now the model least
+    /// likely to be contended rather than the one with the highest number in its name. `3.8-flash`
+    /// dropped to third on its own numbers: a 24s median and a 61s p90 mean it cannot win inside a
+    /// 12-second slice, so keeping it second spent a slice on it every single turn. Pro stays last:
+    /// measured 55s and still came back contended.
     public static let geminiFreeModels: [BrainModel] = [
         BrainModel(id: "gemini-3.6-flash", displayName: "Gemini 3.6 Flash",
+                   visionCapable: true, costPerMTokIn: 0, costPerMTokOut: 0),
+        BrainModel(id: "gemini-3.1-flash-lite", displayName: "Gemini 3.1 Flash Lite",
                    visionCapable: true, costPerMTokIn: 0, costPerMTokOut: 0),
         BrainModel(id: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash",
                    visionCapable: true, contextTokens: 200_000,
                    costPerMTokIn: 0, costPerMTokOut: 0),
-        BrainModel(id: "gemini-3.1-flash-lite", displayName: "Gemini 3.1 Flash Lite",
-                   visionCapable: true, costPerMTokIn: 0, costPerMTokOut: 0),
         BrainModel(id: "gemini-flash-lite-latest", displayName: "Gemini Flash Lite (latest)",
                    visionCapable: true, costPerMTokIn: 0, costPerMTokOut: 0),
         BrainModel(id: "gemini-3.1-pro-preview", displayName: "Gemini 3.1 Pro",

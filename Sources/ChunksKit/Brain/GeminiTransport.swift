@@ -111,10 +111,6 @@ public enum GeminiRequestBuilder {
           "Standing preferences" (how they like answers), "Notes" (ongoing work).
         - Emit at most one MEMORY block, and only when you actually learned something.
 
-        NOTEBOOK
-        - If you explained a concept the user may want later, offer to save it:
-          <NOTE>short title</NOTE>
-
         WHAT YOU DO NOT DO
         - You do not write code, build projects, or create files.
         - You do not click or type anything unless Chunks explicitly asks you to propose an

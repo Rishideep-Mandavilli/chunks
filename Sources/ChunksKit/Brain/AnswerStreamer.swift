@@ -45,11 +45,23 @@ public final class AnswerStreamer {
     /// replaced by the second before the user has seen either.
     public private(set) var actionRequests: [ActionRequest] = []
 
+    /// How many act-shaped tags arrived that neither grammar could read.
+    ///
+    /// They are shown to the user as text — the deliberate fail-open — and this is the only trace
+    /// that a *promise* was made and no request exists to keep it.
+    public private(set) var unreadActTags = 0
+
     /// `[DO:…]` proposals, in order, for the same reason `actionRequests` is an array. A press
     /// and a tool run are two questions, and the gate only holds one — so a reply that proposed
     /// both keeps both visible to the caller, which asks about one and logs the rest rather
     /// than losing track of what the model actually wanted.
     public private(set) var toolRequests: [DoRequest] = []
+
+    /// Words drafted for him to send himself, last block winning.
+    ///
+    /// One slot rather than an array because a reply that drafts twice is correcting itself, and two
+    /// halves of one message above one Copy button would copy whichever the user did not read.
+    public private(set) var draftText: String?
 
     /// What to say aloud *for this turn*, resolved.
     ///
@@ -121,6 +133,11 @@ public final class AnswerStreamer {
                     break
                 }
                 pendingSpeechEcho = nil
+                // A malformed `[ACT:…]`/`[TYPE:…]` reaches the user as text on purpose — see
+                // `ResponseParser`. Counting it here is what lets the caller say so in the log,
+                // because a reply that promised a click and produced no request is otherwise
+                // indistinguishable from a reply that never asked for one.
+                if text.contains("[ACT:") || text.contains("[TYPE:") { unreadActTags += 1 }
                 detail += text
 
             case .point(let target):
@@ -137,11 +154,20 @@ public final class AnswerStreamer {
             case .memory(let proposed):
                 proposal = proposed
 
-            case .noteOffer:
-                // A notebook offer is a UI affordance, not text. The panel does not render
-                // it yet; dropping it here is why the tag never leaks into the transcript
-                // as a literal "<NOTE>".
-                break
+            case .draft(let text):
+                // Collected, never appended to `speech` or `detail`: the message is a payload the
+                // card holds whole, and prose about it is a different thing. Last block wins, so a
+                // reply that drafts twice hands the user one Copy button for the second version.
+                draftText = text
+
+            case .typeExtension(let tail):
+                // Code carries `]`, which ends the tag early; the rest of the payload arrived as
+                // text and is re-joined here, before the act runs, so the field gets the whole of
+                // it rather than everything up to the first array bracket.
+                if let last = actionRequests.indices.last,
+                   case .type(let current) = actionRequests[last].verb {
+                    actionRequests[last].verb = .type(text: current + tail)
+                }
 
             case .summary(let text):
                 summary = text
@@ -165,5 +191,47 @@ public final class AnswerStreamer {
         }
     }
 
-    public var hasAnything: Bool { !speech.isEmpty || !detail.isEmpty }
+    /// Whether this reply has anything to put on a card.
+    ///
+    /// A draft counts: "write him a reply" answered with only `<DRAFT>` and no prose is a complete
+    /// turn, and a caller that read it as empty would report nothing happened.
+    public var hasAnything: Bool { !speech.isEmpty || !detail.isEmpty || draftText != nil }
+
+    /// The line that replaces a promise the machine cannot keep.
+    public static let retractionLine =
+        "Chunks found nothing on the screen to do that to, so it did nothing."
+
+    /// Replace a spoken promise of a scroll or a type with an honest line when the reply queued
+    /// no such request — and say whether it happened, so the caller can put it in the log.
+    ///
+    /// Photographed on the five-turn probe under every thinking budget: "scrolling down to find
+    /// the invoice now" arrived with no `[SCROLL:]` behind it, because the screen held nothing
+    /// scrollable and the model answered the request it imagined rather than the one on screen.
+    /// A promise the user can hear and the machine will never keep is the failure this codebase
+    /// keeps meeting — with no card to answer, an act nobody reports is indistinguishable from an
+    /// act that did not happen, and worse when it never could. The patterns are deliberately
+    /// promise-shaped rather than word-shaped, so an *explanation* of scrolling is not retracted;
+    /// what is left is the small risk that a first-person promise phrased unusually becomes this
+    /// line. That line is never wrong about the one thing it claims: there was no request.
+    public func retractUnbackedPromises() -> Bool {
+        let text = (speech + " " + (summary ?? "")).lowercased()
+        // Promise-shaped, not word-shaped: "scrolling down a list is how you read old chats" is
+        // an explanation and must survive; "scrolling down to find the invoice" is a promise the
+        // machine will keep or break, and only the promise is retracted.
+        let promisedScroll = ["scrolling down to", "scrolling down the", "scrolling up to",
+                              "scrolling up the", "scrolling that", "i'll scroll",
+                              "i'm scrolling"]
+            .contains { text.contains($0) }
+        let promisedType = ["i'll type", "i'm typing", "typing that", "typing the",
+                            "typing it", "typed that", "typed it"]
+            .contains { text.contains($0) }
+        let hasScroll = actionRequests.contains { if case .scroll = $0.verb { return true }
+                                                   return false }
+        let hasType = actionRequests.contains { if case .type = $0.verb { return true }
+                                                return false }
+        guard (promisedScroll && !hasScroll) || (promisedType && !hasType) else { return false }
+        speech = Self.retractionLine
+        summary = nil
+        return true
+    }
 }

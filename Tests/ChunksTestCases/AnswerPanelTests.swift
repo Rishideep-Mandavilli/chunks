@@ -213,9 +213,68 @@ public enum AnswerPanelTests {
         test("an unterminated tag at the end of the stream is still shown") {
             let streamer = AnswerStreamer()
             streamer.push("The answer is 42.")
-            streamer.push("<NOTE>save this")
+            streamer.push("<SAY>never finished")
             let result = streamer.finish()
-            expect(result.detail.contains("42"), "the real answer must survive: \(result.detail)")
+            expectEqual(result.detail, "The answer is 42.<SAY>never finished",
+                        "both the answer and the unfinished supported tag must survive")
+            expectEqual(result.speech, "", "an unfinished SAY block must remain text")
+        }
+
+        // Photographed on the five-turn probe: "scrolling down to find the invoice now" with no
+        // `[SCROLL:]` behind it — a promise the user can hear and the machine will never keep.
+        // The streamer replaces it with one honest line, and only when no request exists.
+        test("a spoken promise with no request behind it is retracted, not spoken") {
+            let liar = AnswerStreamer()
+            liar.push("<SAY>scrolling down to find the invoice now.</SAY>")
+            liar.finish()
+            expect(liar.retractUnbackedPromises(),
+                   "a scroll promise with no [SCROLL:] must not reach the voice")
+            expectEqual(liar.displayable.speech, AnswerStreamer.retractionLine,
+                        "the retraction says what is true: nothing on screen answered to it")
+
+            let honest = AnswerStreamer()
+            honest.push("<SAY>scrolling down the list now.</SAY>[SCROLL:10,20:list|down]")
+            honest.finish()
+            expect(!honest.retractUnbackedPromises(),
+                   "a promise backed by a request is a normal turn and must survive untouched")
+
+            let teacher = AnswerStreamer()
+            teacher.push("<SAY>scrolling down a list is just the browser moving rows "
+                       + "off the top — nothing is typed or clicked.</SAY>")
+            teacher.finish()
+            expect(!teacher.retractUnbackedPromises(),
+                   "an explanation of scrolling is not a promise to scroll")
+        }
+
+        test("a legacy NOTE split across deltas reaches the card as unknown text") {            let streamer = AnswerStreamer()
+            streamer.push("<SAY>The answer is 42.</SAY><NO")
+            streamer.push("TE>Debug Navigator</NO")
+            streamer.push("TE>")
+            let result = streamer.finish()
+            expectEqual(result.speech, "The answer is 42.", "supported tags must still work")
+            expectEqual(result.detail, "<NOTE>Debug Navigator</NOTE>",
+                        "a retired NOTE must be shown whole, not dropped by the streamer")
+        }
+
+        test("a draft is collected apart from the answer, and the last one owns the button") {
+            let streamer = AnswerStreamer()
+            streamer.push("<SAY>Here — short enough to send as is.</SAY>")
+            streamer.push("<DRAFT>On my way, save me a seat.</DRAFT>")
+            streamer.finish()
+            expectEqual(streamer.draftText, "On my way, save me a seat.",
+                        "the drafted words must survive intact for the Copy button")
+            let display = streamer.displayable
+            expect(!display.speech.contains("save me a seat")
+                    && !display.detail.contains("save me a seat"),
+                   "the draft leaked into the prose: \(display.detail)")
+            // A reply that drafts twice is correcting itself, and one button can only copy one thing.
+            let twice = AnswerStreamer()
+            twice.push("<DRAFT>first version</DRAFT>")
+            twice.push("<DRAFT>second version</DRAFT>")
+            twice.finish()
+            expectEqual(twice.draftText, "second version", "the wrong half of the reply owns the button")
+            expect(twice.hasAnything,
+                   "a reply that is only a draft is still an answer, and must not read as nothing")
         }
 
         test("nothing shown means the streamer reports nothing") {
@@ -263,6 +322,71 @@ public enum AnswerPanelTests {
 
         // A clipped answer is worse than a tall card: the user cannot tell that text is
         // missing, they just read a truncated sentence.
+        test("a drafted message reserves its padded well and Copy at the 360pt HUD width") {
+            // Long enough to clear `minimumHeight`: a clamped floor would swallow part of the delta
+            // and the assertion below would fail for the wrong reason.
+            let answer = String(repeating: "A sentence of answer that wraps. ", count: 4)
+            let without = AnswerPanelLayout.measure(speech: answer, detail: "", pointCount: 0, width: 360)
+            let with = AnswerPanelLayout.measure(speech: answer, detail: "", pointCount: 0,
+                                                 hasDraft: true, width: 360)
+            expect(without > AnswerPanelLayout.minimumHeight,
+                   "the base card is at the clamped floor, so this delta proves nothing")
+            expect(with < AnswerPanelLayout.maximumHeight,
+                   "the drafted card hit the ceiling, so the delta below is not the block's own height")
+            expectEqual(with - without, AnswerPanelLayout.sectionGap + AnswerPanelLayout.draftHeight,
+                        "the measurement and the card disagree about what a draft costs, which is how "
+                            + "a Copy button ends up below the bottom of the window")
+            expectEqual(AnswerPanelLayout.draftWellHeight, CGFloat(68),
+                        "the 56pt viewport has 6pt of padding on both sides, not inside its frame")
+            expectEqual(AnswerPanelLayout.draftHeight, CGFloat(102),
+                        "the old 90pt allowance lost 12pt of well padding and stole room from Copy")
+        }
+
+        test("a draft and a question each reserve their space at the 360pt HUD width") {
+            let answer = String(repeating: "A sentence of answer that wraps. ", count: 4)
+            let base = AnswerPanelLayout.measure(speech: answer, detail: "", pointCount: 0,
+                                                 confirmation: .question, width: 360)
+            let both = AnswerPanelLayout.measure(speech: answer, detail: "", pointCount: 0,
+                                                 hasDraft: true, confirmation: .question, width: 360)
+            expect(base > AnswerPanelLayout.minimumHeight, "the base is at the floor, so read nothing here")
+            expect(both < AnswerPanelLayout.maximumHeight, "the pair hit the ceiling")
+            expectEqual(both - base, AnswerPanelLayout.sectionGap + AnswerPanelLayout.draftHeight,
+                        "the ask row and the draft block must be counted apart, or one of them is "
+                            + "drawn where the window has no room for it")
+        }
+
+        test("a real 340-character draft survives parsing and fits beside consent at 360pt") {
+            let draft = """
+            Hi Dad — Thursday at seven works for me. I'll bring the photos from last month so we can look \
+            through them after dinner. Please let me know if you'd like me to pick up anything on the way. \
+            I may be ten minutes late if the train is delayed, but I'll send you a quick update before I \
+            leave. Looking forward to catching up with you both again.
+            """
+            expectEqual(draft.count, 340, "the fixture must really reach the limit, not just claim it")
+            expectEqual(draft.count, ResponseParser.maxDraftCharacters)
+            let streamer = AnswerStreamer()
+            streamer.push("<SAY>Here is your reply.</SAY><DRAFT>\(draft)</DRAFT>")
+            let display = streamer.finish()
+            expectEqual(streamer.draftText, draft, "Copy must receive every character, including the last line")
+            expectEqual(display.detail, "", "draft text belongs in its scrollable well, not the answer body")
+            let question = "write him a reply about Thursday"
+            let alone = AnswerPanelLayout.measure(speech: display.speech, detail: display.detail,
+                pointCount: 0, hasDraft: streamer.draftText != nil, question: question, width: 360)
+            let withConsent = AnswerPanelLayout.measure(speech: display.speech, detail: display.detail,
+                pointCount: 0, hasDraft: streamer.draftText != nil, confirmation: .question,
+                question: question, width: 360)
+            expectEqual(alone, CGFloat(196), "stage, question, answer, padded well and Copy must all be counted")
+            expectEqual(withConsent, CGFloat(276), "consent needs its own 80pt; it cannot borrow Copy's space")
+            expect(withConsent < AnswerPanelLayout.maximumHeight,
+                   "the fixture must not hide missing space behind the card's ceiling")
+            let textWidth = CGFloat(360) - 2 * AnswerPanelLayout.inset
+                - 2 * AnswerPanelLayout.draftTextHorizontalInset
+            let textHeight = AnswerPanelLayout.lines(draft, font: NSFont.systemFont(ofSize: 11),
+                lineHeight: 14, width: textWidth) * 14
+            expect(textHeight > AnswerPanelLayout.draftTextHeight,
+                   "this fixture must need scrolling; the native render probe checks that it actually scrolls")
+        }
+
         test("the card never grows past the maximum the panel allows") {
             let enormous = String(repeating: "A very long explanation sentence. ", count: 400)
             let height = AnswerPanelLayout.measure(speech: enormous, detail: enormous, pointCount: 8)
@@ -392,18 +516,61 @@ public enum AnswerPanelTests {
                         "the card must grow by the row the view actually draws, not an estimate")
         }
 
-        test("the answer line after a press is shorter than the question it replaces") {
+        // The outcome of a press is a timeline row, and the card pays for it once. `.result` used to
+        // reserve a whole question block for a line that the timeline already counted, so a card that
+        // had just answered a question carried 64 pt of empty space above its chips.
+        test("what a press did is counted with the timeline, not as a second block") {
             let speech = String(repeating: "a fairly long spoken answer. ", count: 12)
+            let width = AnswerPanelLayout.defaultWidth - 2 * AnswerPanelLayout.inset
+            let base = AnswerPanelLayout.measure(speech: speech, detail: "", pointCount: 0)
+            let withOutcome = AnswerPanelLayout.measure(speech: speech, detail: "", pointCount: 0,
+                                                        timelineTexts: ["Pressed Search."],
+                                                        timelineTotal: 1)
+            expectEqual(withOutcome - base,
+                        AnswerPanelLayout.timelineHeight(rows: ["Pressed Search."], folded: false,
+                                                         width: width),
+                        "one outcome line must cost exactly the row the view draws")
             let asking = AnswerPanelLayout.measure(speech: speech, detail: "", pointCount: 0,
                                                    confirmation: .question)
-            let answered = AnswerPanelLayout.measure(speech: speech, detail: "", pointCount: 0,
-                                                     confirmation: .result)
-            expect(answered < asking,
-                   "a one-line result must not keep the buttons' height or the card has dead space")
-            let base = AnswerPanelLayout.measure(speech: speech, detail: "", pointCount: 0)
-            expectEqual(answered - base,
-                        AnswerPanelLayout.sectionGap + AnswerPanelLayout.confirmQuestionHeight,
-                        "the result row is one measured line")
+            expect(withOutcome < asking,
+                   "a question is taller than the line that replaced it")
+        }
+
+        // The row a refusal writes is the one he has to read: it names the fields the app actually
+        // publishes, and that list sits at the end of the sentence. One middle-truncated line showed
+        // "Chunks found no field calle…earch" — neither half — so the row earns a second line and
+        // the card pays for it in the same arithmetic the view draws from.
+        test("a refusal that names the fields gets two lines, measured and drawn alike") {
+            let width = AnswerPanelLayout.defaultWidth - 2 * AnswerPanelLayout.inset
+            let refusal = "Chunks found no field called \"Message box\". The only fields Chunks "
+                + "can see in WhatsApp: \"Search\", \"Compose message\"."
+            expect(AnswerPanelLayout.timelineRowCount(for: refusal, width: width) == 2,
+                   "the field list at the end of a refusal must not vanish into an ellipsis")
+            expect(AnswerPanelLayout.timelineRowCount(for: "Pressed Search.", width: width) == 1,
+                   "an ordinary outcome still costs one line")
+            expectEqual(AnswerPanelLayout.timelineHeight(rows: [refusal], folded: false, width: width),
+                        AnswerPanelLayout.timelineGap + 2 * AnswerPanelLayout.timelineRowHeight,
+                        "the card must pay for both lines the view draws")
+        }
+
+        test("a long spoken answer is bounded so the Ask row stays on the card") {
+            let enormous = String(repeating: "A very long explanation sentence. ", count: 400)
+            let bounded = AnswerPanelLayout.boundedDetail(
+                enormous, budget: AnswerPanelLayout.speechCharacterBudget)
+            expect(bounded.count <= AnswerPanelLayout.speechCharacterBudget + 1,
+                   "the card shows more speech than it was allowed: \(bounded.count)")
+            expect(bounded.hasSuffix("…"), "a clipped answer has to say so")
+
+            let unbounded = AnswerPanelLayout.measure(speech: enormous, detail: "", pointCount: 2,
+                                                      confirmation: .question,
+                                                      question: "Press Send in Mail?")
+            let clamped = AnswerPanelLayout.measure(speech: bounded, detail: "", pointCount: 2,
+                                                    confirmation: .question,
+                                                    question: "Press Send in Mail?")
+            expect(unbounded >= AnswerPanelLayout.maximumHeight,
+                   "the fixture is not the bug this test guards: \(unbounded)")
+            expect(clamped < AnswerPanelLayout.maximumHeight,
+                   "an unclamped speech line pushed the Allow row below the window: \(clamped)")
         }
 
         test("a question cannot push the card past its maximum") {

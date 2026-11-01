@@ -54,6 +54,78 @@ public enum RetryPolicyTests {
             expectEqual(RetryPolicy.decide(for: f, attempt: 2), .fallBackToNextModel)
         }
 
+        // The retry rule above was written against a 503 that arrives in two seconds and clears
+        // inside ten. On 2026-10-23 one arrived after 90s, was retried twice anyway, and the turn
+        // died at 202s with four healthy models never asked. A slow refusal is a different failure
+        // wearing the same status code, and the elapsed time is what tells them apart.
+        test("a 503 that took a minute to arrive is not retried") {
+            let f = RetryPolicy.Failure.serviceUnavailable(highDemand: true)
+            expectEqual(RetryPolicy.decide(for: f, attempt: 0,
+                                           secondsToFail: RetryPolicy.slowContentationSeconds + 80),
+                        .fallBackToNextModel,
+                        "Chunks re-asked a model that had already spent the turn on it")
+            if case .retrySameModel = RetryPolicy.decide(for: f, attempt: 0, secondsToFail: 1.5) {} else {
+                expect(false, "a fast 503 still gets its retry — that is the case the rule exists for")
+            }
+        }
+
+        test("a chain of models fits inside the turn's budget") {
+            // The bug this replaces: each attempt was handed the turn's whole deadline, so the
+            // first model that refused slowly kept it — 64s on one model, then "4 model(s) left
+            // untried" while four healthy ones were never asked.
+            expectEqual(RetryPolicy.attemptSlice(remaining: 60, modelsLeft: 5), 12)
+            var spent = 0.0
+            var remaining = 60.0
+            for modelsLeft in stride(from: 5, through: 1, by: -1) {
+                let slice = RetryPolicy.attemptSlice(remaining: remaining, modelsLeft: modelsLeft)
+                spent += slice
+                remaining -= slice
+            }
+            expect(spent <= 60.5, "five attempts at their own slices overspent the budget: \(spent)s")
+        }
+
+        test("a slice never shrinks below the time a model needs to answer at all") {
+            // A measured good turn came back in 9.0s. A 2-second slice is a request that cannot
+            // succeed, so the floor is worth the small overrun — while the turn still has time left
+            // to spend.
+            expectEqual(RetryPolicy.attemptSlice(remaining: 2, modelsLeft: 3),
+                        RetryPolicy.minimumAttemptSeconds,
+                        "Chunks offered a model two seconds and then counted it as tried")
+            expect(RetryPolicy.minimumAttemptSeconds >= 8,
+                   "the floor is below a real answer time: \(RetryPolicy.minimumAttemptSeconds)s")
+        }
+
+        test("a spent budget buys no model another attempt") {
+            // The floor above is for a turn that still has a budget; it must not become a second
+            // budget. Measured 2026-10-31 against `turnBudgetSeconds = 60`: three turns failed at
+            // 62s, 103s and 120s, because the chain loop only checked the clock at a *model*
+            // boundary and each model runs three attempts inside its own slot — so the third
+            // attempt of one model was asked on a fresh floored slice after the wait the user
+            // agreed to was gone.
+            expectEqual(RetryPolicy.attemptSlice(remaining: 0, modelsLeft: 2), 0,
+                        "an expired turn was handed another 8s attempt")
+            expectEqual(RetryPolicy.attemptSlice(remaining: -34, modelsLeft: 1), 0,
+                        "a turn 34s past its budget was told it had a model left to ask")
+            // And the overshoot has a bound now: the worst case is the budget plus the one slice the
+            // attempt already in flight was given, never budget + 3 slices.
+            var spent = 0.0
+            for _ in 0..<3 {
+                let slice = RetryPolicy.attemptSlice(remaining: 60 - spent, modelsLeft: 1)
+                guard slice > 0 else { break }
+                spent += slice
+            }
+            expect(spent <= 60, "the same model asked three times overspent the turn: \(spent)s")
+        }
+
+        test("only a 503 is judged by how long it took") {
+            // A 429 is a per-minute cap: it is *always* slow to clear and the answer is still to
+            // retry the same model, because every other model has its own untouched budget.
+            let f = RetryPolicy.Failure.rateLimited(requestsPerMinute: 5)
+            expectEqual(RetryPolicy.decide(for: f, attempt: 0, secondsToFail: 120),
+                        RetryPolicy.decide(for: f, attempt: 0, secondsToFail: 0.2),
+                        "the elapsed-time rule must not leak onto the failures it does not describe")
+        }
+
         // A network failure here is the idle timeout firing: the connection was made and no byte
         // arrived. Asking the same model again is what spent 271 of a real turn's 281 seconds on
         // 2026-10-15 — three full timeouts on one model, while the next one in the chain answered

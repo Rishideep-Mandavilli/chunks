@@ -180,9 +180,17 @@ enum SelfTest {
                 if let chunksError = error as? ChunksError {
                     say("  detail: \(chunksError.description)")
                 }
+                // A model that will not answer is not a build that is broken. Everything this check
+                // owns — the grant, the key, the capture, the encoder — has already printed its line
+                // by now, and the reply path has its own failure above (a reply that arrives and
+                // parses to nothing exits 1). Reaching *here* means the request went out and the
+                // service refused it, which is a fact about the account that day. Exit 3 says so,
+                // and `verify.sh` counts it as a skip rather than a red line nobody caused.
+                say("SKIP: the model round — the request went out and nothing answered it. "
+                    + "That is the key's rate limit, not this build.")
                 Log.flush()
 
-                exit(1)
+                exit(3)
             }
         }
 

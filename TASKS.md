@@ -803,6 +803,70 @@ Acceptance: `--probe-handoff 'book the slot'` prints the resolved URL, the reque
 verdict and the card's sentence **without sending anything** — the same read-only shape as
 `--probe-reveal` — and a live run reports stages on the card as the Pi sends them.
 
+**The plan, and the split of the work — 2026-11-02.** He runs the decision model (Microsoft's Fara
+weights) on a Kaggle notebook today and the browser on the Pi, and he intends to build the remote side
+in another agent/harness and bolt it on afterwards. So the seam has to be written down in both
+directions, because a contract nobody wrote down becomes two incompatible halves.
+
+**A. What the other harness owns (Cloud-Computer side). None of it is Chunks' to guess at:**
+1. **A token.** The API has no auth today — `POST /tasks` on a LAN or Tailscale address is an open
+   remote control for a browser that can log in somewhere. Add a bearer token checked on every route
+   except `/health`, and keep it out of `.env` echo in responses.
+2. **A stable status contract.** The stages already exist (`running` / `needs_approval` / `finished` /
+   `failed` / `cancelled` / `missing_model`). Freeze them: field names, terminal-vs-waiting, and an
+   `updated_at`. Chunks renders each differently, and a silent rename on the server reads as a job that
+   never started.
+3. **Origin, on the task.** Accept `{"source": "chunks", "reply_to": "<his sentence>"}` and echo both
+   back, so a job Chunks started is distinguishable from one he started from a terminal or a watch
+   fired, and the digest can be answered into the right conversation.
+4. **`GET /tasks/{id}`.** A single-task read. Today there is the SSE stream and the whole list; a poll
+   that survives the Kaggle notebook restarting needs the one-item read, and so does Chunks after a
+   sleep.
+5. **The approval body.** `POST /tasks/{id}/approval` should say what it is approving (a cost, a
+   destination, an action) in a machine-readable field, because that string is exactly what Chunks puts
+   on a card — and Chunks must not paraphrase a spend decision it did not compute.
+6. **A lifetime answer.** A Kaggle notebook is ephemeral: it idle-times-out, and a job in flight dies
+   with it. Either move the executor to the Pi (which is already provisioned in `infra/pi/`) and keep
+   Kaggle for the model only, or have the server refuse long tasks when it is not the durable half.
+   This is the one architectural decision in the list, and it is his.
+
+**B. What Chunks owns (this repo), and the order to do it in:**
+1. `RemoteExecutor.swift` in ChunksKit — pure request/response types over the contract above: a task
+   request, a status, an approval, a cancel. Zero networking, so every shape is unit-testable and the
+   refusal sentences are decided where the negative cases live.
+2. One `[DO:handoff:<instruction>]` tool, parsed by `DoRequest` like every other, asking for a card
+   that quotes the whole instruction, and `SecretSweeper` run on the outgoing text — the first time that
+   sweeper guards something *leaving* rather than landing on disk.
+3. `RemoteJobs` in the shell: start, poll on a timer, and stage each stage transition into the
+   conversation the way `[READ:]` stages a file — the answer comes back as a labelled block, never as
+   an act line.
+4. **A remote approval becomes the one card.** `needs_approval` on the SSE map has to arrive as
+   `ConsentGate`'s outstanding question with the server's own words, and nothing else may ask while it
+   is open. Two approval systems that can both say yes is the hole.
+5. **Six outcomes, not two.** `running` / `needs_approval` / `finished` / `failed` / `cancelled` /
+   `unreachable` — and `unreachable` is its own sentence, because the Pi is asleep, on another network
+   or mid-reboot far more often than a job fails, and "the job failed" about a device that did not
+   answer is the same class of lie as "caffeinate finished" about a hold with four hours left.
+6. A read-only `--probe-handoff` that prints the URL, the body, the token's absence-or-presence, the
+   policy verdict and the card sentence, sending nothing — hoist the resolver into ChunksKit first, the
+   same lesson `open_file_with` just taught.
+
+**C. The decision that has to happen before any of it is built.** Chunks as a *client* of a remote
+executor fits the rule 3.5 already sets for MCP (Ask-before-run, per-host allowlist, results as
+untrusted data, secrets never inherited). Chunks *delegating* to another reasoning identity does not fit
+`AGENTS.md`'s "no sub-agents, no worker spawning, no hand-off to another identity", and it also changes
+the one sentence that makes this sellable as an app: *"nothing of his leaves the machine"* becomes
+*"nothing leaves to a vendor"* — an instruction and possibly a screenshot travelling to his own Pi over
+Tailscale is not a metered backend he has to carry, but it is not the same claim either. **Pick one in
+writing** — client, or amend the scope file — and note that Cloud-Computer keeps its model's keys
+server-side, so BYOK stays true for Chunks and stops being true for the job it handed over.
+
+**D. Explicitly not built here.** No Chunks process that spawns or supervises another agent; no shared
+identity between the notch and the Pi; no second voice owning the card; no proxy where Chunks' key
+would sit on the Pi. If the remote half ever needs Chunks' Gemini key, that is a different product and
+this file says so before the code does.
+
+
 
 ### 3.16 Integrating with other agents and IDEs — out of scope as stated, in scope as driving
 

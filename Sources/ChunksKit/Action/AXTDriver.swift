@@ -1744,8 +1744,12 @@ public enum AXTDriver {
     }
 
     // MARK: AX reading
+    //
+    // Internal rather than private from 2026-11-02: `WindowDriver` reads the same attributes off the
+    // same elements, and a second copy of the `AXUIElementCopyAttributeValue` bridge is a second place
+    // for the "an AX array is an array of elements by contract" mistake to be reintroduced.
 
-    private static func stringAttribute(_ element: AXUIElement, _ name: String) -> String? {
+    static func stringAttribute(_ element: AXUIElement, _ name: String) -> String? {
         var value: AnyObject?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success
         else { return nil }
@@ -1762,7 +1766,7 @@ public enum AXTDriver {
     /// A tree walk has to treat one uncooperative app as a dead branch rather than an error: an
     /// app that fails `AXUIElementCopyAttributeValue` mid-walk is normal, and a name search that
     /// aborted on it would refuse to press the button two nodes away.
-    private static func children(of element: AXUIElement) -> [AXUIElement] {
+    static func children(of element: AXUIElement) -> [AXUIElement] {
         guard let raw = copyAttribute(element, kAXChildrenAttribute as String) as? [AnyObject]
         else { return [] }
         // An AX children array is an array of elements by contract, so this is a bridge, not a
@@ -1776,8 +1780,8 @@ public enum AXTDriver {
         return raw.map { $0 as! AXUIElement }
     }
 
-    private static func copyAttribute(_ element: AXUIElement,
-                                      _ name: String) -> AnyObject? {
+    static func copyAttribute(_ element: AXUIElement,
+                              _ name: String) -> AnyObject? {
         var value: AnyObject?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success
         else { return nil }

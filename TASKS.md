@@ -18,11 +18,11 @@ sees when it is missing, you do not understand the item yet.
 - **The tree is dirty against HEAD `ae7fd49`.** Do not run `git reset --hard`, `git checkout --`,
   `git stash`, or `git clean` — that work is one command from being gone. If you want a checkpoint,
   ask him; he commits when *he* has verified, not before.
-- **747/747 unit tests across 41 suites; 39 verify checks passed, 3 skipped, 22.7 s** (2026-11-02,
-  nonce GATE-KEEPA-1793634246). Two of the three skips are now deliberate: the local-brain checks are
-  kept aside behind `CHUNKS_LOCAL_BRAIN=1`, because the offline tier stays as a product (4.3) while
-  waking a 2B model on every gate is not the same thing. The third is the standing Shortcuts-window
-  skip; the Chrome-candidate skip came back PASS this run, which is window geometry, not code.
+- **762/762 unit tests across 42 suites; 40 verify checks passed, 3 skipped** (2026-11-02, nonce
+  MK-W-1793638056). Two of the three skips are deliberate: the local-brain checks are kept aside behind
+  `CHUNKS_LOCAL_BRAIN=1`, because the offline tier stays as a product (4.3) while waking a 2B model on
+  every gate is not the same thing. The third is the standing Shortcuts-window skip; the Chrome-candidate
+  skip came back PASS this run, which is window geometry, not code.
 - **`--probe-local` is a live-model check and it can go red for nobody's action.** Measured the same
   day: one gate run returned 37 passed / 1 FAILED on it, and the next direct run of the same binary
   passed all five of its turns. It grades what a local model answers in that second — an `[ACT:]` or
@@ -91,7 +91,8 @@ then properly, by building the tier that consumes it (3.3, 2026-11-02). 0.2, 0.3
 **Tier 2 — decisions only he can make:** Gemini quota (open — `3.1-pro` is still 0 tokens/min) · the
 **7× screenshot payload**, which is the real latency and needs his eyes on reading quality · who the
 product is for once it is sold · the planner's write scope · `maxCandidateSearchElements` vs a frozen
-notch · **new: two Gemini keys** (what it buys, what it does not) · **new: whether Chunks may write to
+notch · two Gemini keys — **declined by him 2026-11-02**, recorded so it is not re-litigated ·
+**new: whether Chunks may write to
 his disk** · **new: the browser DOM port** · **new: concurrency and other agents** — the last three are
 the whole of what he asked for today, and each one has a scope argument attached rather than code.
 
@@ -104,8 +105,10 @@ never injected, `<NOTE>`/`[NOTES:]` verified live on Gemini. 3.4 realtime duplex
 (blocked-on-him), 3.10 VS Code by name (buildable now), 3.11 PDF stays read-only (a refusal wording),
 3.12 browser in three levels (L1 and L2 buildable now, L3 blocked-on-him), 3.13 process and window
 choreography (buildable now — the biggest honest slice of "control everything"), 3.14 a durable job
-queue (in-scope shape of "multiple tasks", with one question to answer first), 3.15 agent delegation
-(**out of scope as stated**; the in-scope version is driving their windows).
+queue (in-scope shape of "multiple tasks", with one question to answer first), **3.15 hand a browser
+job to Cloud-Computer on the Pi** (new 2026-11-02; he already owns the other half, and it is blocked on
+the integration-vs-delegation decision), 3.16 agent delegation (**out of scope as stated**; the
+in-scope version is driving their windows).
 
 **Tier 4 — the commercial path.** 4.1 Apple's gate: everything up to the account wall **done**
 (universal, hardened, exact entitlements, fingerprint-checked) — Developer ID, notarisation and Sparkle
@@ -113,10 +116,13 @@ need his enrolment. 4.2 Google's gate **not started**, and it should not be unti
 exception is in writing. 4.3 the buyer's gate **built, unmeasured** — the clean-account click count is
 still a guess.
 
-**Build order I'd argue for, if he wants one:** 3.13 → 3.12 L1 → 3.10 → 3.9 (after the write decision)
-→ 3.14 (after the unattended-steps decision). First because it is the largest felt capability that
-needs no new permission and no scope argument; last because a queue is the item that changes what the
-product is.
+**Build order I'd argue for, if he wants one:** 3.13 → 3.15 (once he has picked integration over
+delegation) → 3.12 L1 → 3.10 → 3.9 (after the write decision) → 3.14 (after the unattended-steps
+decision). 3.13 first because it is the largest felt capability that needs no new permission and no
+scope argument; 3.15 second because Cloud-Computer already runs a headless browser on his Pi with
+spend gates and traces, which makes it a better answer to browser work than anything built inside
+Chunks — and it retires most of 3.12 level 3 before a debug port is ever opened on his machine;
+3.14 last because a queue is the item that changes what the product is.
 
 ---
 
@@ -210,7 +216,7 @@ from a log line — that has been true every single time it has been tested.
   the step whose label described a control that only exists after the previous step is the one likely
   to fail first. WhatsApp's list is the fixture only he has.
 - **Watch a launch resume the plan.** Say *"open chrome and type 'how to use sql' in the search box"*
-  out loud, on the local brain, and watch for the second look: Chrome should open, the card should
+  out loud, and watch for the second look: Chrome should open, the card should
   say so, and about 1.5 s later Chunks should ask again and aim the typing at the window it just
   made. `--probe-reply` proves the split (`plan: launch now, 1 step(s) held for a fresh capture`)
   on any reply, and five of six live turns wrote exactly that shape — what has never been seen is
@@ -219,6 +225,11 @@ from a log line — that has been true every single time it has been tested.
   the extra round read as help or as stalling?
 - **Watch the slow-503 failover and the carried screen** on a real turn (the hedge, the slice, and
   `ScreenCarry` re-attaching yesterday's picture when he says "answer it").
+- **Watch the window verbs on a real window.** Say *"close that window"* with something unsaved in it
+  and read the card: it should name the window and the app, say the cost, and ask even with "Ask before
+  acting" off. Then *"minimise Safari"* and *"bring the terminal to the front"*, which should just
+  happen and be spoken. `--probe-windows Safari` prints the same enumeration and wording without
+  touching anything, so a disagreement between the probe and the card is the interesting result.
 - **The notch card and the window have never been photographed on a real screen.** Geometry is
   unit-tested and both are rendered offscreen; the shape, the halo, the chip hit targets, and whether
   ⌃A survives the apps that already own it all need eyes.
@@ -275,19 +286,15 @@ Still open, and it needs him rather than you:
   you build the second.
 - **`maxCandidateSearchElements` (700) versus a frozen notch** — see Tier 3.1's 2026-10-31
   measurement. Raising it is the direct fix for "the page is never reached" and it doubles the wait.
-- **Two Gemini keys, one for answering and one for everything else.** Asked for on 2026-11-02, and it
-  is in scope — BYOK with two keys is still BYOK: no proxy, no metering, nothing of his leaving the
-  machine, so 4.2's CASA clause is untouched. What it genuinely buys is measured: the chain's `429`
-  rule exists because the free tier caps **~5 requests/minute per model per key**, so a second key is a
-  second untouched bucket, and a background turn (a routine firing, a day brief, a summary) can spend
-  key B instead of eating the budget he is about to speak into. What it does **not** buy, and the two
-  things not to confuse with quota: `gemini-3.1-pro` answers `0 input tokens per minute on Free Tier`
-  (seen again on the 2026-11-02 run) — that is a tier, and no second free key raises it; and the
-  **7× PNG payload** (126.3s vs 15.7s on the same display) is upload time, so a second key makes
-  contention rarer and never makes one turn faster. His decisions inside this one: which purposes go
-  to key B, whether key A's absence should degrade to key B or refuse out loud, and the fact that the
-  log and the card must say *which credential answered* — today they name the model, and after this
-  the model alone would not be the whole truth.
+- **Two Gemini keys, one for answering and one for everything else — DECLINED by him, 2026-11-02.**
+  Raised and then dropped the same day ("ok then, leave it"), so this is a record rather than a task:
+  it was in scope (BYOK with two keys is still BYOK — no proxy, no metering, nothing leaving the
+  machine, so 4.2's CASA clause is untouched), and it would have bought a second untouched free-tier
+  bucket, since the cap is ~5 requests/minute **per model per key** and a routine firing currently spends
+  the same budget he is about to speak into. It would not have bought speed: `gemini-3.1-pro` answers
+  `0 input tokens per minute on Free Tier` because of the *tier*, and the 7× PNG payload is upload time.
+  If latency ever becomes the complaint again, the payload is the lever, not a second key. Re-open only
+  if background turns start visibly stealing his interactive budget.
 - **Whether Chunks may write to his disk.** Every byte-level rule in this repo today is about *reads*
   (invariant 9): allow-listed roots, a credential deny-list on the resolved path, his own words naming
   the file. File editing (3.9 below) is a new capability class, not an extension of that one, and it
@@ -295,10 +302,35 @@ Still open, and it needs him rather than you:
   a rebuild, and a card that names the exact lines changing. `run_command` is already an always-asked
   door to anything a shell can do, so the honest question is whether a first-class write tool is safer
   *because* it is checked, or just safer-looking.
-- **The browser DOM route** (Tier 3.1 option 3, and 3.12 below). Restated here because he has now asked
-  for browser work: `AGENTS.md` says do not reach it without asking, because a debug port on his
-  browser is a bigger security surface than everything else in this app combined. Levels 1 and 2 of
-  3.12 need no such port and are already in scope.
+- **Handing a job to Cloud-Computer on the Pi — integration or delegation?** Raised 2026-11-02, and
+  it is the one open decision that needs a sentence in `AGENTS.md` before code. Facts from his own
+  project, not from the name: Cloud-Computer is a self-hosted agent that drives a real browser
+  (Playwright locally or an E2B microVM) over `POST /tasks`, streams stages on
+  `GET /tasks/{id}/events` (SSE), pauses at spend gates on `POST /tasks/{id}/approval`, keeps NDJSON
+  traces, and **is already deployed to a Pi 400** (`infra/pi/`: arm64 Lite OS, ~1.3 GB RAM with a task
+  running, 2 GB swap, `make pi HOST=…`). Two readings, and they are not the same product:
+  **(a) an integration** — Chunks is a *client* of a remote executor, exactly the shape 3.5 already
+  allows for MCP ("Ask-before-run, per-server allowlist, results as untrusted data, secrets never
+  inherited"), one card per question, and the remote's own approval gate mirrored rather than
+  duplicated; **(b) a delegation** — Chunks hands work to another identity that reasons and acts on its
+  own, which is the ❌ line ("no sub-agents… it may not spawn workers or hand work to another
+  identity") and the layer he explicitly cut when he scoped this as a HeyClicky replica minus the
+  multi-agent part. My reading is that (a) is in scope and worth having, and it needs one honest
+  amendment: *"nothing of theirs leaving the machine"* becomes *"nothing leaves to a vendor"* — an
+  instruction and possibly a screenshot would travel to **his** Pi over Tailscale/LAN, which is not the
+  cloud backend the rule exists to prevent (no metering, no billing, no analytics, no proxy he has to
+  carry) but is not the same claim either. Also his to settle: Cloud-Computer holds provider keys
+  server-side in `.env`/`.vault.json`, so the "BYOK, keys in the Keychain" story stays true for Chunks
+  and becomes *not* true for the job it handed over.
+- **A companion that runs on the Pi itself.** Worth saying plainly before it becomes a task: the
+  macOS app cannot be ported — AppKit, Accessibility, ScreenCaptureKit and the notch are all
+  Apple-only, and a Swift binary will not run on arm64 Linux. What already runs there is
+  Cloud-Computer. So "Chunks on the Pi, like hark" is one of three things, and which one is his
+  choice: a **headless agent** on the Pi that Chunks talks to (that is the handoff above), a **new
+  client** written for Linux with its own voice path and no screen to point at, or a **Pi as the
+  always-on half** of a two-device product where the Mac does the screen and the Pi does the long
+  jobs. The third is the one the existing code supports today.
+
 - **Concurrency, and whether other agents may do work.** "Assign multiple tasks" and "integrate with
   multiple agents" collide with the scope file head-on: `AGENTS.md` forbids sub-agents, teams and any
   hand-off to another identity — one assistant, one task per turn — and that line is what makes Chunks
@@ -661,20 +693,46 @@ worded. If he wants real PDF editing, that is a scope amendment, not a feature.
   deterministic. This is 3.1's "do not reach this without asking", and the reason has not changed: a
   port his browser listens on is a bigger security surface than everything else in this app combined,
   and it must be his eyes-open choice — plus it makes every page he visits reachable from Chunks, which
-  is a claim the current screen-read model never makes.
+  is a claim the current screen-read model never makes. **And as of 2026-11-02 there is a better
+  answer to most of it:** 3.15 hands the job to Cloud-Computer, which already drives a real headless
+  browser on his Pi with its own spend gates and NDJSON traces, so a debug port on the browser he reads
+  his mail in may never need to be opened at all. Read this level as the fallback, not the plan.
 
-### 3.13 Process and window choreography — the "control every application" set, minus the magic
+### 3.13 Process and window choreography — slice 1 DONE 2026-11-02 (his screen pending)
 
-What he actually asks for, itemised, all of it through doors that already exist: list running apps and
-windows with their titles; focus, minimise, close, move, resize a named window; quit an app and report
-whether it refused; open a file *with* something (`open -a`); start a login-visible process and tell
-him it's still running (the `caffeinate` lesson: three outcomes, not two). `AXTDriver` already walks
-`AXWindows`; `ToolRunner` already launches. The work is a small tool family plus the policy each one
-needs — quitting and closing are permanent acts and belong beside `alwaysAskControlWords`, not under
-the "don't ask" switch.
+**Slice 1 is built and on his machine.** `[DO:focus_window:Safari|Inbox]`,
+`[DO:minimize_window:…]`, `[DO:close_window:…]` and `[DO:quit_app:Safari]` — resolved against the live
+tree before the card is worded, `close` and `quit` in `alwaysAsks` beside `run_command`, the cost said
+out loud in the question, `terminate()` and never `forceTerminate()`, and nothing that moves the
+cursor. `--probe-windows` is the harness: it enumerates, prints each verb's card sentence and asserts
+the always-asked contract, performing nothing. First live run on his screen found 2 windows and passed;
+it also caught a wording bug on the way — Qoder's own window asked *"Bring \"Qoder\" in Qoder to the
+front?"*, now named once.
 
-Acceptance: `--probe-windows Safari` prints what would be moved or closed and does none of it; a spoken
-"put the terminal on the second display" lands it, and the card says where it went.
+One real finding from the unit cases, and it is a rule rather than a bug fix: `AXTDriver.nameScore`
+cannot match a window title he names partially. It awards 3 for an exact token-set match and 2 for a
+prefix, so "TASKS.md" against a window called "Chunks — TASKS.md" scored **1** and was refused — the
+most natural sentence about a document window. Window titles now use a subset rule instead (every
+distinctive word he said must be in the title), with specificity breaking a tie, because the ambiguity
+that made `nameScore` strict for *controls* is already handled here by refusing two equal answers with
+both names listed.
+
+**Still to build, in this order:**
+- **Geometry: move, resize, and "put that on the second display".** Deferred on purpose, not forgotten —
+  it is the one slice that has to get invariant 1 right (AX frames are top-left logical points; an
+  `NSWindow` frame is bottom-left; `CGDisplayBounds` is top-left and `CGDisplayPixelsWide` returns
+  points), so it needs the round-trip coverage at 1x, 2x and 3x that the repo requires of any coordinate
+  work, and a probe that prints where a window *would* land without landing it.
+- **`open_file_with:App|path`** — `open -a`, with `RevealPolicy`'s roots and credential deny-list
+  applied to the resolved path, because it is a read-shaped act with a launch attached.
+- **Listing what is open** belongs to 3.12 level 1, not here: it is context for a turn, not an act, and
+  it should ride the same channel a `[READ:]` and a `[NOTES:]` do.
+- **Quitting an app that refuses** currently reports one line. Whether Chunks should then say *why*
+  (the app's own unsaved-document sheet is on screen and could be read) is a question for him.
+
+Acceptance for what is built: `--probe-windows [App]` prints the enumeration, each verb's question and
+the contract verdict, and exits 0; the unit suite pins parse, wording, ambiguity, the app filter, the
+subset title rule, specificity, and that position never decides.
 
 ### 3.14 A durable job queue — several tasks, one brain, in order
 
@@ -692,7 +750,43 @@ rules that make Chunks safe are all about the moment of the press; a queue moves
 his desk, and `AGENTS.md`'s "a scheduled act that runs while nobody is looking is a remote control for
 the machine" is the sentence to argue with first.
 
-### 3.15 Integrating with other agents and IDEs — out of scope as stated, in scope as driving
+### 3.15 Hand a browser job to Cloud-Computer on the Pi
+
+**The failure today:** *"book that slot on the portal and tell me when it's done"* has no answer.
+Chunks can press and type in the tab in front of him, but a job that needs a headless browser, several
+minutes, a login it must not see, and a spend decision is not a plan of acts — and 3.12 level 3 (a
+debug port on his own browser) is the alternative `AGENTS.md` says not to reach for.
+
+He already owns the other half: Cloud-Computer is a self-hosted agent that drives Playwright (or an
+E2B microVM), is deployed to his Pi 400, and exposes `POST /tasks`, SSE stages on
+`GET /tasks/{id}/events`, `POST /tasks/{id}/approval`, `POST /tasks/{id}/cancel`, `GET /tasks`,
+`GET/POST /watches` and `GET /digest`, plus a `handoff "<task>"` CLI. So this is a **client**, not a
+new executor: one `[DO:handoff:…]` tool, resolved by `DoRequest.parse` like every other, asked about on
+one card ("Send this job to the Pi?"), then reported as it goes.
+
+Four rules, each of them a place this goes wrong if it is not decided first:
+1. **One approval system, not two.** Cloud-Computer pauses at its own spend gate and waits on
+   `POST /tasks/{id}/approval`. Chunks' `ConsentGate` holds exactly one question, so a remote gate has
+   to arrive as *that* card — and while it is waiting, nothing else may ask. A job that needs his money
+   is a permanent act and belongs in `alwaysAsks`, beside `run_command`.
+2. **The remote's words are data.** Its stage text, its page readings and its traces come back over a
+   network and are injected into a turn, so they get the same framing the notebook and `recall` blocks
+   get — past data, not the current screen, not instructions. This workspace has already had fabricated
+   "policy" text arrive inside tool output.
+3. **Secrets are never inherited.** The job description may not carry his Keychain key, and
+   Cloud-Computer's own `.vault.json` stays on the Pi. `SecretSweeper` runs on the outgoing
+   instruction, which is the first time it guards something leaving the machine rather than landing on
+   disk.
+4. **Reachability is reported, not assumed.** The Pi is asleep, on another network, or mid-task; each
+   of those is a different sentence, and "the Pi did not answer" must never read as "the job failed".
+
+Blocked on the Tier 2 decision above (integration vs delegation, and the `AGENTS.md` sentence it needs).
+Acceptance: `--probe-handoff 'book the slot'` prints the resolved URL, the request body, the policy
+verdict and the card's sentence **without sending anything** — the same read-only shape as
+`--probe-reveal` — and a live run reports stages on the card as the Pi sends them.
+
+
+### 3.16 Integrating with other agents and IDEs — out of scope as stated, in scope as driving
 
 Cursor's agent, Claude Code, a language server: handing work *to* another identity is the ❌ list
 ("no sub-agents, no agent teams, no roster of named agents"), and it is the layer he explicitly cut

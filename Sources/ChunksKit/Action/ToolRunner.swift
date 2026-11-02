@@ -25,6 +25,25 @@ public enum ToolRunner {
 
     /// Run an approved request. Returns whether it actually took effect.
     ///
+    /// Find the window again, then perform the verb.
+    ///
+    /// Resolved a second time on purpose: the card can outlive the window, and acting on whatever now
+    /// carries that title is not what he approved — the same re-read a press does before it lands. A
+    /// window that is gone answers `false`, which reaches him as "it did not close" rather than as a
+    /// claim about something else.
+    @MainActor
+    static func performWindowVerb(_ verb: WindowAct.Verb, app: String, title: String?) -> Bool {
+        guard case .one(let candidate) = WindowAct.resolve(
+            verb: verb, app: app, title: title, in: WindowDriver.candidates(appNamed: app))
+        else { return false }
+        switch verb {
+        case .focus: return WindowDriver.focus(candidate)
+        case .minimize: return WindowDriver.minimize(candidate)
+        case .close: return WindowDriver.close(candidate)
+        case .quit: return WindowDriver.quit(appNamed: app)
+        }
+    }
+
     /// `@MainActor` because this launches GUI applications, and the shell that calls it already
     /// lives on the main actor.
     @MainActor
@@ -36,6 +55,18 @@ public enum ToolRunner {
             // Returning false rather than trapping: if the routing ever changes, the user reads
             // "the routine was not added" instead of nothing at all.
             return false
+
+        // The window verbs. Resolution already happened in the shell — a window is found against the
+        // live tree *before* the card asks, the same order a press uses — so what arrives here names
+        // the window that will really be acted on, and this only performs the verb.
+        case .focusWindow(let app, let title):
+            return performWindowVerb(.focus, app: app, title: title)
+        case .minimizeWindow(let app, let title):
+            return performWindowVerb(.minimize, app: app, title: title)
+        case .closeWindow(let app, let title):
+            return performWindowVerb(.close, app: app, title: title)
+        case .quitApp(let name):
+            return WindowDriver.quit(appNamed: name)
 
         case .openApp(let name):
             guard let path = resolveApplicationPath(name: name, candidates: installedApplications())

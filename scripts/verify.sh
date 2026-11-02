@@ -168,6 +168,11 @@ else
   fail=$((fail + 1)); failures+=("reveal tool")
 fi
 check "fields: what an app publishes to the typist"  "$BIN" --probe-fields Finder
+
+# The window verbs, read-only: enumeration, the card's wording for each, and the contract that closing
+# and quitting stay asked about even with asking switched off. It performs nothing — the verbs are
+# printed as questions — so this can run against his real screen.
+check "windows: what Chunks can see, and what each verb would ask" "$BIN" --probe-windows
 # The command tool's executor, run with two fixed programs the harness chooses — never an argument,
 # because a flag that ran whatever it was handed is the door the parser exists to close.
 cmd_out="$("$BIN" --probe-command 2>&1)"

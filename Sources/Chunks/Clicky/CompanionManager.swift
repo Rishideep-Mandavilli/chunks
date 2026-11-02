@@ -1327,6 +1327,7 @@ final class CompanionManager: ObservableObject {
     - [DO:run_shortcut:Focus] runs an automation the user made, by the exact name he gave it in the Shortcuts app; never invent a name — if you have not seen it, say you don't know that shortcut. it runs the shortcut; it does not open the app and click a tile.
     - [DO:reveal:Memora] shows one thing in Finder — a folder opened, a file selected inside its parent. the argument is the name he used or a path you can see on his screen; Chunks looks the name up in his folders and tells him when two things share it, so never invent or guess a path. use it for "open that in finder", "where is that file", "show me the folder".
     - [DO:email:rick@studio.com] fills a new message and stops; it never sends — the words are his.
+    - [DO:focus_window:Safari|Inbox] brings one window forward: `App|window title`, and the title may be left off when the app has only one window to mean. [DO:minimize_window:Safari|Inbox] puts it in the Dock. [DO:close_window:Code|config.yml] closes it, and [DO:quit_app:Safari] quits the app — **those two are always confirmed with a card, even when he has switched asking off**, because both throw away unsaved work, so say "i'll ask you to allow it" for them and not for the others. Name a window the way its own title bar does; when two windows answer the same words Chunks refuses and lists both, so be specific rather than hopeful. None of these opens an app — that is [DO:open_app:…] — and none of them moves his cursor.
     - [DO:run_command:caffeinate -di -t 3600] runs one program with fixed arguments. there is no shell: no ; && | > or $(…) — a tag containing any is refused, so never write a second command inside the first. the program is a bare name found in /bin, /usr/bin, /usr/local/bin or /opt/homebrew/bin, never a path. for "keep this mac awake" the flags are `-d` (the display stays on), `-i` (no idle sleep) or both as `-di`; **`-u` is not one of them** — it asserts the user is active and holds nothing that stops a sleep, measured 2026-10-31 on the machine this runs on. destructive or privileged programs (rm, mv, dd, diskutil, sudo, defaults, security, codesign, chown, kill, shutdown) and anything that fetches or sends over a network (curl, wget, ssh, scp, rsync, brew, npm, pip) are refused outright — say what you would run and let him run it. **this tool is always confirmed with a card, even when he has switched asking off**, so say "i'll ask you to allow it" for this one and nothing else. prefer [DO:run_shortcut:…] for a habit he already automated.
     - [DO:routine_add:Morning glance|daily at 08:00|brief me on what is open] adds a question Chunks asks itself on a schedule: name | cadence | question. the cadence is exactly `daily at HH:mm`, `weekdays at HH:mm`, `every 30 minutes` or `every 2 hours`; a time he did not say is a notification at the wrong hour, so ask. name and question share about 100 characters — he reads the whole card before agreeing. when it fires it goes through the same turn as a spoken question: it sees the screen then, and still has to ask before it presses. [DO:routine_remove:Morning glance] takes one out by the exact name in the list below; not in the list: say so and offer to add the one he means.
     - [DO:remind:stretch|40 min] says one line once and forgets it: the sentence | when. the when is exactly `40 min`, `2 hours`, `3 days`, `at 21:00`, `9 pm` or `tomorrow at 07:30`; seconds have no tool because the clock that fires them ticks once a minute, so a thing due in half a minute is answered in words rather than armed late. `at HH:mm` lets the app work out whether the hour is still ahead today. a reminder never captures his screen, calls a model or presses anything: when due it is one line on the card and one sentence aloud. [DO:remind_cancel:stretch] takes one out by the words on it; never guess.
@@ -2678,7 +2679,12 @@ final class CompanionManager: ObservableObject {
         // refusal when the name matches nothing or matches twice.
         guard let revealed = resolvedReveal(request) else { return }
         // A reminder is asked about in the day it will really fire.
-        let request = resolvedReminder(revealed)
+        let reminded = resolvedReminder(revealed)
+        // A window verb is resolved to a real window before anything is asked about it, for the same
+        // reason a press resolves its target first: the card has to name the window that will really be
+        // closed, and two windows answering the same words are a refusal that lists them, not a guess
+        // he has to approve.
+        guard let request = resolvedWindowAct(reminded) else { return }
         // A routine that cannot be honoured is refused *before* it is asked about. A card whose
         // Allow leads to "there is already one called that" makes the question a lie, and the rule
         // already set for a press the policy forbids applies here: refuse, do not ask.
@@ -2842,7 +2848,8 @@ final class CompanionManager: ObservableObject {
                 $0.title.lowercased() == title.lowercased()
             }) else { return "There is no routine called \"\(title)\"." }
             return nil
-        case .openApp, .setVolume, .openURL, .runShortcut, .email, .reveal, .runCommand:
+        case .openApp, .setVolume, .openURL, .runShortcut, .email, .reveal, .runCommand,
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp:
             // A command needs no pre-check: `commandArgv` has already refused the shell
             // metacharacters, the path-shaped program and the destructive names, so anything that
             // reaches this line is one program from a known folder with fixed arguments — and it is
@@ -2868,6 +2875,48 @@ final class CompanionManager: ObservableObject {
     private func resolvedReminder(_ request: DoRequest) -> DoRequest {
         guard case .addReminder(let text, let timing) = request else { return request }
         return .addReminder(text: text, timing: ReminderStore.resolve(timing))
+    }
+
+    /// `[DO:close_window:Code|config.yml]` names a *window*; the card has to name the one that exists.
+    ///
+    /// Resolved here rather than at perform time so a refusal is a refusal and not a question: two
+    /// windows called "Inbox" are two different losses, and `WindowAct.resolve` answers `.ambiguous`
+    /// for them, which is reported with both titles rather than asked about with one of them guessed.
+    /// Returns nil when there is nothing to ask, having already said why on the card — the contract
+    /// `resolvedReveal` has.
+    ///
+    /// The resolution is repeated when the verb actually runs (`ToolRunner.performWindowVerb`), because
+    /// a card can outlive the window it named, and the second look is what makes "it did not close"
+    /// honest rather than an act on whatever now carries that title.
+    private func resolvedWindowAct(_ request: DoRequest) -> DoRequest? {
+        let verb: WindowAct.Verb
+        let app: String
+        let title: String?
+        switch request {
+        case .focusWindow(let name, let windowTitle): verb = .focus; app = name; title = windowTitle
+        case .minimizeWindow(let name, let windowTitle):
+            verb = .minimize; app = name; title = windowTitle
+        case .closeWindow(let name, let windowTitle): verb = .close; app = name; title = windowTitle
+        case .quitApp(let name): verb = .quit; app = name; title = nil
+        default: return request
+        }
+        let resolution = WindowAct.resolve(verb: verb, app: app, title: title,
+                                           in: WindowDriver.candidates(appNamed: app))
+        guard case .one(let candidate) = resolution else {
+            let refusal = WindowAct.refusal(verb: verb, app: app, title: title, resolution: resolution)
+            Log.write("window: refused \(verb.rawValue) on \(app)"
+                + (title.map { "|\($0)" } ?? "") + " — \(refusal)")
+            hud.reportConfirm(refusal)
+            return nil
+        }
+        Log.write("window: \(verb.rawValue) → \"\(candidate.title)\" in \(candidate.appName) "
+            + "(pid \(candidate.pid))")
+        switch verb {
+        case .focus: return .focusWindow(app: candidate.appName, title: candidate.title)
+        case .minimize: return .minimizeWindow(app: candidate.appName, title: candidate.title)
+        case .close: return .closeWindow(app: candidate.appName, title: candidate.title)
+        case .quit: return .quitApp(name: candidate.appName)
+        }
     }
 
     /// `[DO:reveal:…]` names a *thing*; the card has to name the path it will really open.

@@ -2794,3 +2794,73 @@ committed.
 **Not watched yet:** a note actually landing from his voice (the store, the parser and the footnote are
 each measured; the spoken turn is not), the footnote at a glance, and whether the new panel row survives
 a *populated* panel — `--render-panel` draws it empty, which is the one state that cannot overflow.
+
+## Window verbs, and a title rule the press path could not lend — 2026-11-02
+
+He picked the build order I argued for, so 3.13 went first: `[DO:focus_window:Safari|Inbox]`,
+`minimize_window`, `close_window` and `quit_app`. All four travel the tool door, so `PolicyGate`,
+`ConsentGate` and the one-card-one-question rule are untouched; `close` and `quit` join
+`ToolLayer.alwaysAsks` beside `run_command`, because "don't ask" was never an instruction to throw away
+an unsaved document on a model's say-so, and the question says the cost out loud. Quitting is
+`terminate()` and never `forceTerminate()` — an app that answers by asking about an unsaved document is
+behaving correctly, and the outcome line names that instead of reporting a bare failure.
+
+The window is resolved against the live tree **before** the card is worded (`resolvedWindowAct`, beside
+`resolvedReveal`), and resolved *again* when the verb runs (`ToolRunner.performWindowVerb`), because a
+card can outlive the window it named. Two equal answers are refused with both titles listed; position
+never qualifies a window, and the only thing a rectangle decides is that two candidates at the *same*
+frame are one window published twice.
+
+**The finding worth keeping.** `AXTDriver.nameScore` is the right rule for a control and the wrong one
+for a window title, and the unit case is what said so: "TASKS.md" against a window called
+"Chunks — TASKS.md" scored **1** against a threshold of 2 and was refused — the most natural sentence
+about a document window. `nameScore` awards 3 only for an exact token-set match and 2 for a prefix,
+which protects a *press* (one shared token is a guess about a button) and starves a *title* (titles are
+long, and the ambiguity that made the control rule strict is already handled here by refusing two equal
+answers). So window titles use a subset rule — every distinctive word he said must be in the title —
+with specificity breaking ties between two that both answer. "the document" still refuses; "TASKS.md"
+now resolves.
+
+`--probe-windows` is the harness and it runs the same gate as the live path: `WindowAct.resolve` for the
+window, `ToolLayer.question` for the sentence, `ToolLayer.alwaysAsks` for whether a card appears. Its
+first live run passed and still caught something — Qoder's own window asked *"Bring \"Qoder\" in Qoder to
+the front?"*, which is now named once.
+
+**Gate:** 762/762 unit tests across 42 suites (+15 window cases); `./scripts/verify.sh` → **40 checks
+passed, 3 skipped, exit 0** — nonce `MK-W-1793638056`, after `make-app.sh` + `install.sh`. The three
+skips: no Shortcuts window open, and the two local-brain checks kept aside behind
+`CHUNKS_LOCAL_BRAIN=1`.
+
+**Deferred, deliberately:** move/resize/"put that on the second display" — the one slice that has to get
+invariant 1 right (AX top-left logical points vs an `NSWindow` bottom-left frame vs `CGDisplayBounds`),
+so it needs the 1x/2x/3x round-trip coverage before it exists at all.
+
+## The Cloud-Computer handoff, and why it changed the order — 2026-11-02
+
+He wants Chunks to hand jobs to his own `Cloud-Computer` project, eventually with a Hark-style
+companion on a Raspberry Pi 400. Read rather than assumed, from that project's own files: it is a
+self-hosted agent that drives a real browser (Playwright or an E2B microVM), exposed as `POST /tasks`,
+SSE stages on `GET /tasks/{id}/events`, `POST /tasks/{id}/approval` for its spend gates, `cancel`,
+`/watches`, `/digest` and a `handoff "<task>"` CLI — and **it is already deployed to a Pi 400**
+(`infra/pi/`: arm64 Lite OS, ~1.3 GB RAM with a task running, 2 GB swap, `make pi HOST=…`).
+
+Three consequences, all written into `TASKS.md` rather than left in this chat:
+1. **It reorders the browser work.** 3.12 level 3 (a debug port on his own browser) was the thing
+   `AGENTS.md` says not to reach for without asking. Cloud-Computer already has the headless browser,
+   the spend gates and the traces, so 3.15 (the handoff) now comes *before* 3.12 L1 in the order I'd
+   argue for, and level 3 becomes the fallback rather than the plan.
+2. **It needs one sentence in `AGENTS.md` before code.** A client of a remote executor is the shape 3.5
+   already allows for MCP (Ask-before-run, per-server allowlist, results as untrusted data, secrets
+   never inherited). Handing work to *another identity that reasons on its own* is the ❌ line he cut
+   when he scoped this as a HeyClicky replica minus the multi-agent layer. The honest amendment is that
+   "nothing of theirs leaving the machine" becomes "nothing leaves to a *vendor*": an instruction, and
+   possibly a screenshot, would travel to his Pi over Tailscale — not the cloud backend the rule exists
+   to prevent (no metering, no billing, no analytics, no proxy he has to carry), but not the same claim
+   either. Cloud-Computer also holds provider keys server-side, so the BYOK story stays true for Chunks
+   and stops being true for the job it handed over.
+3. **A companion that runs *on* the Pi is not a port.** AppKit, Accessibility, ScreenCaptureKit and the
+   notch are Apple-only; a Swift binary will not run on arm64 Linux. What runs there is Cloud-Computer,
+   so "Chunks on the Pi like Hark" is one of three things — a headless agent Chunks talks to (that is the
+   handoff), a new Linux client with its own voice path and no screen to point at, or a two-device
+   product where the Mac owns the screen and the Pi owns the long jobs. The third is what the existing
+   code supports today, and it is the one I'd build.

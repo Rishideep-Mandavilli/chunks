@@ -146,6 +146,7 @@ finds a desktop icon. Two more read-only doors came out of the semantic work:
 .build/debug/chunks --probe-protocol   # five fixed turns: does the model still emit every tag family
 .build/debug/chunks --probe-reply      # one reply, every tag's verdict, and what the plan would do
 .build/debug/chunks --probe-notebook 'the landlord'  # his notebook read-only, then the tier's rules on a copy
+.build/debug/chunks --probe-windows Safari  # every window Chunks can see, and what each verb would ask
 .build/debug/chunks --probe-reply --local   # ask the local model a plan question and audit its real words
 .build/debug/chunks --probe-read '~/Downloads/build.log|why did it fail'  # one path, end to end
 .build/debug/chunks --render-ui /tmp/notch-card.png   # every notch state drawn offscreen, to look at
@@ -722,6 +723,25 @@ map almost 1:1 onto `#expect(...)`.
    fails toward doing nothing, never toward doing both. With asking off, `offerTool` logs
    `tool: acting —` and runs directly; the outcome line still lands on the card.
 
+   **A window is named before it is touched, and the two verbs that lose work are always asked.**
+   `[DO:focus_window:Safari|Inbox]`, `minimize_window`, `close_window` and `quit_app` travel the same
+   door, with one addition the press path already has: the shell resolves the window against the live
+   tree *before* the card is worded (`resolvedWindowAct`, beside `resolvedReveal`), so the question
+   names the window that will really be closed and a name two windows answer is **refused with both
+   titles listed** rather than asked about with one of them guessed. `close_window` and `quit_app` are
+   in `ToolLayer.alwaysAsks`, beside `run_command`, because "don't ask" is a standing instruction about
+   routine navigation and never an instruction to throw away an unsaved document on a model's say-so;
+   the question says the cost out loud ("Anything unsaved in it is gone"). Resolution is by words only —
+   a title answers when *every* distinctive word he said is in it, and specificity breaks a tie between
+   two that both answer. **Position never qualifies a window**, which is `CandidateRanker`'s rule
+   restated: two equal answers at different frames are a refusal, and the only thing a rectangle may
+   decide is that two candidates at the *same* frame are one window published twice. Quitting is
+   `terminate()` and never `forceTerminate()` — an app that answers by asking about an unsaved document
+   is behaving correctly, and the outcome line says so rather than reporting a bare failure. Nothing
+   here moves the cursor: raise, minimise, a window's own close button and terminate are all acts on
+   elements. `--probe-windows` prints the enumeration, each verb's card sentence and the always-asked
+   contract, and performs nothing.
+
    **A command has three outcomes, and `runTool` is the only place any tool executes.**
    `[DO:run_command:…]` waits `commandWatchSeconds` (3) and then **stops watching without killing**:
    the user approved the whole line, and `caffeinate -di -t 21600` is a six-hour sleep hold that is
@@ -976,9 +996,9 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-**The app runs. 747 of 747 tests green across 41 suites (the count is the `.register()` calls in
+**The app runs. 762 of 762 tests green across 42 suites (the count is the `.register()` calls in
 `Tests/ChunksTestCases/AllTests.swift`), and the full gate is 40 checks passed /
-2 skipped.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
+3 skipped.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
 suite. The same rule now applies to `--probe-protocol`: it measures the *prompt* against a live
 capture, and a run started while the Mac is at the login window would grade five questions about a
@@ -1009,7 +1029,8 @@ Done and tested:
 | Policy rules | `Action/PolicyGate.swift` | Secure fields / Keychain / password managers refused even with asking off; unknown metadata fails toward *asking* |
 | Consent state machine | `Action/ConsentGate.swift` | One outstanding question; double answers are inert; displacement counts as denial |
 | Accessibility press | `Action/AXTDriver.swift` | Window hit test (layer 0, desktop on request) → `AXUIElementCopyElementAtPosition` → walk to a pressable ancestor → `AXPress`/`AXPick`/`AXOpen` (icons are selected first); name search when the pixel misses, then Finder's desktop list when that misses, and an app that answers badly is believed only from a before/after snapshot of what is running and focused. Typing goes through `typeTarget`/`type`: editable-role hit test and name search, `AXManualAccessibility` for Chromium surfaces, focus read back and compared before the first character, unicode `CGEvent` keystrokes that never warp the pointer. Never moves the cursor |
-| Tool requests | `Action/DoRequest.swift` | `[DO:open_app:X]` / `[DO:open_url:host\|Chrome]` / `[DO:set_volume:N]` / `[DO:run_shortcut:X]` / `[DO:email:a@b]` / `[DO:routine_add:name\|cadence\|question]` / `[DO:routine_remove:name]` / `[DO:reveal:Memora]` / `[DO:run_command:caffeinate -di -t 3600]`, parsed only into effects that fit one sentence — and a routine whose whole card sentence runs past `maxQuestionCharacters` is refused at parse, not clipped on the card |
+| Tool requests | `Action/DoRequest.swift` | `[DO:open_app:X]` / `[DO:open_url:host\|Chrome]` / `[DO:set_volume:N]` / `[DO:run_shortcut:X]` / `[DO:email:a@b]` / `[DO:routine_add:name\|cadence\|question]` / `[DO:routine_remove:name]` / `[DO:reveal:Memora]` / `[DO:run_command:caffeinate -di -t 3600]` / `[DO:focus_window:Safari\|Inbox]` / `[DO:minimize_window:…]` / `[DO:close_window:…]` / `[DO:quit_app:…]`, parsed only into effects that fit one sentence — and a routine whose whole card sentence runs past `maxQuestionCharacters` is refused at parse, not clipped on the card |
+| Which window he meant | `Action/WindowAct.swift`, `Action/WindowDriver.swift` | The pure half decides (a title answers when every distinctive word he said is in it, two equal answers are refused *with both names listed*, and nothing is ever chosen by where it sits); the driver enumerates windows through Accessibility and performs raise/minimise/close/quit without moving the cursor |
 | File read policy | `Action/ReadRequest.swift` | `[READ:~/path|question]`: allow-listed roots, a credential deny-list matched on the **resolved** path so a symlink into `~/.ssh` is refused, 24 KB cap sliced by file kind (tail for logs, head for code) |
 | Read-input budget | `Action/ReadInputBudget.swift` | One 6,000-unit UTF-8-byte token upper bound for the whole attachment, charging the exact live frame — path, coverage warning and untrusted-data label included. PDFs enter as ranked whole pages in document order and an oversized best page is refused rather than clipped; text and office files enter as contiguous whole lines, with boundary fragments trimmed as bytes before decoding |
 | Document pages | `Action/DocumentReading.swift`, `Chunks/Clicky/DocumentRead.swift` | A PDF's text layer, extracted through PDFKit and cut to one turn by what the question names. 6 KB of characters, whole pages only (never half a page's middle), every block labelled with its page number, and a slice line that tells the model the rest was not read — the failure it prevents is "there is no indemnity clause" about page 16 of 17. A scan with no text layer is *drawn* instead: `renderedJPEG` paints its first two pages at the capture's own ceiling and they go as pixels, so a photographed receipt is answered rather than refused |
@@ -1212,6 +1233,14 @@ Read it before picking anything up from this list.
   never been seen on his screen: whether the fresh capture gives the model a better aim than the one
   it lost, and whether the extra 1.5 s plus a turn feels like help or like stalling, are both his to
   judge.
+- **The window verbs are built and their resolution is measured, but no window has been closed by a
+  spoken turn.** `--probe-windows` enumerated his real screen, printed each verb's card sentence and
+  asserted the always-asked contract on the first run (2026-11-02), and 15 unit cases pin the parse, the
+  wording, the ambiguity refusal and the rule that position never decides. Unseen: a spoken *"close that
+  window"* on a document with unsaved work — whether the card's cost sentence reads in time to matter,
+  and whether `terminate()`'s refusal line arrives before or after the app's own sheet. Move, resize and
+  "put that on the second display" are deliberately not built: they are the one slice here that has to
+  get invariant 1 right, so they wait for the 1x/2x/3x round-trip coverage.
 - **Circle-to-explain works: ⌃⌘D dims the screen and opens the microphone; you draw and speak,
   Return asks.**
   The primary surface is `Sources/Chunks/Annotate/AnnotationOverlay.swift`, imported from

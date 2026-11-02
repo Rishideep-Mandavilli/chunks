@@ -98,6 +98,26 @@ public enum DoRequest: Equatable, Sendable {
     /// execute anything a sentence produced.
     case runCommand(argv: [String])
 
+    /// `[DO:focus_window:Safari|Inbox]` — bring one window forward and activate its app.
+    ///
+    /// Its own case rather than a variant of `open_app`, because `open_app` launches and this one
+    /// rearranges what is already running: the sentence a user says ("put that window in front") has a
+    /// different effect and a different failure — an app that is not running is a refusal, not a launch.
+    /// The title after the `|` is optional, and when it is missing the request is only answerable if the
+    /// app has one window to mean.
+    case focusWindow(app: String, title: String?)
+
+    /// `[DO:minimize_window:Safari|Inbox]` — into the Dock, and back out again by the same sentence.
+    case minimizeWindow(app: String, title: String?)
+
+    /// `[DO:close_window:Code|config.yml]` — permanent, so it is asked about even with asking off.
+    case closeWindow(app: String, title: String?)
+
+    /// `[DO:quit_app:Safari]` — a graceful `terminate()`, never a force-quit, and the report says so
+    /// when the app refuses: an app with an unsaved document answers a termination request by putting
+    /// up its own sheet, and "Safari did not quit" is the honest line for that.
+    case quitApp(name: String)
+
     /// `[DO:open_app:Notes]`, `[DO:set_volume:40]`, `[DO:open_url:youtube.com|Chrome]`,
     /// `[DO:run_shortcut:Focus]`, `[DO:email:rick@studio.com]`.
     ///
@@ -194,9 +214,46 @@ public enum DoRequest: Equatable, Sendable {
             }
             return candidate
 
+        // The window verbs. `App|title` or `App` alone; the title is what makes "the config.yml
+        // window" answerable, and its absence is only honest when the app has one window to mean —
+        // which `WindowAct.resolve` decides, not this parser.
+        case "focus_window", "focus", "front", "raise", "activate_window":
+            guard let parsed = DoRequest.windowTarget(in: argument) else { return nil }
+            return .focusWindow(app: parsed.app, title: parsed.title)
+
+        case "minimize_window", "minimise_window", "minimize", "minimise", "min":
+            guard let parsed = DoRequest.windowTarget(in: argument) else { return nil }
+            return .minimizeWindow(app: parsed.app, title: parsed.title)
+
+        case "close_window", "close":
+            guard let parsed = DoRequest.windowTarget(in: argument) else { return nil }
+            return .closeWindow(app: parsed.app, title: parsed.title)
+
+        // A graceful quit, and deliberately no alias for "kill" or "force": the driver calls
+        // `terminate()` and reports a refusal, and a tag that promised a force-quit would be a promise
+        // about an act this app does not perform.
+        case "quit_app", "quit", "exit_app":
+            let name = argument.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty, !name.contains("/"), !name.hasPrefix("."), name.count <= 60
+            else { return nil }
+            return .quitApp(name: name)
+
         default:
             return nil
         }
+    }
+
+    /// The `App|title` body of a window verb, with the same length discipline `open_app` applies: a
+    /// path-shaped name is how a prompt injection reaches something that is not an application, and an
+    /// unbounded title would make the card's question longer than the card.
+    static func windowTarget(in argument: String) -> (app: String, title: String?)? {
+        let parts = argument.components(separatedBy: "|")
+        let app = parts[0].trimmingCharacters(in: .whitespaces)
+        guard !app.isEmpty, !app.contains("/"), !app.hasPrefix("."), app.count <= 60 else { return nil }
+        guard parts.count > 1 else { return (app, nil) }
+        let title = parts.dropFirst().joined(separator: "|").trimmingCharacters(in: .whitespaces)
+        guard title.count <= 120 else { return nil }
+        return (app, title.isEmpty ? nil : title)
     }
 
     /// A routine question short enough to read on the card that asks for it.
@@ -482,14 +539,14 @@ public enum DoRequest: Equatable, Sendable {
         return rounded
     }
 
-    /// Whether running this puts a *new window* on the screen, and so invalidates the screenshot any
-    /// remaining plan step was aimed at.
+    /// Whether running this changes *which windows are on the screen*, and so invalidates the
+    /// screenshot any remaining plan step was aimed at.
     ///
     /// This is the property `PlanAfterLaunch` needs, and it is deliberately narrower than "changes
     /// something". `set_volume` changes the machine and nothing the eye has to re-read; the reminder
     /// and schedule tools write a file. A launch, a page, a shortcut, a mail window and a reveal each
     /// put pixels where the model's fractions were measured, and a pixel aim is only ever a proportion
-    /// of the picture it came from.
+    /// of the picture it came from — as does closing or quitting the window the picture was *of*.
     ///
     /// `run_command` is `false` on purpose, not by omission: its effect cannot be read off `argv`
     /// (`open -a Notes` is a launch and `ls` is not), and it already carries its own always-asked
@@ -497,7 +554,8 @@ public enum DoRequest: Equatable, Sendable {
     /// describe in one sentence.
     public var invalidatesTheScreen: Bool {
         switch self {
-        case .openApp, .openURL, .runShortcut, .email, .reveal: return true
+        case .openApp, .openURL, .runShortcut, .email, .reveal,
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp: return true
         case .setVolume, .addReminder, .cancelReminder, .addRoutine, .removeRoutine, .runCommand:
             return false
         }
@@ -537,7 +595,28 @@ public enum ToolLayer {
             return "Show \(revealLabel(path)) in Finder?"
         case .runCommand(let argv):
             return "Run \(argv.joined(separator: " "))?"
+        case .focusWindow(let app, let title):
+            return WindowAct.question(verb: .focus, candidate: Self.windowCandidate(app, title))
+        case .minimizeWindow(let app, let title):
+            return WindowAct.question(verb: .minimize, candidate: Self.windowCandidate(app, title))
+        case .closeWindow(let app, let title):
+            return WindowAct.question(verb: .close, candidate: Self.windowCandidate(app, title))
+        case .quitApp(let name):
+            return WindowAct.question(verb: .quit,
+                                      candidate: Self.windowCandidate(name, nil))
         }
+    }
+
+    /// The card's sentence for a window verb, from the request alone.
+    ///
+    /// The shell resolves the window against the live tree *before* it asks — the same order a press
+    /// uses, so the question names the window that will really be closed rather than the one the model
+    /// thought it saw — and then stages a request whose app and title are the resolved ones. This is the
+    /// fallback for a request that has not been resolved yet, and it is deliberately the same function,
+    /// because two owners of one question is how a card ends up describing something other than what
+    /// runs.
+    static func windowCandidate(_ app: String, _ title: String?) -> WindowAct.Candidate {
+        WindowAct.Candidate(pid: 0, appName: app, title: title ?? "", frame: .zero)
     }
 
     /// Whether this tool is asked about even when the user has switched asking off.
@@ -550,8 +629,15 @@ public enum ToolLayer {
     /// nothing, opens nothing, captures nothing and calls no model — it is one line on a card and one
     /// sentence out loud. The card at arming is the consent, and it still happens whenever asking is
     /// on.
+    ///
+    /// Closing a window and quitting an app are on it, for the same reason a Send button is: both throw
+    /// away work he cannot get back, and "don't ask" was never an instruction to do that on a model's
+    /// say-so. Bringing a window forward and minimising one are not — both are undone by one click and
+    /// neither loses a byte.
     public static func alwaysAsks(_ request: DoRequest) -> Bool {
         if case .runCommand = request { return true }
+        if case .closeWindow = request { return true }
+        if case .quitApp = request { return true }
         return false
     }
 
@@ -581,7 +667,8 @@ public enum ToolLayer {
     public static func effect(of request: DoRequest) -> Effect {
         switch request {
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .addRoutine, .removeRoutine,
-             .addReminder, .cancelReminder, .reveal, .runCommand:
+             .addReminder, .cancelReminder, .reveal, .runCommand,
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp:
             return .changesSystemState
         }
     }
@@ -634,6 +721,23 @@ public enum ToolLayer {
             }
             return succeeded ? "\(argv[0]) finished."
                              : "\(argv.joined(separator: " ")) did not run."
+        case .focusWindow(let app, let title):
+            let what = Self.windowCandidate(app, title).displayName
+            return succeeded ? "Brought \(what) to the front."
+                             : "Nothing came to the front for \(what)."
+        case .minimizeWindow(let app, let title):
+            let what = Self.windowCandidate(app, title).displayName
+            return succeeded ? "Minimised \(what)." : "\(what) refused to minimise."
+        case .closeWindow(let app, let title):
+            let what = Self.windowCandidate(app, title).displayName
+            return succeeded ? "Closed \(what)." : "\(what) did not close."
+        case .quitApp(let name):
+            // Names the likely cause rather than reporting a bare failure, which is the lesson the
+            // microphone retry taught: an app with an unsaved document answers a graceful termination
+            // by putting up its own sheet, and "Safari did not quit" with nothing after it sends him
+            // looking for a permission that was never the problem.
+            return succeeded ? "Quit \(name)."
+                             : "\(name) refused to quit — it is probably asking about something unsaved."
         }
     }
 }

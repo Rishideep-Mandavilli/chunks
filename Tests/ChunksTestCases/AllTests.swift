@@ -45,5 +45,6 @@ public func runAllChunksTests() -> Bool {
     HistoryGroupingTests.register()
     ReminderTests.register()
     NotebookStoreTests.register()
+    WindowActTests.register()
     return TestRunner.run()
 }

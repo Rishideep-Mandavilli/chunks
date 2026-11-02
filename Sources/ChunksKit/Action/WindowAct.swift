@@ -59,15 +59,34 @@ public struct WindowAct: Equatable, Sendable {
         public var isMinimized: Bool
         /// Whether this window is the one its app has focused, so "the front window" is answerable.
         public var isFocused: Bool
+        /// Whether Chunks can *do anything* to this window, which is not the same as seeing it.
+        ///
+        /// True when Accessibility published it — an element exists, so a verb has something to act on.
+        /// False when only the window server knows about it, which is what happens to every window of an
+        /// app that is not on the display he is looking at: measured 2026-11-03, Chrome's "GVPCE" tab is
+        /// listed by the window server and published as *no window at all* by Accessibility. Such a
+        /// window belongs in the listing — the feature exists to answer "what is open", not "what is
+        /// visible" — and must never be offered a card, because an Allow that leads to
+        /// `element(for:) == nil` is a question that cannot be honoured.
+        ///
+        /// This is the only spatial claim the listing makes. An earlier version also carried "is this
+        /// window on the active Space", worked out by matching rectangles between the two APIs, and it
+        /// was wrong twice on the first run: Finder's desktop — drawn on every Space — came back as
+        /// "another Space", and so did the window he was typing into while a different app was frontmost.
+        /// Reachability is read from the same API that would perform the act, so it cannot disagree with
+        /// the act. Where a window is, Chunks does not claim to know.
+        public var isReachable: Bool
 
         public init(pid: Int, appName: String, title: String, frame: CGRect,
-                    isMinimized: Bool = false, isFocused: Bool = false) {
+                    isMinimized: Bool = false, isFocused: Bool = false,
+                    isReachable: Bool = true) {
             self.pid = pid
             self.appName = appName
             self.title = title
             self.frame = frame
             self.isMinimized = isMinimized
             self.isFocused = isFocused
+            self.isReachable = isReachable
         }
 
         /// The name a card shows. A window with no title of its own is named by its app, because
@@ -86,6 +105,11 @@ public struct WindowAct: Equatable, Sendable {
         case none
         /// The app is not running at all, which is a different sentence from "it has no such window".
         case appNotRunning(String)
+        /// The window is there and Chunks can name it, but only the window server knows it — an app on
+        /// another Space publishes no Accessibility element, so there is nothing to raise or close. A
+        /// fourth answer, because "I can't see it" would be a lie and a card would be a promise Chunks
+        /// cannot keep.
+        case unreachable(Candidate)
     }
 
     /// Resolve a spoken window into one candidate, or say precisely why it could not.
@@ -99,23 +123,35 @@ public struct WindowAct: Equatable, Sendable {
                                in candidates: [Candidate]) -> Resolution {
         let owned = candidates.filter { AXTDriver.matchesAppName(label: app, owner: $0.appName) }
         guard !owned.isEmpty else { return .appNotRunning(app) }
+        // A window only the window server knows about has no element to act on, so it can be *named*
+        // but never raised, minimised or closed. Quitting is the exception: `terminate()` talks to the
+        // process, not to a window, so an off-Space app quits perfectly well and its window is only
+        // ever quoted to say what is about to close.
+        let reachable = owned.filter { $0.isReachable }
+        let offSpace = owned.filter { !$0.isReachable }
         guard verb != .quit else {
-            // Quitting needs an app, not a window. Prefer the focused one only to name it on the card;
-            // the act is the same whichever window is quoted.
-            return .one(owned.first(where: { $0.isFocused }) ?? owned[0])
+            let nameable = reachable.first(where: { $0.isFocused }) ?? reachable.first ?? owned.first
+            return nameable.map { .one($0) } ?? .none
         }
         guard let asked = title?.trimmingCharacters(in: .whitespacesAndNewlines), !asked.isEmpty
         else {
             // No title: only answerable when the app has one window to mean. Two is a refusal that
             // names them, because "close Safari" with three tabs open is three different losses.
-            if owned.count == 1 { return .one(owned[0]) }
-            return .ambiguous(owned)
+            if reachable.count == 1 { return .one(reachable[0]) }
+            if !reachable.isEmpty { return .ambiguous(reachable) }
+            if let one = offSpace.first { return .unreachable(one) }
+            return .none
         }
-        let scored = owned.compactMap { candidate -> (candidate: Candidate, score: Int)? in
+        let scored = reachable.compactMap { candidate -> (candidate: Candidate, score: Int)? in
             guard titleAnswers(asked, title: candidate.title) else { return nil }
             return (candidate, specificity(of: candidate.title, asked: asked))
         }
-        guard !scored.isEmpty else { return .none }
+        guard !scored.isEmpty else {
+            if let matched = offSpace.first(where: { titleAnswers(asked, title: $0.title) }) {
+                return .unreachable(matched)
+            }
+            return .none
+        }
         let best = scored.map(\.score).max() ?? 0
         // Sorted so a refusal lists the same windows in the same order every time it is asked. This is
         // a display order, not a preference: two candidates that reach here are equal by the words, and
@@ -213,6 +249,17 @@ public struct WindowAct: Equatable, Sendable {
             let extra = candidates.count > 4 ? ", and \(candidates.count - 4) more" : ""
             return "\(candidates.count) windows in \(app) answer that: \(names)\(extra). "
                 + "Say which one and Chunks will \(verb.phrase.lowercased()) it."
+        case .unreachable(let candidate):
+            // Names the window it found, says Chunks cannot reach it, and does not claim to know why.
+            // An earlier draft said "on another Space", which the first run proved twice wrong: it
+            // labelled Finder's desktop — drawn on every Space — and the window the user was typing
+            // into as being elsewhere. The alternative, offering the card anyway, is the lie this case
+            // exists to prevent: the act would resolve to no element and report a failure after he had
+            // already answered yes.
+            let what = candidate.title.isEmpty ? candidate.appName
+                : "\"\(candidate.title)\" in \(candidate.appName)"
+            return "Chunks can see \(what), but it is not a window Chunks can reach from here — it is "
+                + "on another Space, hidden, or minimised. Bring it into view and ask again."
         }
     }
 }

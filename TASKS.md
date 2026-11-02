@@ -83,6 +83,27 @@ roots) are now unit-tested and probeable instead of living where neither can rea
 question is **answered, not built**: the Pi executes and holds the job state, the notebook only serves
 the model.
 
+**Three more closed the same evening, all from his own screenshots** — which is how they were found:
+every one of them passed the gate and the unit suite while being wrong on his screen.
+- **`list_windows` under-reported the machine.** He has eight apps running and was told "you have two
+  windows open". `--probe-windows` agreed with the card, so it was not a bad summary: Accessibility
+  publishes an *empty* window list for every app that is not on the display he is looking at, and the
+  enumerator only asked Accessibility. The read is now a union with the window server, and 2 became 7
+  with both Chrome tabs distinguished. See `AGENTS.md` invariant 8.
+- **A reveal reported a success that had not happened.** `activateFileViewerSelecting` returns `Void`
+  and the next line said `return true`, so every file reveal ever attempted wrote
+  `tool: Showed … in Finder.` while nothing appeared. `revealLanded` now believes a Finder window whose
+  title names the folder — and refuses to count "some window appeared" as success, because a window for
+  the *wrong* folder is the same lie in a new costume.
+- **The listing claimed `0 left out` while omitting six apps.** `leftOut` only ever measured the byte
+  budget, never the enumeration. Fixed by making the enumeration complete; the counter's meaning is now
+  what its name says.
+
+**New from the same three screenshots, and it is a gap rather than a bug:** he asked what a *folder*
+holds and Chunks answered about the file inside it. There is no tool that lists a folder's contents —
+`FileAttachment` finds one file by name and `reveal` opens one folder in Finder, and nothing in between.
+Recorded as **3.17 What is in this folder**, with the one decision that has to come from him.
+
 **Tier 0 — dead promises.** 0.1 `<NOTE>` **closed twice over**: first by deleting the tag (2026-10-28),
 then properly, by building the tier that consumes it (3.3, 2026-11-02). 0.2, 0.3, 0.4, 0.5
 `caffeinate -di` — all done, all asserted by a `verify.sh` check that fails on a revert.
@@ -916,6 +937,50 @@ when he scoped this as a HeyClicky replica minus the multi-agent part. What is i
 their output through the same tools that read anything else. If he wants the delegation layer after
 all, that is an `AGENTS.md` amendment with the sellability argument re-litigated, not a task to pick up
 quietly.
+
+### 3.17 What is in this folder — the gap his screenshot showed
+
+Found 2026-11-03 while he was testing the release: he said *"open Ritesh.X in my documents folder or
+downloads folder"*, and Chunks answered **"Documents and Downloads folders hold Ritesh.docx, which you
+opened earlier with its student record and cleaning activity details."** Every part of that is true —
+`FileAttachment` had really attached the `.docx` (the log says `attach: …/Ritesh.docx as text (2383
+characters), score 10`) — and none of it answers the question, which was about a **place**, not a file.
+
+The capability map has a hole in the middle of it:
+
+| He asks | Today | Tool |
+|---|---|---|
+| "read Ritesh.docx" | finds it, reads it, answers | `FileAttachment` + `FileRead` |
+| "show me Ritesh.docx in Finder" | opens the parent, selects it | `[DO:reveal:…]` |
+| "open Ritesh.docx in TextEdit" | opens it in the app he named | `[DO:open_file_with:…]` |
+| **"what's in my Downloads folder"** | **no answer** — the model talks about the file instead | nothing |
+
+So the ask is a **folder listing as context**, which is a *read* in the same shape as
+`[DO:list_windows:all]`: nothing moves, no card, a labelled block staged into the next turn, framed as
+data and not instructions. `ReadRequest` already owns the roots and the credential deny-list, and
+`FileMention` already ranks names against his words, so the parts are here — what is missing is one
+entry point that returns *names and sizes and dates for one directory*, capped, with the count of what
+was left out.
+
+**The decision that is his, not mine.** A read sends its contents to the model; a *listing* sends only
+file names, and file names are the part that can be about other people and other work — a Downloads
+folder is a log of everything he has touched this month, and `RevealPolicy`'s roots are wide. Three
+options, and the difference is what leaves the machine:
+1. **Names only, inside the folders work lives in** (`~/Documents`, `~/Downloads`, `~/Desktop`,
+   `~/Projects`, `~/src`), capped at a few dozen entries, dotfiles excluded, and the credential
+   deny-list applied to the *folder* — so "what's in `~/.ssh`" is refused even though it is a name-only
+   question. This is what I would build.
+2. **Names plus what Chunks can already see** — the listing *and* the frontmost window, so "what's in
+   Downloads" answers about the Finder window he is looking at rather than the disk. Narrower, no new
+   data leaves.
+3. **Nothing** — and instead make the model say it cannot, rather than answering about the file. That
+   is the honest floor and it is a prompt change, not a tool.
+
+Acceptance either way: `--probe-list-folder '~/Downloads'` prints the entries the tool would hand the
+model, the cap, and the refusals, and writes nothing; a spoken *"what's in my downloads folder"* gets a
+count and the names rather than a paragraph about one document. And a listing that was cut says how many
+were left out, because a partial list described as a complete one is the failure this codebase has
+already been burned by twice.
 
 ## How to work with him
 

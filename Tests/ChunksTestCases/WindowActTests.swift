@@ -349,6 +349,7 @@ public enum WindowActTests {
                         .joined(separator: ",")
                 case .none: return "none"
                 case .appNotRunning(let name): return "not running \(name)"
+                case .unreachable(let found): return "unreachable \(found.appName)/\(found.title)"
                 }
             }
             let firstAnswer = WindowAct.resolve(verb: .close, app: "Mail", title: "Inbox", in: left)
@@ -360,6 +361,65 @@ public enum WindowActTests {
             } else {
                 expect(false, "two equal words at two places must not resolve to one")
             }
+        }
+
+        test("a window only the window server knows about is named, never offered a card") {
+            // Measured on his Mac 2026-11-03: Chrome was running with the tab "GVPCE" published by the
+            // window server and by *nothing* in Accessibility, and the old read answered "two windows
+            // open" about eight apps. The new one lists it — and a card whose Allow resolves to no
+            // element is a question that cannot be honoured, so the verb refuses instead.
+            let off = WindowAct.Candidate(pid: 30147, appName: "Google Chrome", title: "GVPCE",
+                                          frame: CGRect(x: 0, y: 122, width: 1710, height: 985),
+                                          isReachable: false)
+            let resolution = WindowAct.resolve(verb: .close, app: "Chrome", title: "GVPCE",
+                                               in: [off])
+            expectEqual(resolution, .unreachable(off),
+                        "the words matched, so the answer is that it is out of reach, not that it is "
+                            + "missing")
+            let sentence = WindowAct.refusal(verb: .close, app: "Chrome", title: "GVPCE",
+                                             resolution: resolution)
+            expect(sentence.contains("GVPCE"), "it names the window he asked for: \(sentence)")
+            expect(sentence.contains("reach"),
+                   "and says Chunks cannot act on it, rather than claiming to know where it is: "
+                        + sentence)
+            expect(!sentence.lowercased().contains("close"),
+                   "a refusal must not read as a question he could answer yes to: \(sentence)")
+        }
+
+        test("when both sources list the same window, the one Chunks can act on wins") {
+            let frame = CGRect(x: 0, y: 122, width: 1710, height: 985)
+            let off = WindowAct.Candidate(pid: 30147, appName: "Google Chrome", title: "GVPCE",
+                                          frame: frame, isReachable: false)
+            let on = WindowAct.Candidate(pid: 30147, appName: "Google Chrome", title: "GVPCE",
+                                         frame: frame, isReachable: true)
+            let resolution = WindowAct.resolve(verb: .close, app: "Chrome", title: "GVPCE",
+                                               in: [off, on])
+            expectEqual(resolution, .one(on),
+                        "the same window twice is not an ambiguity, and the reachable copy is the act")
+        }
+
+        test("an app with only out-of-reach windows still quits, because quitting needs no window") {
+            let off = WindowAct.Candidate(pid: 30147, appName: "Google Chrome", title: "GVPCE",
+                                          frame: CGRect(x: 0, y: 122, width: 1710, height: 985),
+                                          isReachable: false)
+            let resolution = WindowAct.resolve(verb: .quit, app: "Chrome", title: nil, in: [off])
+            expectEqual(resolution, .one(off),
+                        "terminate() talks to the process, so a window Chunks cannot reach is no "
+                            + "obstacle to quitting its app")
+            expectEqual(WindowAct.question(verb: .quit, candidate: off),
+                        "Quit Google Chrome? Anything unsaved in it is gone.",
+                        "and the card is the same always-asked question it has always been")
+        }
+
+        test("a listing says which windows are open but out of reach") {
+            let off = WindowAct.Candidate(pid: 30147, appName: "Google Chrome", title: "GVPCE",
+                                          frame: CGRect(x: 0, y: 122, width: 1710, height: 985),
+                                          isReachable: false)
+            let lines = OpenWindows.lines(for: "Google Chrome", windows: [off])
+            expect(lines.contains("out of Chunks' reach"),
+                   "the model has to know promising to close it would be a lie: \(lines)")
+            expect(!lines.contains("another Space"),
+                   "and the listing must not claim a position it cannot verify: \(lines)")
         }
     }
 }

@@ -45,13 +45,30 @@ enum WindowProbe {
         }
         for candidate in candidates.prefix(24) {
             let flags = [candidate.isFocused ? "focused" : nil,
-                         candidate.isMinimized ? "minimised" : nil].compactMap { $0 }
+                         candidate.isMinimized ? "minimised" : nil,
+                         candidate.isReachable ? nil : "out of reach"].compactMap { $0 }
             out("  \(pad(candidate.appName, 22)) \"\(candidate.title)\"  "
                 + "(\(Int(candidate.frame.origin.x)), \(Int(candidate.frame.origin.y)), "
                 + "\(Int(candidate.frame.width))x\(Int(candidate.frame.height)))  pid "
                 + "\(candidate.pid)\(flags.isEmpty ? "" : "  " + flags.joined(separator: ", "))")
         }
         if candidates.count > 24 { out("  …and \(candidates.count - 24) more") }
+        // The floor is asserted on the real machine because only the real machine publishes the things
+        // it exists to keep out. Measured 2026-11-03: Chrome hands Accessibility three "windows", two
+        // of them untitled strips at 1710x41 and 1710x81, and `close Chrome` refused with "3 windows
+        // answer that name" about one document. A strip is not a window a person means.
+        let strips = candidates.filter {
+            $0.frame.width < WindowDriver.minListedWidth || $0.frame.height < WindowDriver.minListedHeight
+        }
+        if !strips.isEmpty {
+            let sizes = strips.map { "\($0.appName) \(Int($0.frame.width))x\(Int($0.frame.height))" }
+            out("windows: FAIL — \(strips.count) strip(s) of window chrome were counted as windows "
+                + "(\(sizes.joined(separator: ", "))), which turns an honest refusal into a wrong one")
+            exit(1)
+        }
+        out("windows: every listed window is at least "
+            + "\(Int(WindowDriver.minListedWidth))x\(Int(WindowDriver.minListedHeight)) — "
+            + "no toolbar strip counted as a window")
 
         // The app to ask about: the one he named, or the frontmost one — the same choice a spoken
         // sentence makes when it says "this window".
@@ -92,6 +109,15 @@ enum WindowProbe {
                 out("  \(pad("[DO:\(Self.tagName(verb)):\(target)]", 34)) → REFUSED  no window answers")
             case .appNotRunning(let name):
                 out("  \(pad("[DO:\(Self.tagName(verb)):\(target)]", 34)) → REFUSED  \(name) is not running")
+            case .unreachable(let candidate):
+                let refusal = WindowAct.refusal(verb: verb, app: target, title: nil,
+                                                resolution: .unreachable(candidate))
+                out("  \(pad("[DO:\(Self.tagName(verb)):\(target)]", 34)) → REFUSED  "
+                    + "\"\(candidate.title)\" is out of reach")
+                if verb != .quit, refusal.isEmpty || !refusal.contains("reach") {
+                    failures.append("an unreachable window must be refused with why it cannot be "
+                        + "acted on, not with \"no such window\": \(refusal)")
+                }
             }
         }
 
@@ -111,6 +137,14 @@ enum WindowProbe {
                 failures.append("a visible window was not resolved by its own title")
             case .appNotRunning:
                 out("windows: \(named) is not running")
+            case .unreachable(let candidate):
+                out("windows: \"\(title)\" in \(named) is open but out of reach — named, and "
+                    + "refused rather than offered: "
+                    + WindowAct.refusal(verb: .close, app: named, title: title,
+                                         resolution: .unreachable(candidate)))
+                if candidate.isReachable {
+                    failures.append("an unreachable candidate claimed to be reachable")
+                }
             }
         }
 

@@ -104,7 +104,7 @@ public enum ToolRunner {
             return setSystemVolume(percent: percent)
 
         case .reveal(let path):
-            return revealInFinder(path: path)
+            return await revealInFinder(path: path)
 
         case .runCommand(let argv):
             // **This used to `return false` without running anything**, with a comment saying the
@@ -384,23 +384,93 @@ public enum ToolRunner {
         return "…" + String(flattened.suffix(limit))
     }
 
-    /// Show one thing in Finder: a folder is opened, anything else is selected inside its parent.    ///
+    /// Show one thing in Finder: a folder is opened, anything else is selected inside its parent.
+    ///
     /// The two routes are deliberately different APIs. `open` on a directory gives the window he
     /// asked for — the folder *is* the place; `activateFileViewerSelecting` on a file opens its
     /// parent with the file highlighted, which is what "show me that PDF in Finder" means. Handing
     /// a file to `open` instead would launch whatever owns it, which is a different promise from the
     /// one the card made.
-    static func revealInFinder(path: String) -> Bool {
+    ///
+    /// **And the answer is whether a window is on screen, not whether the request was made.** Measured
+    /// 2026-11-03 on his Mac: he said "locate Ritesh.docx and show it to me", the log wrote
+    /// `tool: Showed Ritesh.docx (in Downloads) in Finder.` — spoken, on the card, with a green tick —
+    /// and no Finder window came up until he asked again. The reason is that
+    /// `activateFileViewerSelecting` returns `Void`, and the line below it said `return true`. So this
+    /// now asks the screen the same question `pressLanded` asks after a press whose return code lied:
+    /// is there a Finder window on the folder this reveal was about?
+    static func revealInFinder(path: String) async -> Bool {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else {
             return false
         }
         let url = URL(fileURLWithPath: path)
         if isDirectory.boolValue {
-            return NSWorkspace.shared.open(url)
+            guard NSWorkspace.shared.open(url) else { return false }
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
         }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-        return true
+        return await Self.revealLanded(path: path, isDirectory: isDirectory.boolValue)
+    }
+
+    /// Finder's window titles, right now — the desktop included, because a reveal of a folder on the
+    /// desktop is a reveal that lands on it.
+    static func finderWindowTitles() -> [String] {
+        WindowDriver.candidates(appNamed: "Finder").map(\.title)
+    }
+
+    /// How long a reveal is given to put up a window, and how often to look.
+    ///
+    /// Finder opens a window asynchronously and normally answers in well under half a second, so the
+    /// poll is short and the wait is a ceiling rather than a cost. The ceiling is the same one the
+    /// press path uses for a launch, because the failure being caught is the same shape: the request
+    /// was accepted and the screen never changed.
+    static let revealWaitSeconds = 2.5
+    static let revealPollSeconds = 0.15
+
+    /// Whether the reveal actually showed him something.
+    ///
+    /// The rule is a name match, not a count. An earlier version also passed when Finder's window count
+    /// grew, and that is wrong in the direction that matters: told to show a file in Downloads, Finder
+    /// putting up a *Documents* window is a reveal that went somewhere else, and a card that said
+    /// "Showed" over it would be the same lie as the one this function was written to end. So the only
+    /// evidence accepted is a window titled with the folder the reveal is about — which also covers the
+    /// idempotent case, where Finder raises the window it already had and nothing new appears.
+    ///
+    /// Two names are tried because Finder titles a window with the *display* name, which is localised
+    /// while the path is not: `/Users/him/Documents` is "Documents" on an English account and something
+    /// else on a Hindi one, and a rule that only knew the path component would report a working reveal
+    /// as a failure.
+    static func revealLanded(path: String, isDirectory: Bool, now: [String]) -> Bool {
+        let folder = (path as NSString).deletingLastPathComponent
+        // A directory reveal opens that directory; a file reveal opens its parent with the file
+        // selected. Either way the window's title is a folder name, so that is the name to look for.
+        let directory = isDirectory ? path : folder
+        let names = Self.revealWindowNames(directory)
+        guard !names.isEmpty else { return false }
+        return now.contains { title in
+            names.contains { $0.caseInsensitiveCompare(title) == .orderedSame }
+        }
+    }
+
+    /// The names a Finder window may carry for one folder: the path component, and whatever the file
+    /// system says the folder is called on this machine.
+    static func revealWindowNames(_ directory: String) -> [String] {
+        guard !directory.isEmpty else { return [] }
+        let component = (directory as NSString).lastPathComponent
+        let display = FileManager.default.displayName(atPath: directory)
+        return Set([component, display]).filter { !$0.isEmpty }.sorted()
+    }
+
+    /// The polling half: ask the pure rule until it passes or the ceiling runs out.
+    static func revealLanded(path: String, isDirectory: Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(revealWaitSeconds)
+        while Date() < deadline {
+            if revealLanded(path: path, isDirectory: isDirectory,
+                            now: finderWindowTitles()) { return true }
+            try? await Task.sleep(nanoseconds: UInt64(revealPollSeconds * 1_000_000_000))
+        }
+        return false
     }
 
     static func setSystemVolume(percent: Int) -> Bool {

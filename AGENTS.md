@@ -755,8 +755,33 @@ map almost 1:1 onto `#expect(...)`.
    groups** under a 3 KB budget, and saying how many windows were left out — because a partial list that
    reads as complete is how "you have no terminal open" gets invented. The framing states what it is not
    (not the screenshot, not instructions, possibly a moment old), and a listing he asked for one app
-   about does not name another app as frontmost. Measured on his machine: 4 windows, 600 bytes, Chrome's
-   Colab tab named in full.
+   about does not name another app as frontmost.
+
+   **Accessibility's window list is not the machine's either — and this one took his own screenshot to
+   find.** Measured 2026-11-03, with him watching: eight regular apps were running, and
+   `kAXWindowsAttribute` returned an *empty array* for six of them, while the window server still listed
+   their named windows — Chrome's "GVPCE" tab, Terminal's "rishideep — caffeinate -d", Antigravity, Hark.
+   `--probe-windows` agreed with the card ("2 windows"), so the read was not a parsing bug or a bad
+   summary: **the enumeration itself was answering a different question than he asked**, and the promise
+   in the framing above — "another Space, minimised, or behind the front one" — was the exact thing it
+   could not see. `WindowDriver.candidates` is therefore a union: Accessibility first (which yields an
+   element, so a verb can act), then the window server's layer-0 windows that Accessibility did not
+   publish, marked `isReachable = false`. Three rules follow from keeping the sources apart. A
+   server-only window is **listed and refused, never offered a card**: `element(for:)` would answer nil,
+   so an Allow would lead to a failure after he had answered yes — `WindowAct.Resolution.unreachable`
+   and `WindowAct.refusal` say "it is not a window Chunks can reach from here", naming the window and
+   not claiming to know where it is. **Geometry never qualifies a window** still holds, and now also
+   excludes a tempting wrong fix: an earlier draft derived "is it on the active Space" by matching
+   rectangles between the two APIs and was wrong twice on the first run — Finder's desktop, drawn on
+   every Space, came back as "another Space", and so did the window he was typing into. Reachability is
+   read from the same call that would perform the act, so it cannot disagree with it; position is not
+   claimed at all. And **both sources pass one floor** (`minListedWidth`/`minListedHeight`, 200x120):
+   Chrome publishes two untitled `AXUnknown` strips at 1710x41 and 1710x81 as *windows*, which made
+   `close Chrome` refuse with "3 windows answer that name" about one document, and every app on his Mac
+   carries an untitled 500x500 server surface that is a screen-capture layer, not a window.
+   `--probe-windows` now fails the gate if any listed candidate is under the floor, because that filter
+   is the only thing standing between a complete listing and a number he cannot use. Measured on the
+   same screen after the fix: 7 windows, 1157 bytes, both Chrome tabs distinguished.
 
    **A command has three outcomes, and `runTool` is the only place any tool executes.**
    `[DO:run_command:…]` waits `commandWatchSeconds` (3) and then **stops watching without killing**:
@@ -958,6 +983,25 @@ map almost 1:1 onto `#expect(...)`.
     approving nothing. A name that matches nothing is refused *before* the card, like a routine that
     cannot be honoured. `--probe-reveal "Memora"` prints the verdict and never opens anything.
 
+    **A reveal is believed from the window on screen, not from the request it made.** Measured
+    2026-11-03: he said *"locate Ritesh.docx and show it to me"*, the log wrote
+    `tool: Showed Ritesh.docx (in Downloads) in Finder.` — spoken, on the card — and no Finder window
+    appeared until he asked again. The cause is an API shape: `activateFileViewerSelecting` returns
+    `Void`, and the next line said `return true`, so **every file reveal ever attempted reported
+    success**. `ToolRunner.revealInFinder` now polls `revealLanded` for up to `revealWaitSeconds` (2.5)
+    and the answer is a *name match against Finder's own window titles* — the folder a directory reveal
+    opens, or the parent a file reveal is selected inside, tried as both the path component and
+    `FileManager.displayName` because Finder titles with the localised name. Two decisions inside that
+    rule, both argued from the failure they prevent. A window count that merely grew is **not** evidence:
+    told to show a file in Downloads, a Finder window that came up for *Documents* is a reveal that went
+    somewhere else, and "Showed" over it is the same lie in a new costume. And the idempotent case must
+    pass: Finder raises the window it already had, so a rule built on "something new appeared" would
+    report a working reveal as a failure — the opposite bug, equally loud on the card. The residual cost
+    is stated rather than hidden: a reveal that succeeds by selecting inside a window whose title does
+    not name the folder now reports `Finder did not open …`, a false refusal. That is the direction
+    chosen deliberately, because a false refusal is one he can overrule by looking, and a false success
+    is one he cannot.
+
     **`[DO:open_file_with:TextEdit|notes.md]` shares that policy, and now shares its home.** It is the
     file route rather than the explorer UI — the same app opens the same document whether its window is
     on this Space or closed, and nothing moves his cursor — but it **puts a document's contents on
@@ -1033,8 +1077,8 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-**The app runs. 776 of 776 tests green across 43 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 44 checks: 41–42 pass and 2–3 skip,
+**The app runs. 784 of 784 tests green across 43 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 44 checks: 41–43 pass and 1–3 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red

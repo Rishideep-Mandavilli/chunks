@@ -1195,6 +1195,54 @@ public enum ActionTests {
             }
         }
 
+        // MARK: Whether a reveal actually showed him something
+
+        test("a reveal is believed from the window on screen, not from the request it made") {
+            // Measured 2026-11-03: `activateFileViewerSelecting` returns `Void`, so every file reveal
+            // ever attempted answered `true` and the card said "Showed Ritesh.docx (in Downloads) in
+            // Finder." while no window appeared — he had to ask again to get one. These cases are the
+            // difference between asking Finder and seeing Finder.
+            let file = "/Users/him/Downloads/Ritesh.docx"
+            expect(ToolRunner.revealLanded(path: file, isDirectory: false,
+                                           now: ["desktop", "Downloads"]),
+                   "a window naming the parent folder is the effect he was promised")
+            expect(!ToolRunner.revealLanded(path: file, isDirectory: false, now: ["desktop"]),
+                   "no window on that folder is NOT a success — this is the exact state the old code "
+                        + "reported as \"Showed\"")
+            expect(!ToolRunner.revealLanded(path: file, isDirectory: false,
+                                            now: ["desktop", "Documents"]),
+                   "a window that opened somewhere else is not the reveal he approved, even though "
+                        + "Finder definitely put up a window")
+            expect(ToolRunner.revealLanded(path: file, isDirectory: false, now: ["downloads"]),
+                   "Finder's title casing is not the path's, and a working reveal is not a failure")
+        }
+
+        test("a reveal that raises the window already on that folder still counts") {
+            // Finder does not open a second window for a folder it is already showing, so a rule built
+            // on "something new appeared" would call a working reveal a failure — the opposite bug, and
+            // just as loud on the card.
+            expect(ToolRunner.revealLanded(path: "/Users/him/Downloads/Ritesh.docx",
+                                           isDirectory: false, now: ["Downloads"]),
+                   "one window, right folder: Chunks is allowed to say it showed it")
+        }
+
+        test("a folder reveal is matched against the folder itself, not its parent") {
+            let folder = "/Users/him/Documents/Memora"
+            expect(ToolRunner.revealLanded(path: folder, isDirectory: true,
+                                           now: ["desktop", "Memora"]),
+                   "a directory opens its own window, titled with its own name")
+            expect(!ToolRunner.revealLanded(path: folder, isDirectory: true,
+                                            now: ["desktop", "Documents"]),
+                   "and its parent's window is not the answer")
+        }
+
+        test("an empty path is never believed, because there is no name to look for") {
+            expect(ToolRunner.revealWindowNames("").isEmpty,
+                   "no names means no evidence can ever match, which is the honest answer")
+            expect(!ToolRunner.revealLanded(path: "", isDirectory: true, now: ["Macintosh HD"]),
+                   "and a window of any kind must not make an empty reveal look like a success")
+        }
+
         test("a percent becomes the scalar CoreAudio takes, clamped") {
             expectEqual(ToolRunner.scalar(for: 40), 0.4)
             expectEqual(ToolRunner.scalar(for: 100), 1.0)

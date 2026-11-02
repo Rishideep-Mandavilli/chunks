@@ -29,7 +29,24 @@ public enum WindowDriver {
     /// reasons in this codebase: the window list stops listing the desktop the moment another app
     /// covers it, and an app that answers `AXWindows` with nothing at all (WhatsApp) still has a
     /// frontmost window worth naming.
+    ///
+    /// **But Accessibility alone was measured to be a lie about the question this feature exists to
+    /// answer.** Measured 2026-11-03 on his Mac, with Qoder covering the display: eight regular apps
+    /// were running, and `kAXWindowsAttribute` returned an *empty array* for six of them — including
+    /// Google Chrome, which the window server still listed with the named windows "GVPCE" and
+    /// "API keys | Google AI Studio". An app whose windows are all on another Space or minimised
+    /// publishes none, so a listing built only on Accessibility answered "you have two windows open"
+    /// to a man with eight apps and said `0 left out` while doing it. That is the exact failure
+    /// `list_windows` was written to prevent: the whole promise was "a window on another Space,
+    /// minimised, or behind the front one".
+    ///
+    /// So the read is a union, and the two sources are kept apart by `isReachable`. Accessibility
+    /// gives a window an *element*, which is what every verb needs; the window server gives a title
+    /// and a rectangle and nothing to act on. A window only the server knows about is therefore
+    /// listed honestly and refused specifically, never silently dropped and never offered a card whose
+    /// Allow would lead to nothing.
     public static func candidates(appNamed name: String? = nil) -> [WindowAct.Candidate] {
+        let server = serverWindows()
         var out: [WindowAct.Candidate] = []
         let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
         for app in apps {
@@ -37,21 +54,94 @@ public enum WindowDriver {
                 continue
             }
             guard out.count < maxWindowsTotal else { break }
+            let pid = Int(app.processIdentifier)
             let element = AXUIElementCreateApplication(app.processIdentifier)
             let focused = AXTDriver.copyAttribute(element, kAXFocusedWindowAttribute as String)
+            let appName = app.localizedName ?? ""
             var seen = 0
+            var fromAccessibility: [WindowAct.Candidate] = []
             for window in windows(of: element) {
                 guard seen < maxWindowsPerApp, out.count < maxWindowsTotal else { break }
                 seen += 1
-                out.append(WindowAct.Candidate(
-                    pid: Int(app.processIdentifier),
-                    appName: app.localizedName ?? "",
+                let frame = frame(of: window)
+                // The same floor as the server's own list, and for the same measured reason. Photographed
+                // 2026-11-03: Chrome publishes three "windows" through Accessibility, two of them
+                // `AXUnknown` at 1710x41 and 1710x81 with no title — its toolbar and tab strip. They made
+                // `close Chrome` refuse with "3 windows answer that name" about one document. A strip of
+                // chrome is not a window a person means, and counting one is how an honest refusal turns
+                // into a wrong one.
+                guard frame.width >= minListedWidth, frame.height >= minListedHeight else { continue }
+                let candidate = WindowAct.Candidate(
+                    pid: pid,
+                    appName: appName,
                     title: AXTDriver.stringAttribute(window, kAXTitleAttribute as String)
                         ?? AXTDriver.stringAttribute(window, kAXDescriptionAttribute as String) ?? "",
-                    frame: frame(of: window),
+                    frame: frame,
                     isMinimized: boolAttribute(window, kAXMinimizedAttribute as String),
-                    isFocused: focused != nil && CFEqual(focused as CFTypeRef, window as CFTypeRef)))
+                    isFocused: focused != nil && CFEqual(focused as CFTypeRef, window as CFTypeRef))
+                fromAccessibility.append(candidate)
+                out.append(candidate)
             }
+            for window in server where window.pid == pid {
+                guard out.count < maxWindowsTotal,
+                      window.frame.width >= minListedWidth, window.frame.height >= minListedHeight,
+                      // A window the server will not name is not a window a person means. Measured
+                      // 2026-11-03: every app on his Mac carries an untitled 500x500 surface at
+                      // (0, 607) — a screen-capture or sharing layer, not a document — and a listing of
+                      // those reads as "you have eighteen windows open" about six. Accessibility names
+                      // its own windows through `AXDescription` as well as `AXTitle`, so this only
+                      // trims the server's contribution.
+                      !window.title.isEmpty
+                else { continue }
+                // Same rectangle or same title, same window: the two sources agree often enough that
+                // listing both would show him "Chrome (4)" for two tabs.
+                if fromAccessibility.contains(where: { $0.frame == window.frame }) { continue }
+                if fromAccessibility.contains(where: { $0.title == window.title }) { continue }
+                out.append(WindowAct.Candidate(pid: pid, appName: appName, title: window.title,
+                                               frame: window.frame, isMinimized: false,
+                                               isFocused: false, isReachable: false))
+            }
+        }
+        return out
+    }
+
+    /// The smallest thing either source will be believed to have drawn.
+    ///
+    /// Measured on his Mac: the server lists layer-0 windows at `1710x34` and `64x64` with no title at
+    /// all — shadows, tooltips, the menu-bar strip. A listing of those is worse than no listing, because
+    /// "you have eleven windows" about eleven pieces of chrome is a number he cannot use.
+    public static let minListedWidth: CGFloat = 200
+    public static let minListedHeight: CGFloat = 120
+
+    /// One window the window server knows about.
+    struct ServerWindow {
+        let pid: Int
+        let title: String
+        let frame: CGRect
+    }
+
+    /// The window server's own list: layer-0 windows, titled or not, on any Space.
+    ///
+    /// Coordinates are **global display points, top-left origin** — the same space Accessibility
+    /// reports in, which is why a frame from here can be compared with a frame from there without a
+    /// conversion. Invariant 1 is the reason that sentence needs saying out loud: `CGWindowList` bounds
+    /// are *not* `NSWindow` frames and *not* device pixels, and the first code that moves a window from
+    /// here has to go through `CoordinateSpace` like everything else.
+    static func serverWindows() -> [ServerWindow] {
+        let all = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        var out: [ServerWindow] = []
+        for entry in all {
+            guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
+                  let pid = entry[kCGWindowOwnerPID as String] as? Int,
+                  let alpha = entry[kCGWindowAlpha as String] as? Double, alpha > 0,
+                  let bounds = entry[kCGWindowBounds as String] as? [String: Any],
+                  let x = bounds["X"] as? Double, let y = bounds["Y"] as? Double,
+                  let width = bounds["Width"] as? Double, let height = bounds["Height"] as? Double
+            else { continue }
+            out.append(ServerWindow(pid: pid,
+                                    title: (entry[kCGWindowName as String] as? String) ?? "",
+                                    frame: CGRect(x: x, y: y, width: width, height: height)))
         }
         return out
     }

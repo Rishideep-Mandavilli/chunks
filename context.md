@@ -2966,3 +2966,63 @@ moves with the live model: run nonce `OFW-GATE-15083` → **42 passed, 2 skipped
 `OFW-GATE2-13777` → **41 passed, 3 skipped**, the extra skip being `self-test`'s model round, where the
 request went out and the key's rate limit answered nothing. The new check `open a file: one card, and
 four refusals that each name their own reason` PASSED on both runs.
+
+## 2026-11-03 (late) — three bugs from his own screenshots, all of them "green tests, wrong on screen"
+
+He sent three screenshots after testing. Every one of them passed `verify.sh` and the unit suite and was
+still wrong on his Mac, which is the failure mode `AGENTS.md` was written around. None of the three was
+found by a check.
+
+**1. `list_windows` said "you have two windows open" to a man with eight apps.** I ran `--probe-windows`
+and it *agreed* with the card, so this was not the model summarising badly — the enumeration was the
+liar. Two independent reads of the same moment settled it: `kAXWindowsAttribute` returned an empty array
+for six of eight regular apps, while `CGWindowListCopyWindowInfo(.optionAll)` listed their named windows
+(Chrome's "GVPCE" and "API keys | Google AI Studio", Terminal's "rishideep — caffeinate -d", Antigravity,
+Hark). **An app that is not on the display you are looking at publishes no Accessibility windows at all.**
+The feature's whole promise was "another Space, minimised, or behind the front one", and the read could
+see none of those three.
+
+`WindowDriver.candidates` is now a union, with the two sources kept apart by `isReachable`. A
+server-only window is listed and *refused* — `WindowAct.Resolution.unreachable` — never offered a card,
+because `element(for:)` would answer nil and an Allow would become a failure after he had answered yes.
+Two filters came out of the same measurement, both of them the "plausible number" kind of bug: Chrome
+publishes two untitled `AXUnknown` strips (1710x41, 1710x81) as windows, which made `close Chrome`
+refuse with "3 windows answer that name" about one document, and every app carries an untitled 500x500
+server surface that is a capture layer. One floor for both sources, 200x120, asserted by the probe.
+
+**And my first fix was itself wrong.** I added an `isOnActiveSpace` flag worked out by matching
+rectangles between the two APIs, and the very next run showed it labelled Finder's desktop — drawn on
+every Space — and the window he was typing into as "on another Space". Deleted. Reachability is read
+from the same call that would perform the act, so it cannot disagree with the act; *where* a window is
+is not claimed anywhere. That is the second time this week a new flag was a new way to be wrong about
+his screen.
+
+**2. A reveal said "Showed Ritesh.docx (in Downloads) in Finder." and no window appeared.** The cause is
+an API shape I had never looked at: `activateFileViewerSelecting` returns `Void`, and the line under it
+said `return true`. **Every file reveal since the tool shipped reported success.** `revealLanded` now
+polls Finder's own window titles for up to 2.5s and accepts only a name match against the folder the
+reveal is about (path component *and* `FileManager.displayName`, because Finder titles locally). I first
+wrote "a new window appeared" as the rule and the test caught it: a window that came up for the wrong
+folder is the same lie in a new costume. The residual cost is a false *refusal* when Finder selects
+inside a differently-titled window — chosen deliberately, because a false refusal is one he can overrule
+by looking.
+
+**3. `0 left out` beside a list that left out six apps.** The counter only ever measured the byte
+budget, never the enumeration. Fixed by making the enumeration complete, so the name means the thing.
+
+**What his screenshots did NOT show, and I checked anyway:** in the first one the model said "I've
+already got ritesh.docx loaded from your downloads folder" — and the log says
+`attach: /Users/…/Ritesh.docx as text (2383 characters), score 10`. That claim was true. What was wrong
+is that he asked about a *folder* and there is no tool that lists one, so the model answered about the
+file instead. Recorded as **TASKS.md 3.17** with the one decision that is his: a name-only listing
+sends his directory structure to a cloud model, and file names are a log of everything he has touched.
+
+**A process note worth keeping.** Twice in this session `make-app.sh` failed and I nearly reported a
+measurement from the stale bundle as if it were the new one — the symptom was a fix that "did nothing".
+`&&` did its job (install never ran), but the probe still ran against `~/Applications` and printed a
+plausible answer. From now on: check `make-app` exits 0 before quoting anything the installed binary
+says.
+
+**Gate, measured:** 784/784 across 43 suites. `./scripts/verify.sh` exit 0 — **43 checks passed,
+1 skipped** (no Shortcuts window open), nonce `GATE-W-27503`, after `make-app.sh` + `install.sh`
+nonce `REBUILD6-926`. The window check now also fails if any listed candidate is under the size floor.

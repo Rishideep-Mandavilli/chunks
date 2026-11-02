@@ -74,6 +74,12 @@ public enum ToolRunner {
         case .quitApp(let name):
             return WindowDriver.quit(appNamed: name)
 
+        case .openFileWith(let app, let path):
+            // The policy already ran: the shell resolved the path against `RevealPolicy`'s roots and
+            // credential list before the card, exactly as a reveal does, because this puts the file's
+            // contents on his screen in an app of his choosing.
+            return await openFile(path, with: app)
+
         case .openApp(let name):
             guard let path = resolveApplicationPath(name: name, candidates: installedApplications())
             else {
@@ -171,6 +177,33 @@ public enum ToolRunner {
     // MARK: - Opening an app
 
     /// Paths of the `.app` bundles in `applicationDirectories`, one level deep.
+    /// Open one file in one named application, through `NSWorkspace` — the file route, not the
+    /// explorer panel.
+    ///
+    /// Chosen over driving an editor's UI because a click on a file row is a guess about a picture, and
+    /// this is a fact about the file system: the same app opens the same document whether its window is
+    /// on this Space, another one, or closed. It also never moves his cursor.
+    ///
+    /// A missing file or an unknown app answers `false`, which reaches him as "`Code` did not open
+    /// `notes.md`" — the two causes are different and he can see which one it was from the path on the
+    /// card, so folding them into one line loses nothing he can act on.
+    @MainActor
+    static func openFile(_ path: String, with app: String) async -> Bool {
+        guard FileManager.default.fileExists(atPath: path),
+              let appPath = resolveApplicationPath(name: app, candidates: installedApplications())
+        else { return false }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        do {
+            try await NSWorkspace.shared.open([URL(fileURLWithPath: path)],
+                                              withApplicationAt: URL(fileURLWithPath: appPath),
+                                              configuration: configuration)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     static func installedApplications() -> [String] {
         let finder = FileManager.default
         var paths: [String] = []

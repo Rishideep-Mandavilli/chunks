@@ -18,11 +18,12 @@ sees when it is missing, you do not understand the item yet.
 - **The tree is dirty against HEAD `ae7fd49`.** Do not run `git reset --hard`, `git checkout --`,
   `git stash`, or `git clean` — that work is one command from being gone. If you want a checkpoint,
   ask him; he commits when *he* has verified, not before.
-- **766/766 unit tests across 42 suites; 40 verify checks passed, 3 skipped** (2026-11-02, nonce
-  LW-GATE-1793642466). Two of the three skips are deliberate: the local-brain checks are kept aside behind
-  `CHUNKS_LOCAL_BRAIN=1`, because the offline tier stays as a product (4.3) while waking a 2B model on
-  every gate is not the same thing. The third is the standing Shortcuts-window skip; the Chrome-candidate
-  skip came back PASS this run, which is window geometry, not code.
+- **767/767 unit tests across 42 suites; 42 verify checks passed, 1 skipped** (2026-11-02, nonce
+  OFW-GATE-1793647917). The local-brain checks are back on by default at his request — the offline tier is
+  a product (4.3) and a check that is off by default is a check that rots — and both PASS: `--probe-local`
+  and `--probe-reply --local`. What stays fixed is the bug those probes had (they wrote the app's real
+  brain settings; now `BrainSettings.processOverride`, asserted by a contract check). The one skip is the
+  standing Shortcuts-window one; the Chrome-candidate check came back PASS, which is window geometry.
 - **`--probe-local` is a live-model check and it can go red for nobody's action.** Measured the same
   day: one gate run returned 37 passed / 1 FAILED on it, and the next direct run of the same binary
   passed all five of its turns. It grades what a local model answers in that second — an `[ACT:]` or
@@ -666,6 +667,16 @@ config.yml in VS Code and go to line 40" is a launch plus named steps; and **a f
 cursor. His call inside this: whether Chunks should prefer the file route when the editor is already
 open (it can make the editor dirty-versus-saved disagree with disk, which is the failure to design
 for) or drive the UI so the editor is the authority.
+
+**Update 2026-11-02, part of this is built and it moved the decision.** `[DO:open_file_with:Code|
+~/notes.md]` is in — `RevealPolicy`'s roots and credential list applied to the resolved path before the
+card, the card naming the file and its parent folder, `NSWorkspace` opening it, two matches a question
+rather than a coin toss. So the **file route is the one that works today**, and the editor UI route
+(command palette, go-to-line) is now the remainder rather than the foundation. Two gaps left honestly:
+there is no read-only probe for it yet (the verdict lives in `CompanionManager.resolvedOpenFileWith`,
+and a probe that re-implemented it would be a second opinion about his disk — it needs the resolver
+hoisted into ChunksKit first), and whether Chunks should prefer the file route when the editor is already
+open is still his call, because that can make the editor's saved-versus-unsaved state disagree with disk.
 
 Acceptance: `--probe-controls Code` lists what the app publishes, and a spoken "open the file I named
 in VS Code" lands on the right document — his screen for that one.

@@ -128,6 +128,19 @@ public enum DoRequest: Equatable, Sendable {
     /// invisible to it, and "which of my terminals is open" has no other answer.
     case listWindows(app: String?)
 
+    /// `[DO:open_file_with:Code|~/notes.md]` — put one file in front of him **in the app he named**.
+    ///
+    /// The file route, which is what "open this in VS Code" actually means: it is faster and far more
+    /// reliable than driving an explorer panel by pixel, and it is the door 3.10 needs before any
+    /// editor work is worth doing. It is not an edit — nothing here writes a byte; it asks the app to
+    /// open something, and the editing stays his.
+    ///
+    /// The path is checked against the **same** allow-list and credential deny-list a reveal uses
+    /// (`RevealPolicy`), because this puts the file's contents on his screen in an application that may
+    /// upload them, telemetry on or not. A bare name is looked up in his folders; two matches is a
+    /// question, never a coin toss.
+    case openFileWith(app: String, path: String)
+
     /// Whether this request only *reads* the machine, and so must never be offered as a question.
     ///
     /// One property rather than a list at each call site, because getting it wrong is asymmetric: a
@@ -265,6 +278,17 @@ public enum DoRequest: Equatable, Sendable {
             guard !filter.isEmpty, !filter.contains("/"), filter.count <= 60 else { return nil }
             return .listWindows(app: ["all", "everything", "*"].contains(filter.lowercased())
                 ? nil : filter)
+
+        // The file route: `App|path`, and the path may be a bare name he used, which is looked up in
+        // his folders the same way a reveal looks one up. Both halves are required, because a file with
+        // no app is a reveal and an app with no file is a launch — and both of those already exist.
+        case "open_file_with", "open_with", "open_file_in":
+            let parts = argument.components(separatedBy: "|")
+            guard parts.count == 2 else { return nil }
+            let app = parts[0].trimmingCharacters(in: .whitespaces)
+            let path = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !app.isEmpty, app.count <= 60, !path.isEmpty else { return nil }
+            return .openFileWith(app: app, path: path)
 
         default:
             return nil
@@ -583,7 +607,7 @@ public enum DoRequest: Equatable, Sendable {
     public var invalidatesTheScreen: Bool {
         switch self {
         case .openApp, .openURL, .runShortcut, .email, .reveal,
-             .focusWindow, .minimizeWindow, .closeWindow, .quitApp: return true
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith: return true
         case .setVolume, .addReminder, .cancelReminder, .addRoutine, .removeRoutine, .runCommand,
              .listWindows:
             return false
@@ -639,6 +663,10 @@ public enum ToolLayer {
             // line can name the request truthfully.
             return app == nil ? "List every window Chunks can see?"
                               : "List the windows in \(app!)?"
+        case .openFileWith(let app, let path):
+            // Names the folder as well as the file, for the reason a reveal does it: approving a
+            // location you cannot see is approving nothing.
+            return "Open \(revealLabel(path)) in \(app)?"
         }
     }
 
@@ -709,7 +737,7 @@ public enum ToolLayer {
             return .readsTheMachine
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .addRoutine, .removeRoutine,
              .addReminder, .cancelReminder, .reveal, .runCommand,
-             .focusWindow, .minimizeWindow, .closeWindow, .quitApp:
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith:
             return .changesSystemState
         }
     }
@@ -783,6 +811,12 @@ public enum ToolLayer {
             let scope = app ?? "every app"
             return succeeded ? "Listed the windows in \(scope)."
                              : "Chunks could see no windows in \(scope)."
+        case .openFileWith(let app, let path):
+            // Names the file, not the whole path: he read the path on the card, and what he needs back
+            // is whether it opened.
+            let name = (path as NSString).lastPathComponent
+            return succeeded ? "Opened \(name) in \(app)."
+                             : "\(app) did not open \(name)."
         }
     }
 }

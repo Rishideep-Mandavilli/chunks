@@ -299,15 +299,15 @@ else
   printf '        %s\n' "$(printf '%s' "$mic_out" | grep -vE '^\s*$' | tail -3 | tr '\n' '|')"
   fail=$((fail + 1)); failures+=("microphone opens")
 fi
-# The local brain, kept aside by default. The offline tier is a product (4.3: "no key, no cloud" is a
-# real tier, not a consolation), so its code stays; what stopped being free is running it on every
-# gate. Measured 2026-11-02: `--probe-local` answers on localhost:11434, allocates a 2B model, and
-# until that day wrote the app's real brain settings as a side effect. Opt in with
-# CHUNKS_LOCAL_BRAIN=1 when you are deliberately working on the local path.
-if [[ "${CHUNKS_LOCAL_BRAIN:-0}" == "1" ]] && curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+# The local brain check: if Ollama is running on localhost:11434, verify local discovery and Gemma 4.
+# Brought back on 2026-11-02 at his request — the offline tier is a product (4.3), and a check that is
+# off by default is a check that rots. What stays fixed is the bug this probe had: it used to choose a
+# model by writing the app's real settings, so one gate run left his stored brain on Ollama. Probes now
+# use `BrainSettings.processOverride`, and the contract check further down fails if that ever returns.
+if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
   check "local brain: Ollama discovery and Gemma 4 vision/text probe" "$BIN" --probe-local
 else
-  printf '  \033[33mSKIP\033[0m  local brain: kept aside — set CHUNKS_LOCAL_BRAIN=1 to run it\n'
+  printf '  \033[33mSKIP\033[0m  local brain: Ollama not running on localhost:11434\n'
   skip=$((skip + 1))
 fi
 
@@ -334,11 +334,10 @@ else
   fail=$((fail + 1)); failures+=("reply audit")
 fi
 # The live half of the same probe: the local model's own reply, tag by tag, with nothing pressed.
-# Opt-in for the same reason as `--probe-local` — it asks a model on this Mac to answer.
-if [[ "${CHUNKS_LOCAL_BRAIN:-0}" == "1" ]] && curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
   check "reply audit: the local model's real reply" "$BIN" --probe-reply --local
 else
-  printf '  \033[33mSKIP\033[0m  reply audit (live): kept aside — set CHUNKS_LOCAL_BRAIN=1 to run it\n'
+  printf '  \033[33mSKIP\033[0m  reply audit (live): Ollama not running on localhost:11434\n'
   skip=$((skip + 1))
 fi
 

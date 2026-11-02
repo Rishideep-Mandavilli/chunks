@@ -2894,3 +2894,32 @@ appears only when that app belongs in the listing.
 **Gate:** 766/766 unit tests across 42 suites (+4); `./scripts/verify.sh` → **40 checks passed, 3
 skipped, exit 0** — nonce `LW-GATE-1793642466`, after `make-app.sh` + `install.sh`. The windows check now
 asserts the listing's budget, its truncation line and its framing as well as the verbs' wording.
+
+## Opening a file in the app he names — 2026-11-02
+
+The file route from 3.10, built because it is what "open this in VS Code" actually needs:
+`[DO:open_file_with:Code|~/notes.md]` → `NSWorkspace` opens that file in that app. It is not an edit —
+nothing writes a byte, and there is still no write tool — and it is faster and more reliable than the
+UI route, because a click on an explorer row is a guess about a picture while this is a fact about the
+disk.
+
+The policy is the part worth stating: the path is checked against **`RevealPolicy`'s** allow-list and
+credential deny-list, on the resolved path, **before** the card is worded (`resolvedOpenFileWith`, beside
+`resolvedReveal`), and a bare name goes through the same folder lookup — so two files sharing a name is
+a question that lists them, never a coin toss. The reasoning is invariant 9's and 11's together: this
+puts a file's contents on his screen inside an application, which is more than a reveal does and less
+than a write, and it is closer to a read going to a model than to a press.
+
+Two decisions recorded as open, because they are his. There is no read-only probe for this verb yet: the
+verdict lives in `CompanionManager`, and a probe that reimplemented it would be a second authority over
+his disk — so the resolver has to be hoisted into ChunksKit before a `--probe-open` can exist. And
+whether Chunks should use the file route when the editor is already open is a real question, because
+opening from disk can make the editor's saved-versus-dirty state disagree with what is on disk.
+
+**Also this session, on his request:** the Gemma checks came back on by default (`--probe-local` and
+`--probe-reply --local`), and both PASS — what stays fixed is the bug they carried, choosing a model by
+writing the app's real settings, now `BrainSettings.processOverride` with a contract check that fails if
+any `*Probe.swift` touches `UserDefaults` again.
+
+**Gate:** 767/767 unit tests across 42 suites; `./scripts/verify.sh` → **42 checks passed, 1 skipped,
+exit 0** — nonce `OFW-GATE-1793647917`, after `make-app.sh` + `install.sh`.

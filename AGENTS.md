@@ -1011,9 +1011,9 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-**The app runs. 766 of 766 tests green across 42 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 40 checks passed /
-3 skipped.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
+**The app runs. 767 of 767 tests green across 42 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 42 checks passed /
+1 skipped.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
 suite. The same rule now applies to `--probe-protocol`: it measures the *prompt* against a live
 capture, and a run started while the Mac is at the login window would grade five questions about a
@@ -1044,7 +1044,7 @@ Done and tested:
 | Policy rules | `Action/PolicyGate.swift` | Secure fields / Keychain / password managers refused even with asking off; unknown metadata fails toward *asking* |
 | Consent state machine | `Action/ConsentGate.swift` | One outstanding question; double answers are inert; displacement counts as denial |
 | Accessibility press | `Action/AXTDriver.swift` | Window hit test (layer 0, desktop on request) → `AXUIElementCopyElementAtPosition` → walk to a pressable ancestor → `AXPress`/`AXPick`/`AXOpen` (icons are selected first); name search when the pixel misses, then Finder's desktop list when that misses, and an app that answers badly is believed only from a before/after snapshot of what is running and focused. Typing goes through `typeTarget`/`type`: editable-role hit test and name search, `AXManualAccessibility` for Chromium surfaces, focus read back and compared before the first character, unicode `CGEvent` keystrokes that never warp the pointer. Never moves the cursor |
-| Tool requests | `Action/DoRequest.swift` | `[DO:open_app:X]` / `[DO:open_url:host\|Chrome]` / `[DO:set_volume:N]` / `[DO:run_shortcut:X]` / `[DO:email:a@b]` / `[DO:routine_add:name\|cadence\|question]` / `[DO:routine_remove:name]` / `[DO:reveal:Memora]` / `[DO:run_command:caffeinate -di -t 3600]` / `[DO:focus_window:Safari\|Inbox]` / `[DO:minimize_window:…]` / `[DO:close_window:…]` / `[DO:quit_app:…]` / `[DO:list_windows:all]`, parsed only into effects that fit one sentence — and a routine whose whole card sentence runs past `maxQuestionCharacters` is refused at parse, not clipped on the card |
+| Tool requests | `Action/DoRequest.swift` | `[DO:open_app:X]` / `[DO:open_url:host\|Chrome]` / `[DO:set_volume:N]` / `[DO:run_shortcut:X]` / `[DO:email:a@b]` / `[DO:routine_add:name\|cadence\|question]` / `[DO:routine_remove:name]` / `[DO:reveal:Memora]` / `[DO:run_command:caffeinate -di -t 3600]` / `[DO:focus_window:Safari\|Inbox]` / `[DO:minimize_window:…]` / `[DO:close_window:…]` / `[DO:quit_app:…]` / `[DO:list_windows:all]` / `[DO:open_file_with:Code|~/notes.md]`, parsed only into effects that fit one sentence — and a routine whose whole card sentence runs past `maxQuestionCharacters` is refused at parse, not clipped on the card |
 | What is open | `Action/OpenWindows.swift` | The read half: window list → one labelled block for the next turn, grouped by app, whole groups only under a 3 KB budget, with the count of what was left out |
 | Which window he meant | `Action/WindowAct.swift`, `Action/WindowDriver.swift` | The pure half decides (a title answers when every distinctive word he said is in it, two equal answers are refused *with both names listed*, and nothing is ever chosen by where it sits); the driver enumerates windows through Accessibility and performs raise/minimise/close/quit without moving the cursor |
 | File read policy | `Action/ReadRequest.swift` | `[READ:~/path|question]`: allow-listed roots, a credential deny-list matched on the **resolved** path so a symlink into `~/.ssh` is refused, 24 KB cap sliced by file kind (tail for logs, head for code) |

@@ -1327,6 +1327,7 @@ final class CompanionManager: ObservableObject {
     - [DO:run_shortcut:Focus] runs an automation the user made, by the exact name he gave it in the Shortcuts app; never invent a name — if you have not seen it, say you don't know that shortcut. it runs the shortcut; it does not open the app and click a tile.
     - [DO:reveal:Memora] shows one thing in Finder — a folder opened, a file selected inside its parent. the argument is the name he used or a path you can see on his screen; Chunks looks the name up in his folders and tells him when two things share it, so never invent or guess a path. use it for "open that in finder", "where is that file", "show me the folder".
     - [DO:email:rick@studio.com] fills a new message and stops; it never sends — the words are his.
+    - [DO:open_file_with:Code|~/notes.md] opens one of his files **in the app he named** — the file route, not clicking an explorer panel. use it for "open this in VS Code", "open the invoice in Excel". the path is a real one you have seen (from a listing, a `[READ:]`, or the card) or a bare name he used; Chunks looks that up in his folders and tells him when two things share it, so never invent one. outside his folders or holding credentials is refused out loud. it opens the file, it does not change it — there is no write tool.
     - [DO:list_windows:all] or [DO:list_windows:Safari] asks what is open, and the list arrives on the next turn: every window with its title, which app owns it, which is focused and which is minimised. use it when his question is about windows the screenshot cannot show — another Space, minimised, or behind the front one — and never guess an answer about them: you cannot see them, so ask. it reads and changes nothing, so it needs no card; do not promise "closing that now" in the same reply.
     - [DO:focus_window:Safari|Inbox] brings one window forward: `App|window title`, and the title may be left off when the app has only one window to mean. [DO:minimize_window:Safari|Inbox] puts it in the Dock. [DO:close_window:Code|config.yml] closes it, and [DO:quit_app:Safari] quits the app — **those two are always confirmed with a card, even when he has switched asking off**, because both throw away unsaved work, so say "i'll ask you to allow it" for them and not for the others. Name a window the way its own title bar does; when two windows answer the same words Chunks refuses and lists both, so be specific rather than hopeful. None of these opens an app — that is [DO:open_app:…] — and none of them moves his cursor.
     - [DO:run_command:caffeinate -di -t 3600] runs one program with fixed arguments. there is no shell: no ; && | > or $(…) — a tag containing any is refused, so never write a second command inside the first. the program is a bare name found in /bin, /usr/bin, /usr/local/bin or /opt/homebrew/bin, never a path. for "keep this mac awake" the flags are `-d` (the display stays on), `-i` (no idle sleep) or both as `-di`; **`-u` is not one of them** — it asserts the user is active and holds nothing that stops a sleep, measured 2026-10-31 on the machine this runs on. destructive or privileged programs (rm, mv, dd, diskutil, sudo, defaults, security, codesign, chown, kill, shutdown) and anything that fetches or sends over a network (curl, wget, ssh, scp, rsync, brew, npm, pip) are refused outright — say what you would run and let him run it. **this tool is always confirmed with a card, even when he has switched asking off**, so say "i'll ask you to allow it" for this one and nothing else. prefer [DO:run_shortcut:…] for a habit he already automated.
@@ -2726,7 +2727,9 @@ final class CompanionManager: ObservableObject {
         // reason a press resolves its target first: the card has to name the window that will really be
         // closed, and two windows answering the same words are a refusal that lists them, not a guess
         // he has to approve.
-        guard let request = resolvedWindowAct(reminded) else { return }
+        guard let windowed = resolvedWindowAct(reminded) else { return }
+        // …and a file-to-open is resolved to a real path before the card names it.
+        guard let request = resolvedOpenFileWith(windowed) else { return }
         // A routine that cannot be honoured is refused *before* it is asked about. A card whose
         // Allow leads to "there is already one called that" makes the question a lie, and the rule
         // already set for a press the policy forbids applies here: refuse, do not ask.
@@ -2891,7 +2894,8 @@ final class CompanionManager: ObservableObject {
             }) else { return "There is no routine called \"\(title)\"." }
             return nil
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .reveal, .runCommand,
-             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .listWindows:
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .listWindows,
+             .openFileWith:
             // A command needs no pre-check: `commandArgv` has already refused the shell
             // metacharacters, the path-shaped program and the destructive names, so anything that
             // reaches this line is one program from a known folder with fixed arguments — and it is
@@ -2991,6 +2995,64 @@ final class CompanionManager: ObservableObject {
             hud.reportConfirm(why == "secret"
                 ? "That folder holds credentials, so Chunks will not put it on screen."
                 : "That path is outside the folders Chunks is allowed to open.")
+            return nil
+        }
+    }
+
+    /// Resolve `[DO:open_file_with:Code|notes.md]` to a real file before anything is asked about it.
+    ///
+    /// The same shape `resolvedReveal` has, and for the same reason: the card must name the file that
+    /// will really be opened, and a path that fails the policy is **refused before the card**, never
+    /// asked about — a question whose Allow leads to nothing makes the question a lie. The check is
+    /// `RevealPolicy`'s own allow-list and credential deny-list, applied to the resolved path, because
+    /// this action puts a file's contents on his screen inside an application he did not necessarily
+    /// choose to trust with them.
+    private func resolvedOpenFileWith(_ request: DoRequest) -> DoRequest? {
+        guard case .openFileWith(let app, let written) = request else { return request }
+        switch RevealPolicy.verdict(for: written, homeDirectory: NSHomeDirectory()) {
+        case .allowed(let path):
+            guard FileManager.default.fileExists(atPath: path) else {
+                Log.write("tool: open refused — nothing at \(path)")
+                hud.reportConfirm("There is no file at \(RevealPolicy.label(for: path)).")
+                return nil
+            }
+            return .openFileWith(app: app, path: path)
+        case .lookup(let name):
+            switch FinderReveal.resolve(name) {
+            case .found(let path):
+                return .openFileWith(app: app, path: path)
+            case .ambiguous(let paths):
+                let where_ = paths.prefix(3).map { path in
+                    "\((path as NSString).lastPathComponent) in "
+                        + "\((path as NSString).deletingLastPathComponent)"
+                }
+                Log.write("tool: open refused — \(paths.count) things called \"\(name)\"")
+                hud.reportConfirm("More than one thing is called \(name): "
+                    + where_.joined(separator: "; ") + ". Say which one.")
+                return nil
+            case .nothing:
+                Log.write("tool: open refused — nothing called \"\(name)\"")
+                hud.reportConfirm("Chunks found nothing called \(name) in your Documents, "
+                    + "Downloads or Desktop.")
+                return nil
+            case .refused(let why):
+                Log.write("tool: open refused — \(why)")
+                hud.reportConfirm(why == "secret"
+                    ? "That file holds credentials, so Chunks will not put it on screen."
+                    : "That path is outside the folders Chunks is allowed to open.")
+                return nil
+            }
+        case .secret:
+            Log.write("tool: open refused — secret")
+            hud.reportConfirm("That file holds credentials, so Chunks will not put it on screen.")
+            return nil
+        case .outside:
+            Log.write("tool: open refused — outside the allowed roots")
+            hud.reportConfirm("That path is outside the folders Chunks is allowed to open.")
+            return nil
+        case .unreadable:
+            Log.write("tool: open refused — not a path: \(written)")
+            hud.reportConfirm("That is not a path Chunks can open.")
             return nil
         }
     }

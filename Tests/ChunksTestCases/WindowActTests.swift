@@ -312,6 +312,27 @@ public enum WindowActTests {
                    + (onlySafari?.text ?? ""))
         }
 
+        test("opening a file in an app names the file, the folder and the app") {
+            expectEqual(DoRequest.parse("open_file_with:Code|~/notes.md"),
+                        .openFileWith(app: "Code", path: "~/notes.md"),
+                        "the file route is `App|path`")
+            expectEqual(DoRequest.parse("open_with:Code|~/notes.md"),
+                        .openFileWith(app: "Code", path: "~/notes.md"), "two spellings, one verb")
+            expect(DoRequest.parse("open_file_with:Code") == nil,
+                   "a file with no app is a launch, and an app with no file is a reveal — both exist, "
+                   + "so neither is smuggled in here")
+            expect(DoRequest.parse("open_file_with:|~/notes.md") == nil,
+                   "an empty app names nothing to open with")
+            let question = ToolLayer.question(for: .openFileWith(app: "Code", path: "~/notes.md"))
+            expect(question.contains("Code") && question.contains("notes.md"),
+                   "the card has to name what will be opened and in what — got: " + question)
+            expect(DoRequest.openFileWith(app: "Code", path: "~/notes.md").invalidatesTheScreen,
+                   "opening a file puts a window where a plan's pixels were measured, so a plan "
+                   + "behind it is held like any launch")
+            expect(!DoRequest.openFileWith(app: "Code", path: "~/notes.md").isContextRead,
+                   "it is an act, not a read: a window appears, so it takes a card")
+        }
+
         test("where a window sits never decides which one is chosen") {
             // `CandidateRanker`'s rule, restated for windows: geometry separates candidates the words
             // left level, it does not qualify one. A resolve that peeked at frames would answer

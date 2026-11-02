@@ -742,6 +742,21 @@ map almost 1:1 onto `#expect(...)`.
    elements. `--probe-windows` prints the enumeration, each verb's card sentence and the always-asked
    contract, and performs nothing.
 
+   **Reading what is open is not an act, and is not asked about.** `[DO:list_windows:all]` (or
+   `:Safari`) answers the question a screenshot cannot: a window on another Space, minimised, or behind
+   the front one is invisible to the picture, so "which of my terminals is open" was unanswerable and
+   got guessed. It is a **read**, so it travels the channel the file and notebook reads use — no card,
+   no `ConsentGate`, staged as a labelled block into the *next* turn, and never reported as an act:
+   a listing on the card beside "Pressed Send." would be two claims about the machine in one voice.
+   `DoRequest.isContextRead` is the one property that keeps it out of the act paths (it cannot lead a
+   plan, cannot be counted as a tool dropped behind one, and cannot be offered), and `OpenWindows` owns
+   the block: grouped by app with the frontmost first, charged with its own framing, cut at **whole app
+   groups** under a 3 KB budget, and saying how many windows were left out — because a partial list that
+   reads as complete is how "you have no terminal open" gets invented. The framing states what it is not
+   (not the screenshot, not instructions, possibly a moment old), and a listing he asked for one app
+   about does not name another app as frontmost. Measured on his machine: 4 windows, 600 bytes, Chrome's
+   Colab tab named in full.
+
    **A command has three outcomes, and `runTool` is the only place any tool executes.**
    `[DO:run_command:…]` waits `commandWatchSeconds` (3) and then **stops watching without killing**:
    the user approved the whole line, and `caffeinate -di -t 21600` is a six-hour sleep hold that is
@@ -996,7 +1011,7 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-**The app runs. 762 of 762 tests green across 42 suites (the count is the `.register()` calls in
+**The app runs. 766 of 766 tests green across 42 suites (the count is the `.register()` calls in
 `Tests/ChunksTestCases/AllTests.swift`), and the full gate is 40 checks passed /
 3 skipped.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
@@ -1029,7 +1044,8 @@ Done and tested:
 | Policy rules | `Action/PolicyGate.swift` | Secure fields / Keychain / password managers refused even with asking off; unknown metadata fails toward *asking* |
 | Consent state machine | `Action/ConsentGate.swift` | One outstanding question; double answers are inert; displacement counts as denial |
 | Accessibility press | `Action/AXTDriver.swift` | Window hit test (layer 0, desktop on request) → `AXUIElementCopyElementAtPosition` → walk to a pressable ancestor → `AXPress`/`AXPick`/`AXOpen` (icons are selected first); name search when the pixel misses, then Finder's desktop list when that misses, and an app that answers badly is believed only from a before/after snapshot of what is running and focused. Typing goes through `typeTarget`/`type`: editable-role hit test and name search, `AXManualAccessibility` for Chromium surfaces, focus read back and compared before the first character, unicode `CGEvent` keystrokes that never warp the pointer. Never moves the cursor |
-| Tool requests | `Action/DoRequest.swift` | `[DO:open_app:X]` / `[DO:open_url:host\|Chrome]` / `[DO:set_volume:N]` / `[DO:run_shortcut:X]` / `[DO:email:a@b]` / `[DO:routine_add:name\|cadence\|question]` / `[DO:routine_remove:name]` / `[DO:reveal:Memora]` / `[DO:run_command:caffeinate -di -t 3600]` / `[DO:focus_window:Safari\|Inbox]` / `[DO:minimize_window:…]` / `[DO:close_window:…]` / `[DO:quit_app:…]`, parsed only into effects that fit one sentence — and a routine whose whole card sentence runs past `maxQuestionCharacters` is refused at parse, not clipped on the card |
+| Tool requests | `Action/DoRequest.swift` | `[DO:open_app:X]` / `[DO:open_url:host\|Chrome]` / `[DO:set_volume:N]` / `[DO:run_shortcut:X]` / `[DO:email:a@b]` / `[DO:routine_add:name\|cadence\|question]` / `[DO:routine_remove:name]` / `[DO:reveal:Memora]` / `[DO:run_command:caffeinate -di -t 3600]` / `[DO:focus_window:Safari\|Inbox]` / `[DO:minimize_window:…]` / `[DO:close_window:…]` / `[DO:quit_app:…]` / `[DO:list_windows:all]`, parsed only into effects that fit one sentence — and a routine whose whole card sentence runs past `maxQuestionCharacters` is refused at parse, not clipped on the card |
+| What is open | `Action/OpenWindows.swift` | The read half: window list → one labelled block for the next turn, grouped by app, whole groups only under a 3 KB budget, with the count of what was left out |
 | Which window he meant | `Action/WindowAct.swift`, `Action/WindowDriver.swift` | The pure half decides (a title answers when every distinctive word he said is in it, two equal answers are refused *with both names listed*, and nothing is ever chosen by where it sits); the driver enumerates windows through Accessibility and performs raise/minimise/close/quit without moving the cursor |
 | File read policy | `Action/ReadRequest.swift` | `[READ:~/path|question]`: allow-listed roots, a credential deny-list matched on the **resolved** path so a symlink into `~/.ssh` is refused, 24 KB cap sliced by file kind (tail for logs, head for code) |
 | Read-input budget | `Action/ReadInputBudget.swift` | One 6,000-unit UTF-8-byte token upper bound for the whole attachment, charging the exact live frame — path, coverage warning and untrusted-data label included. PDFs enter as ranked whole pages in document order and an oversized best page is refused rather than clipped; text and office files enter as contiguous whole lines, with boundary fragments trimmed as bytes before decoding |

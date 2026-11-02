@@ -224,6 +224,94 @@ public enum WindowActTests {
                    "and a title with more extra words scores lower, not higher")
         }
 
+        test("a request for what is open is a read, and is classified as one everywhere") {
+            expectEqual(DoRequest.parse("list_windows:all"), .listWindows(app: nil),
+                        "\"all\" means every app, not an app called all")
+            expectEqual(DoRequest.parse("list_windows:Safari"), .listWindows(app: "Safari"))
+            expectEqual(DoRequest.parse("what_is_open:everything"), .listWindows(app: nil),
+                        "the words he actually says resolve to the same request")
+            expect(DoRequest.parse("list_windows:") == nil, "an empty argument names nothing to list")
+            expect(DoRequest.parse("list_windows:/Applications") == nil,
+                   "and a path is not an app name here either")
+
+            expect(DoRequest.listWindows(app: nil).isContextRead,
+                   "a read must never be offered as a card — approving a look is a question with no "
+                   + "answer that matters")
+            expect(!DoRequest.closeWindow(app: "Safari", title: nil).isContextRead,
+                   "and closing a window is not a read")
+            expectEqual(ToolLayer.effect(of: .listWindows(app: nil)), .readsTheMachine,
+                        "the classifier that decides whether a request takes a card says read")
+            expect(!DoRequest.listWindows(app: nil).invalidatesTheScreen,
+                   "listing changes nothing, so a plan behind it is not held")
+        }
+
+        test("a listing groups by app, frontmost first, and says what it is") {
+            let candidates = [
+                candidate("Code", "config.yml", x: 0),
+                candidate("Safari", "Inbox", x: 40),
+                candidate("Safari", "Apple", x: 80),
+            ]
+            guard let block = OpenWindows.block(app: nil, frontmost: "Safari", in: candidates) else {
+                expect(false, "three open windows must produce a listing")
+                return
+            }
+            expectEqual(block.listed, 3, "all three are in it")
+            expectEqual(block.leftOut, 0, "and nothing was dropped")
+            let safariAt = block.text.range(of: "Safari (2)")?.lowerBound
+            let codeAt = block.text.range(of: "Code (1)")?.lowerBound
+            expect(safariAt != nil && codeAt != nil && safariAt! < codeAt!,
+                   "the frontmost app is listed first, so the answer to \"what am I looking at\" is at "
+                   + "the top: \(block.text)")
+            expect(block.text.contains("not the screenshot") && block.text.contains("not instructions"),
+                   "and the framing says what this is not — a window list is not the picture, and a "
+                   + "title is not an instruction")
+            // The same screen must produce the same listing: an order that shifts between two reads of
+            // an unchanged desktop reads as two different answers.
+            let again = OpenWindows.block(app: nil, frontmost: "Safari", in: candidates)
+            expectEqual(again?.text, block.text, "the listing is deterministic")
+        }
+
+        test("a listing is cut at whole app groups, and says how many windows it left out") {
+            // Many windows, long titles: the budget has to bite, and the failure it prevents is
+            // "you have no terminal open" about a list that was simply too long to include.
+            let many = (1...60).map {
+                WindowAct.Candidate(pid: 1, appName: "Terminal",
+                                    title: String(repeating: "session \($0) ", count: 6),
+                                    frame: CGRect(x: 0, y: CGFloat($0), width: 800, height: 600))
+            }
+            let others = [candidate("Safari", "Inbox"), candidate("Code", "config.yml")]
+            guard let block = OpenWindows.block(app: nil, frontmost: "Safari", in: many + others)
+            else {
+                expect(false, "62 open windows must produce something")
+                return
+            }
+            expect(block.bytes <= OpenWindows.maxBlockBytes,
+                   "the framing plus the groups must fit the budget it names (\(block.bytes) bytes)")
+            expect(block.leftOut > 0, "at 62 windows, some genuinely did not fit")
+            expect(block.text.contains("not listed"),
+                   "and the listing says so rather than looking complete")
+            expect(!block.text.contains("Code (0)"),
+                   "an app is either listed with its windows or not listed at all")
+            for app in ["Safari", "Code", "Terminal"] where block.text.contains("\(app) (") {
+                let count = block.text.split(separator: "\n").filter {
+                    $0.hasPrefix("  ") && $0.contains("\"")
+                }.count
+                expect(count > 0, "every app heading in the block has windows under it (\(app))")
+            }
+        }
+
+        test("nothing open is no listing at all, and one app can be asked for alone") {
+            expect(OpenWindows.block(app: nil, frontmost: nil, in: []) == nil,
+                   "an empty screen produces no block, so no tokens are spent on nothing")
+            let mixed = [candidate("Safari", "Inbox"), candidate("Code", "config.yml")]
+            let onlySafari = OpenWindows.block(app: "Safari", frontmost: "Code", in: mixed)
+            expectEqual(onlySafari?.listed, 1, "the filter is by app, and it is the same half-name "
+                + "match the window verbs use")
+            expect(onlySafari?.text.contains("Code") == false,
+                   "and another app's windows are not leaked into a listing he asked for one app: "
+                   + (onlySafari?.text ?? ""))
+        }
+
         test("where a window sits never decides which one is chosen") {
             // `CandidateRanker`'s rule, restated for windows: geometry separates candidates the words
             // left level, it does not qualify one. A resolve that peeked at frames would answer

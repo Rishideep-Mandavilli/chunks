@@ -2864,3 +2864,33 @@ Three consequences, all written into `TASKS.md` rather than left in this chat:
    handoff), a new Linux client with its own voice path and no screen to point at, or a two-device
    product where the Mac owns the screen and the Pi owns the long jobs. The third is what the existing
    code supports today, and it is the one I'd build.
+
+## What is open, as a read rather than an act — 2026-11-02
+
+3.12 level 1, built next in the order he chose. `[DO:list_windows:all]` or `[DO:list_windows:Safari]`
+answers the question a screenshot cannot: a window on another Space, minimised, or behind the front one
+is invisible to the picture, so "which of my terminals is open" was unanswerable and got guessed.
+
+It is a **read**, and that classification is the design. It takes no card (approving a *look* is a
+question with no answer that matters), it is never reported as an act (a listing beside "Pressed Send."
+would be two claims about the machine in one voice), and `DoRequest.isContextRead` is the one property
+that keeps it out of every act path — it cannot lead a plan, cannot be counted as a tool dropped behind
+one, and cannot be offered. The answer rides into the *next* turn through the same channel the file read
+and the notebook search use.
+
+`OpenWindows` owns the block: grouped by app with the frontmost first, charged with its own framing, cut
+at **whole app groups** under 3 KB, and saying how many windows were left out — a partial list that reads
+as complete is how "you have no terminal open" gets invented. Live on his machine: 4 windows, 600 bytes,
+Chrome's Colab tab named in full, two of the four being Chrome's own titleless toolbar windows. That
+noise is honest but worth his eye: real AX windows, and whether they earn their bytes is a judgement, not
+a guess I should make for him.
+
+Two bugs the unit cases found before anything ran. The framing said "not *from* the screenshot" while the
+probe and the tests both look for "not the screenshot" — the wording and its assertion had drifted apart
+in the same commit that introduced them. And a listing he asked for one app about named *another* app as
+frontmost, which is the kind of confident extra fact a model answers from; the frontmost sentence now
+appears only when that app belongs in the listing.
+
+**Gate:** 766/766 unit tests across 42 suites (+4); `./scripts/verify.sh` → **40 checks passed, 3
+skipped, exit 0** — nonce `LW-GATE-1793642466`, after `make-app.sh` + `install.sh`. The windows check now
+asserts the listing's budget, its truncation line and its framing as well as the verbs' wording.

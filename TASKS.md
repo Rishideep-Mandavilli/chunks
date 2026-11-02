@@ -18,8 +18,8 @@ sees when it is missing, you do not understand the item yet.
 - **The tree is dirty against HEAD `ae7fd49`.** Do not run `git reset --hard`, `git checkout --`,
   `git stash`, or `git clean` — that work is one command from being gone. If you want a checkpoint,
   ask him; he commits when *he* has verified, not before.
-- **762/762 unit tests across 42 suites; 40 verify checks passed, 3 skipped** (2026-11-02, nonce
-  MK-W-1793638056). Two of the three skips are deliberate: the local-brain checks are kept aside behind
+- **766/766 unit tests across 42 suites; 40 verify checks passed, 3 skipped** (2026-11-02, nonce
+  LW-GATE-1793642466). Two of the three skips are deliberate: the local-brain checks are kept aside behind
   `CHUNKS_LOCAL_BRAIN=1`, because the offline tier stays as a product (4.3) while waking a 2B model on
   every gate is not the same thing. The third is the standing Shortcuts-window skip; the Chrome-candidate
   skip came back PASS this run, which is window geometry, not code.
@@ -682,9 +682,16 @@ worded. If he wants real PDF editing, that is a scope amendment, not a feature.
 
 ### 3.12 Browser work in three levels, and the third needs a decision
 
-- **Level 1 — what is open.** Which tabs and windows exist, which one is frontmost, and reading the
-  page title/URL into context. Today `CGWindowListCopyWindowInfo` and the AX tree already give most of
-  this; it is a tool (`[DO:browser_state:]`), not a new permission. In scope, small, no decision.
+- **Level 1 — what is open. DONE 2026-11-02.** `[DO:list_windows:all]` / `[DO:list_windows:Safari]`
+  stages a labelled block into the next turn: every window with its title, owner, frame, focused and
+  minimised flags, grouped by app with the frontmost first. It is a **read**, so it takes no card and is
+  never reported as an act (`DoRequest.isContextRead` keeps it out of the plan, the leading-tool and the
+  dropped-tool paths), and `OpenWindows` cuts the block at whole app groups under 3 KB, saying how many
+  windows were left out. Measured on his machine: 4 windows, 600 bytes, Chrome's Colab tab named in full.
+  Two of those four are Chrome's own titleless toolbar windows (`(no title) (0, 34, 1710x41)`), which are
+  real AX windows and honest noise — worth watching for whether they earn their bytes or should be
+  filtered, and that is his eye, not a guess. URL extraction is *not* here: reading the address bar is
+  level 2 work.
 - **Level 2 — the page by the accessibility tree.** Chrome's own AX tree is what 3.1's ranking walks:
   fill this field, press this button, read these words. It works today for *some* pages, fails where the
   app publishes nothing inside the read budget, and its ceiling is the `maxCandidateSearchElements`

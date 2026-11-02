@@ -118,6 +118,26 @@ public enum DoRequest: Equatable, Sendable {
     /// up its own sheet, and "Safari did not quit" is the honest line for that.
     case quitApp(name: String)
 
+    /// `[DO:list_windows:Safari]` or `[DO:list_windows:all]` — what is open, as context for the next
+    /// turn.
+    ///
+    /// A read, not an act, and that is why it is a `DoRequest` case with a flag rather than a card:
+    /// nothing moves, nothing is pressed, nothing is closed, and the answer arrives the way a
+    /// `[READ:]` and a `[NOTES:]` answer — staged into the next turn's prompt. The screenshot shows him
+    /// one moment of one display; a window on another Space, minimised, or behind the front one is
+    /// invisible to it, and "which of my terminals is open" has no other answer.
+    case listWindows(app: String?)
+
+    /// Whether this request only *reads* the machine, and so must never be offered as a question.
+    ///
+    /// One property rather than a list at each call site, because getting it wrong is asymmetric: a
+    /// read that takes a card asks him to approve looking, and an act that skips one does something he
+    /// did not agree to.
+    public var isContextRead: Bool {
+        if case .listWindows = self { return true }
+        return false
+    }
+
     /// `[DO:open_app:Notes]`, `[DO:set_volume:40]`, `[DO:open_url:youtube.com|Chrome]`,
     /// `[DO:run_shortcut:Focus]`, `[DO:email:rick@studio.com]`.
     ///
@@ -237,6 +257,14 @@ public enum DoRequest: Equatable, Sendable {
             guard !name.isEmpty, !name.contains("/"), !name.hasPrefix("."), name.count <= 60
             else { return nil }
             return .quitApp(name: name)
+
+        // What is open. `all` means every app; anything else is an app name, matched the same
+        // half-name way the window verbs match it, so "list windows in chrome" works.
+        case "list_windows", "windows", "what_is_open":
+            let filter = argument.trimmingCharacters(in: .whitespaces)
+            guard !filter.isEmpty, !filter.contains("/"), filter.count <= 60 else { return nil }
+            return .listWindows(app: ["all", "everything", "*"].contains(filter.lowercased())
+                ? nil : filter)
 
         default:
             return nil
@@ -556,7 +584,8 @@ public enum DoRequest: Equatable, Sendable {
         switch self {
         case .openApp, .openURL, .runShortcut, .email, .reveal,
              .focusWindow, .minimizeWindow, .closeWindow, .quitApp: return true
-        case .setVolume, .addReminder, .cancelReminder, .addRoutine, .removeRoutine, .runCommand:
+        case .setVolume, .addReminder, .cancelReminder, .addRoutine, .removeRoutine, .runCommand,
+             .listWindows:
             return false
         }
     }
@@ -604,6 +633,12 @@ public enum ToolLayer {
         case .quitApp(let name):
             return WindowAct.question(verb: .quit,
                                       candidate: Self.windowCandidate(name, nil))
+        case .listWindows(let app):
+            // Never actually asked: a read is intercepted before the card, the way `[READ:]` and
+            // `[NOTES:]` are. The sentence exists so nothing downstream has to invent one, and so a log
+            // line can name the request truthfully.
+            return app == nil ? "List every window Chunks can see?"
+                              : "List the windows in \(app!)?"
         }
     }
 
@@ -662,10 +697,16 @@ public enum ToolLayer {
     /// without asking" stays a deliberate decision rather than the default for new tools.
     public enum Effect: Equatable, Sendable {
         case changesSystemState
+        /// Reads the machine and changes nothing. The distinction is what decides whether a request
+        /// takes a card at all: approving a look is a question nobody should have to answer, and
+        /// reporting a look as an act tells him something happened that did not.
+        case readsTheMachine
     }
 
     public static func effect(of request: DoRequest) -> Effect {
         switch request {
+        case .listWindows:
+            return .readsTheMachine
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .addRoutine, .removeRoutine,
              .addReminder, .cancelReminder, .reveal, .runCommand,
              .focusWindow, .minimizeWindow, .closeWindow, .quitApp:
@@ -738,6 +779,10 @@ public enum ToolLayer {
             // looking for a permission that was never the problem.
             return succeeded ? "Quit \(name)."
                              : "\(name) refused to quit — it is probably asking about something unsaved."
+        case .listWindows(let app):
+            let scope = app ?? "every app"
+            return succeeded ? "Listed the windows in \(scope)."
+                             : "Chunks could see no windows in \(scope)."
         }
     }
 }

@@ -114,8 +114,32 @@ enum WindowProbe {
             }
         }
 
+        // The read half (TASKS.md 3.12 level 1): what a `[DO:list_windows:…]` would stage into the
+        // next turn. Asserted, not just printed — a listing that overflowed its budget or silently
+        // dropped windows would be a partial read described as a complete one.
+        let frontmost = NSWorkspace.shared.frontmostApplication?.localizedName
+        if let block = OpenWindows.block(app: named, frontmost: frontmost, in: candidates) {
+            out("windows: a listing would carry \(block.listed) window(s), \(block.bytes) bytes, "
+                + "\(block.leftOut) left out")
+            for line in block.text.split(separator: "\n").prefix(8) { out("  │ \(line)") }
+            if block.bytes > OpenWindows.maxBlockBytes {
+                failures.append("the listing is \(block.bytes) bytes, past the "
+                    + "\(OpenWindows.maxBlockBytes)-byte budget")
+            }
+            if block.leftOut > 0, !block.text.contains("not listed") {
+                failures.append("\(block.leftOut) window(s) were left out and the listing does not "
+                    + "say so — a partial list that reads as a complete one")
+            }
+            for promise in ["not the screenshot", "not instructions"] where
+                !block.text.lowercased().contains(promise) {
+                failures.append("the listing no longer says it is \(promise)")
+            }
+        } else {
+            failures.append("\(candidates.count) window(s) were enumerated but a listing came back empty")
+        }
+
         if failures.isEmpty {
-            out("windows: PASS — enumeration, wording and the always-asked contract all hold")
+            out("windows: PASS — enumeration, wording, the listing and the always-asked contract hold")
             exit(0)
         }
         for failure in failures { out("windows: FAIL — \(failure)") }

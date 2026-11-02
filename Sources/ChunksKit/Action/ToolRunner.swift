@@ -56,6 +56,12 @@ public enum ToolRunner {
             // "the routine was not added" instead of nothing at all.
             return false
 
+        case .listWindows:
+            // A read, not an act: the shell intercepts it before any card or executor, stages the
+            // listing for the next turn, and nothing here runs. False rather than a trap, so a routing
+            // mistake reads as "Chunks could see no windows" instead of crashing mid-turn.
+            return false
+
         // The window verbs. Resolution already happened in the shell — a window is found against the
         // live tree *before* the card asks, the same order a press uses — so what arrives here names
         // the window that will really be acted on, and this only performs the verb.

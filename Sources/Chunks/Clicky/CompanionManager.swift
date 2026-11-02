@@ -1327,6 +1327,7 @@ final class CompanionManager: ObservableObject {
     - [DO:run_shortcut:Focus] runs an automation the user made, by the exact name he gave it in the Shortcuts app; never invent a name — if you have not seen it, say you don't know that shortcut. it runs the shortcut; it does not open the app and click a tile.
     - [DO:reveal:Memora] shows one thing in Finder — a folder opened, a file selected inside its parent. the argument is the name he used or a path you can see on his screen; Chunks looks the name up in his folders and tells him when two things share it, so never invent or guess a path. use it for "open that in finder", "where is that file", "show me the folder".
     - [DO:email:rick@studio.com] fills a new message and stops; it never sends — the words are his.
+    - [DO:list_windows:all] or [DO:list_windows:Safari] asks what is open, and the list arrives on the next turn: every window with its title, which app owns it, which is focused and which is minimised. use it when his question is about windows the screenshot cannot show — another Space, minimised, or behind the front one — and never guess an answer about them: you cannot see them, so ask. it reads and changes nothing, so it needs no card; do not promise "closing that now" in the same reply.
     - [DO:focus_window:Safari|Inbox] brings one window forward: `App|window title`, and the title may be left off when the app has only one window to mean. [DO:minimize_window:Safari|Inbox] puts it in the Dock. [DO:close_window:Code|config.yml] closes it, and [DO:quit_app:Safari] quits the app — **those two are always confirmed with a card, even when he has switched asking off**, because both throw away unsaved work, so say "i'll ask you to allow it" for them and not for the others. Name a window the way its own title bar does; when two windows answer the same words Chunks refuses and lists both, so be specific rather than hopeful. None of these opens an app — that is [DO:open_app:…] — and none of them moves his cursor.
     - [DO:run_command:caffeinate -di -t 3600] runs one program with fixed arguments. there is no shell: no ; && | > or $(…) — a tag containing any is refused, so never write a second command inside the first. the program is a bare name found in /bin, /usr/bin, /usr/local/bin or /opt/homebrew/bin, never a path. for "keep this mac awake" the flags are `-d` (the display stays on), `-i` (no idle sleep) or both as `-di`; **`-u` is not one of them** — it asserts the user is active and holds nothing that stops a sleep, measured 2026-10-31 on the machine this runs on. destructive or privileged programs (rm, mv, dd, diskutil, sudo, defaults, security, codesign, chown, kill, shutdown) and anything that fetches or sends over a network (curl, wget, ssh, scp, rsync, brew, npm, pip) are refused outright — say what you would run and let him run it. **this tool is always confirmed with a card, even when he has switched asking off**, so say "i'll ask you to allow it" for this one and nothing else. prefer [DO:run_shortcut:…] for a habit he already automated.
     - [DO:routine_add:Morning glance|daily at 08:00|brief me on what is open] adds a question Chunks asks itself on a schedule: name | cadence | question. the cadence is exactly `daily at HH:mm`, `weekdays at HH:mm`, `every 30 minutes` or `every 2 hours`; a time he did not say is a notification at the wrong hour, so ask. name and question share about 100 characters — he reads the whole card before agreeing. when it fires it goes through the same turn as a spoken question: it sees the screen then, and still has to ask before it presses. [DO:routine_remove:Morning glance] takes one out by the exact name in the list below; not in the list: say so and offer to add the one he means.
@@ -1461,6 +1462,12 @@ final class CompanionManager: ObservableObject {
         if let notes = consumePendingNotebookBlock() {
             prompt += "\n\n" + notes
         }
+        // What was open when he asked, if the model asked for it. Its own framing says the list is not
+        // the screenshot and may be a moment old, which is the difference between an answer about his
+        // machine and a confident guess about it.
+        if let windows = consumePendingOpenWindowsBlock() {
+            prompt += "\n\n" + windows
+        }
         return prompt
     }
 
@@ -1546,6 +1553,17 @@ final class CompanionManager: ObservableObject {
         return pendingNotebookBlock
     }
 
+    /// What was open when the model asked, staged for the turn after the one that asked.
+    ///
+    /// Consumed once, like the other two: a list of windows from a minute ago is a confident answer
+    /// about a screen that has already changed, which is the failure `ScreenCarry` exists to avoid.
+    private var pendingOpenWindowsBlock: String?
+
+    private func consumePendingOpenWindowsBlock() -> String? {
+        defer { pendingOpenWindowsBlock = nil }
+        return pendingOpenWindowsBlock
+    }
+
     /// Pictures the user asked about, riding in the request as extra images — a photo, or the pages
     /// of a PDF that turned out to be a scan.
     private var pendingFileImages: [(data: Data, label: String)] = []
@@ -1606,6 +1624,8 @@ final class CompanionManager: ObservableObject {
         // Same rule as the file: a note block he stopped asking about must not ride into his next
         // question and have the landlord answer something about a spreadsheet.
         pendingNotebookBlock = nil
+        // And a list of windows from a minute ago must not arrive as if it described the screen now.
+        pendingOpenWindowsBlock = nil
         let ranked = FileMention.rank(FileAttachment.candidates(for: question),
                                       question: question)
         guard FileMention.shouldAttach(top: ranked.first, runnerUp: ranked.dropFirst().first,
@@ -1782,6 +1802,28 @@ final class CompanionManager: ObservableObject {
         Log.write("notebook: \(found.included.count) note(s) for \"\(query)\" — \(found.bytes) bytes, "
             + "\(found.skipped) left out of the block")
         return "answer what he asked from \(found.included.count) note(s) Chunks read from his notebook"
+    }
+
+    /// Answer a `[DO:list_windows:…]` from the window list and stage it for the next turn.
+    ///
+    /// No card and no consent, because nothing happens to his machine: it is the same shape as the
+    /// file read and the notebook search, and asking him to approve *looking* would be a question with
+    /// no answer that matters. What it must not do is report itself as an act — a listing on the card
+    /// beside "Pressed Send." would be two different claims about the machine wearing one voice.
+    private func offerWindowListing(app: String?) -> String? {
+        let candidates = WindowDriver.candidates(appNamed: app)
+        let frontmost = NSWorkspace.shared.frontmostApplication?.localizedName
+        guard let block = OpenWindows.block(app: app, frontmost: frontmost, in: candidates) else {
+            let scope = app ?? "any app"
+            Log.write("windows: nothing open in \(scope) to list")
+            hud.reportConfirm("Chunks could see no windows in \(scope).")
+            return nil
+        }
+        pendingOpenWindowsBlock = block.text
+        Log.write("windows: listed \(block.listed) window(s) for the next turn — \(block.bytes) bytes, "
+            + "\(block.leftOut) left out")
+        let scope = app ?? "every app"
+        return "answer what he asked about the windows open in \(scope), from the list Chunks just read"
     }
 
     /// Open the notebook file in Finder, from the panel's own row.
@@ -2849,7 +2891,7 @@ final class CompanionManager: ObservableObject {
             }) else { return "There is no routine called \"\(title)\"." }
             return nil
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .reveal, .runCommand,
-             .focusWindow, .minimizeWindow, .closeWindow, .quitApp:
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .listWindows:
             // A command needs no pre-check: `commandArgv` has already refused the shell
             // metacharacters, the path-shaped program and the destructive names, so anything that
             // reaches this line is one program from a known folder with fixed arguments — and it is
@@ -2971,12 +3013,15 @@ final class CompanionManager: ObservableObject {
     private func logUnaskedProposals(streamer: AnswerStreamer, ranSteps: Int,
                                      toolConsumed: Bool = false, heldSteps: Int = 0) {
         let acts = streamer.actionRequests.count
+        // A context read is answered, not dropped, so counting it here would log a lie: "1 tool
+        // request behind a plan" about a listing that is already staged for the next turn.
+        let actionableTools = streamer.toolRequests.filter { !$0.isContextRead }
         var dropped: [String] = []
         if acts > ranSteps + heldSteps {
             dropped.append("\(acts - ranSteps - heldSteps) step(s) past the plan limit")
         }
-        if acts > 0, !streamer.toolRequests.isEmpty, !toolConsumed {
-            dropped.append("\(streamer.toolRequests.count) tool request(s) behind a plan")
+        if acts > 0, !actionableTools.isEmpty, !toolConsumed {
+            dropped.append("\(actionableTools.count) tool request(s) behind a plan")
         }
         if streamer.unreadActTags > 0 {
             dropped.append("\(streamer.unreadActTags) act tag(s) Chunks could not read — "
@@ -3540,12 +3585,17 @@ final class CompanionManager: ObservableObject {
                     proposed = streamer.actionRequests
                 }
                 let program = Array(proposed.prefix(ActionRequest.maxProgramSteps))
-                let leadTool = ActionRequest.leadingTool(for: proposed, tools: streamer.toolRequests)
+                // A context read is not a tool in the plan sense: `[DO:list_windows:…]` changes nothing,
+                // so it must not become the launch that leads a plan, must not be counted as a tool
+                // dropped behind one, and must not be offered as a card. Filtering it once here is what
+                // keeps those three from drifting apart later.
+                let tools = streamer.toolRequests.filter { !$0.isContextRead }
+                let leadTool = ActionRequest.leadingTool(for: proposed, tools: tools)
                 // A combination `leadingTool` will not carry is not a plan to abandon. A launch in
                 // front of pixels runs, and the pixels are re-aimed on the next look at the screen —
                 // see `offerLaunchAndHold` for what this replaced.
                 let launchFirst = leadTool == nil
-                    ? PlanAfterLaunch.decide(steps: program, tools: streamer.toolRequests)
+                    ? PlanAfterLaunch.decide(steps: program, tools: tools)
                     : nil
                 if !proposed.isEmpty {
                     if let launch = launchFirst {
@@ -3574,7 +3624,7 @@ final class CompanionManager: ObservableObject {
                         logUnaskedProposals(streamer: streamer, ranSteps: program.count,
                                             toolConsumed: leadTool != nil)
                     }
-                } else if let tool = streamer.toolRequests.first {
+                } else if let tool = tools.first {
                     offerTool(tool)
                     // With asking off the tool has already run, so the plan moved. With asking on
                     // there is a card outstanding, and the next look would be asking about a
@@ -3585,6 +3635,16 @@ final class CompanionManager: ObservableObject {
                     // Nothing to run and no tool to ask about — the one case where an unread act
                     // tag would otherwise leave no trace at all.
                     logUnaskedProposals(streamer: streamer, ranSteps: 0)
+                }
+                // A read of what is open is handled apart from the acts, because it can be the whole
+                // reply: "which of my terminals is open" has no act in it at all, and a listing that
+                // only ran when something else was proposed would be a feature that works by accident.
+                var windowsStaged = false
+                var windowsContinuation: String?
+                if case .listWindows(let app)? = streamer.toolRequests.first(where: { $0.isContextRead }) {
+                    let staged = offerWindowListing(app: app)
+                    windowsStaged = staged != nil
+                    windowsContinuation = staged
                 }
                 // A file read spends the round it asked for: the model cannot have had the
                 // contents when it wrote this answer, so the answer comes in the next turn with
@@ -3611,11 +3671,11 @@ final class CompanionManager: ObservableObject {
                     // and the read spent a turn that produced no answer — which is exactly what it
                     // looked like from the outside.
                     fileReadStaged = staged != nil
-                    pendingContinuation = heldAfterLaunch ?? notebookContinuation ?? staged
-                        ?? streamer.continuation
+                    pendingContinuation = heldAfterLaunch ?? notebookContinuation
+                        ?? windowsContinuation ?? staged ?? streamer.continuation
                 } else {
                     pendingContinuation = heldAfterLaunch ?? notebookContinuation
-                        ?? streamer.continuation
+                        ?? windowsContinuation ?? streamer.continuation
                 }
                 // A held plan wins the one continuation slot because it names the steps that
                 // verifiably did not run; the model's own sentence about what comes next may have
@@ -3628,8 +3688,8 @@ final class CompanionManager: ObservableObject {
                 // instead of an apology, because a cold launch can beat even the recapture delay.
                 // Outside a plan it does not: a model that merely mentions `<CONTINUE>` after an
                 // ordinary answer must not spend four model calls on itself.
-                planStepCompleted = planAdvanced || fileReadStaged || notebookStaged || (planRound > 0
-                    && proposed.isEmpty && streamer.toolRequests.isEmpty)
+                planStepCompleted = planAdvanced || fileReadStaged || notebookStaged
+                    || windowsStaged || (planRound > 0 && proposed.isEmpty && tools.isEmpty)
 
                 // Save this exchange to conversation history, with the tags resolved rather
                 // than stripped: what the user was *shown* is what the next turn has to

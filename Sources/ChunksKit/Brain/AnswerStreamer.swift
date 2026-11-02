@@ -63,6 +63,18 @@ public final class AnswerStreamer {
     /// halves of one message above one Copy button would copy whichever the user did not read.
     public private(set) var draftText: String?
 
+    /// `<NOTE>` lines, in the order they arrived — an array because the notebook is uncapped and two
+    /// notes in one reply are two things worth keeping, not one correcting the other.
+    ///
+    /// Collected, never applied here: `NotebookStore.add` is the only door to the file, and it runs
+    /// `SecretSweeper` before anything is written. A streamer that wrote the note itself would be the
+    /// model writing his disk, which is invariant 2's rule for memory and applies exactly as hard here.
+    public private(set) var noteLines: [String] = []
+
+    /// What the model asked the notebook about, last one winning, for the same reason `fileRead` is
+    /// one slot: the answer arrives next turn, and two searches would be two continuations.
+    public private(set) var noteSearch: String?
+
     /// What to say aloud *for this turn*, resolved.
     ///
     /// `<SUMMARY>` wins when present: it is the model's deliberate completion line, whereas
@@ -187,6 +199,12 @@ public final class AnswerStreamer {
                 // Last one wins, for the same reason as the chips: a repeated block is the model
                 // correcting itself, not a plan that grew.
                 continuation = line
+
+            case .note(let line):
+                noteLines.append(line)
+
+            case .noteSearch(let query):
+                noteSearch = query
             }
         }
     }
@@ -201,18 +219,30 @@ public final class AnswerStreamer {
     public static let retractionLine =
         "Chunks found nothing on the screen to do that to, so it did nothing."
 
-    /// Replace a spoken promise of a scroll or a type with an honest line when the reply queued
-    /// no such request — and say whether it happened, so the caller can put it in the log.
+    /// …and the one for a note he asked to be kept, which cannot use the line above: nothing on the
+    /// screen was looked for, and a notebook failure described as a screen failure sends him hunting
+    /// for a window that was never the problem.
+    public static let noteRetractionLine =
+        "Chunks was told to keep that and nothing was written — say it again and I'll note it."
+
+    /// Replace a spoken promise of a scroll, a type or a kept note with an honest line when the reply
+    /// queued no such request — and say whether it happened, so the caller can put it in the log.
     ///
     /// Photographed on the five-turn probe under every thinking budget: "scrolling down to find
     /// the invoice now" arrived with no `[SCROLL:]` behind it, because the screen held nothing
-    /// scrollable and the model answered the request it imagined rather than the one on screen.
-    /// A promise the user can hear and the machine will never keep is the failure this codebase
-    /// keeps meeting — with no card to answer, an act nobody reports is indistinguishable from an
-    /// act that did not happen, and worse when it never could. The patterns are deliberately
-    /// promise-shaped rather than word-shaped, so an *explanation* of scrolling is not retracted;
-    /// what is left is the small risk that a first-person promise phrased unusually becomes this
-    /// line. That line is never wrong about the one thing it claims: there was no request.
+    /// scrollable and the model answered the request it imagined rather than the one on screen. A
+    /// promise the user can hear and the machine will never keep is the failure this codebase keeps
+    /// meeting — with no card to answer, an act nobody reports is indistinguishable from an act that
+    /// did not happen, and worse when it never could. The patterns are deliberately promise-shaped
+    /// rather than word-shaped, so an *explanation* of scrolling is not retracted; what is left is the
+    /// small risk that a first-person promise phrased unusually becomes this line. That line is never
+    /// wrong about the one thing it claims: there was no request.
+    ///
+    /// The note class was added on 2026-11-02, measured the day the tier shipped: asked to "note that
+    /// the landlord is Sharma", the local model said *"i have noted that the landlord is sharma"* and
+    /// emitted no `<NOTE>` at all. A memory promise is worse than an act promise — an act that did not
+    /// happen changes nothing, and a note that did not happen means the thing is not there when he
+    /// looks for it a month from now, with nothing on record saying it ever was.
     public func retractUnbackedPromises() -> Bool {
         let text = (speech + " " + (summary ?? "")).lowercased()
         // Promise-shaped, not word-shaped: "scrolling down a list is how you read old chats" is
@@ -225,12 +255,21 @@ public final class AnswerStreamer {
         let promisedType = ["i'll type", "i'm typing", "typing that", "typing the",
                             "typing it", "typed that", "typed it"]
             .contains { text.contains($0) }
+        let promisedNote = ["i have noted", "i've noted", "i noted", "note that i have",
+                            "i'll note", "i'm noting", "i have kept", "i've kept that",
+                            "saved to your notebook", "in your notebook now"]
+            .contains { text.contains($0) }
         let hasScroll = actionRequests.contains { if case .scroll = $0.verb { return true }
                                                    return false }
         let hasType = actionRequests.contains { if case .type = $0.verb { return true }
                                                 return false }
-        guard (promisedScroll && !hasScroll) || (promisedType && !hasType) else { return false }
-        speech = Self.retractionLine
+        let hasNote = !noteLines.isEmpty
+        let needsScreen = (promisedScroll && !hasScroll) || (promisedType && !hasType)
+        let needsNote = promisedNote && !hasNote
+        guard needsScreen || needsNote else { return false }
+        // Two different failures, two different sentences. The screen line is only right when the
+        // screen is what was missing.
+        speech = needsNote && !needsScreen ? Self.noteRetractionLine : Self.retractionLine
         summary = nil
         return true
     }

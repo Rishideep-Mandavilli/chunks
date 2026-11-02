@@ -115,8 +115,12 @@ public enum GeminiTransportTests {
             expect(sys.contains("<SAY>"), "must define the speech tag")
             expect(sys.contains("[POINT:"), "must define the point tag")
             expect(sys.contains("<MEMORY>"), "must define the memory tag")
-            expect(!sys.contains("<NOTE>"), "must not teach a tag with no consumer")
-            expect(!sys.lowercased().contains("notebook"), "must not promise an unbuilt Notebook")
+            // The notebook tags are deliberately NOT asserted here, and the reason is a fact about
+            // this codebase found while writing 3.3: the companion turn sends the *caller's*
+            // `systemPrompt` (`CompanionManager.companionVoiceResponseSystemPrompt`), and this
+            // builder's default instruction is a different string. `BrainGateway` passes the caller's
+            // prompt to every transport, so teaching lives there and `verify.sh` pins it against
+            // `--probe-prompt`, which prints what the model is actually told.
             expect(sys.contains("top-left"), "must define the point origin")
             expect(sys.lowercased().contains("never guess at screen contents"),
                    "must forbid hallucinating screen contents")

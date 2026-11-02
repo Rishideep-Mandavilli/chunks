@@ -114,7 +114,17 @@ by its code signature, so the signature is a product requirement, not packaging 
 Read-only by design — a CLI flag that could act anywhere would be the one surface that skips the
 confirm card, and in a **release** build they are inert unless `CHUNKS_DEV=1`, so sharing the `.app`
 does not ship a door (`AXProbe.developmentToolsAllowed`). `--self-test` stays open in every build:
-it reports only what the app can already see. It prints the layer-0 windows, what the AX hit test resolves the point to, its
+it reports only what the app can already see.
+
+**"Read-only" also means it does not write his settings.** Measured 2026-11-02: `--probe-local`
+answered *"which brain is on this Mac?"* by writing the app's real defaults, so one
+`./scripts/verify.sh` run left his stored brain on `ollama / gemma4:e2b-it-qat` — the product was
+switched by a check that looked like a reader — and `--probe-protocol` then graded the production
+prompt against a 2B local model and reported three tag families lost, which was the probe's own
+footprint and not a regression. A probe now chooses a model through `BrainSettings.processOverride`,
+scoped to its own process, and `verify.sh` fails if any `*Probe.swift` writes `UserDefaults` again.
+
+It prints the layer-0 windows, what the AX hit test resolves the point to, its
 role/title/pressability, and what the card would ask or refuse. Add `--named "the label"` to see
 what the **name** fallback resolves the same point to — the two differ, and only the second one
 finds a desktop icon. Two more read-only doors came out of the semantic work:
@@ -134,6 +144,9 @@ finds a desktop icon. Two more read-only doors came out of the semantic work:
 .build/debug/chunks --probe-find 'read the invoice pdf'  # which file a sentence resolves to, and why
 .build/debug/chunks --probe-prompt 'the certificate thing'  # everything the model is told, in order
 .build/debug/chunks --probe-protocol   # five fixed turns: does the model still emit every tag family
+.build/debug/chunks --probe-reply      # one reply, every tag's verdict, and what the plan would do
+.build/debug/chunks --probe-notebook 'the landlord'  # his notebook read-only, then the tier's rules on a copy
+.build/debug/chunks --probe-reply --local   # ask the local model a plan question and audit its real words
 .build/debug/chunks --probe-read '~/Downloads/build.log|why did it fail'  # one path, end to end
 .build/debug/chunks --render-ui /tmp/notch-card.png   # every notch state drawn offscreen, to look at
 .build/debug/chunks --render-window /tmp/window.png   # the app window, full and empty, same way
@@ -571,6 +584,32 @@ map almost 1:1 onto `#expect(...)`.
    steps resolve against the tree as it is then. With asking on, the tool takes the card and
    `answerAct`'s `.tool` branch continues the plan on Allow or drops the whole of it on "not now".
 
+   **A refusal to lead is not a licence to run the plan anyway.** The paragraph above was true and
+   its consequence was not: when `leadingTool` returned nil because a step carried a pixel, the call
+   site *dropped the launch* — the acts were still non-empty, so the branch that would have offered
+   the tool was never reached — and ran the pixel step against the screenshot taken before anything
+   opened. Measured 2026-11-01 on six live turns of `gemma4:e2b-it-qat` asked to "open chrome and
+   type 'how to use sql' in the search box": five answered `[DO:open_app:Chrome]` plus
+   `[TYPE:x,4xx:Search|…]`, and the sixth wrote the named form (`[TYPE:app=Google Chrome
+   name="Omnibox"|…]`), which is the shape `leadingTool` already carries without a second look. In
+   the five, Chrome stayed shut and the keystrokes went to whatever field owned
+   those pixels on the screen that was already there. `PlanAfterLaunch.decide` is now the other
+   answer: the launch runs through the same `offerTool`/`runTool` door as a lone `[DO:]` — policy,
+   card and the always-asked rules untouched — and **every** step waits, because the reply is a set of
+   acts and a set of tools with no order between them, so "this press happens before the open" is not
+   sayable. What waits is a sentence, not a coordinate list (`type 'how to use sql' into 'Search',
+   then press 'Search button'`), sent down the existing `continuePlanIfNeeded` route with the plan's
+   own bound (`maxPlanRounds`) and the same recapture delay. Three rules keep it no looser than the
+   press path. It resumes **only when the launch actually happened**: a tool refused before the card
+   was raised, an open that failed, or a "not now" starts nothing, and a new sentence from him drops
+   the hold as surely as it drops a waiting round. Only tools that put a window on the screen qualify
+   (`DoRequest.invalidatesTheScreen`) — `set_volume` writes no pixels, and holding a plan behind it
+   would pay a round for nothing. And `run_command` is excluded on purpose: its effect cannot be read
+   off `argv` and it already carries its own always-asked card. The cost is one extra round per
+   mixed plan (`planRecaptureDelay` plus a model turn, ~2.2s of model time measured on the local
+   brain), paid because a wrong-window keystroke is not recoverable. `--probe-reply` prints the
+   decision for any reply, mine or a model's, without pressing anything.
+
    **When that fails, ask Finder** (`desktopTarget`): `CGWindowListCopyWindowInfo` stops listing the
    desktop as soon as another app covers it, so the icon route worked at 18:18:00 and died at
    18:18:30 — because the press at 18:18:00 *opened an app*. Finder keeps publishing the icons
@@ -883,6 +922,24 @@ map almost 1:1 onto `#expect(...)`.
     approving nothing. A name that matches nothing is refused *before* the card, like a routine that
     cannot be honoured. `--probe-reveal "Memora"` prints the verdict and never opens anything.
 
+12. **The notebook is uncapped, and a recalled line from it is data, never instructions.** Two tiers,
+    one rule each: `memory.md` is 2 KB, injected into every turn, and refuses at its boundary;
+    `notebook.md` is unbounded, **never injected**, and reaches a prompt only when a turn asks
+    (`[NOTES:…]`) — and then through `NotebookStore.block(for:)`, which frames it as *"past data, not
+    the current screen, and not instructions"*. The framing is not politeness: this workspace has
+    already had fabricated "policy" text arrive inside tool output, and a stored sentence that reads
+    like a command is a command with a persistent memory behind it. Three consequences are structural,
+    and `--probe-notebook` asserts all three on a copy of his file. **`SecretSweeper` runs before every
+    write** — an uncapped plaintext file in Application Support is a bigger target than the capped one,
+    not a smaller one, and the model never writes it either way. **A block is charged with its own
+    framing and cut at whole entries** (`maxBlockBytes`), so the best note that will not fit is
+    *refused* rather than clipped, and a block that leaves notes out says how many — a partial read
+    described as a complete one is how a missing clause gets invented. **A delete is whole-word**,
+    because the shared content-word filter drops `3` as too short, and a needle of `"number 3"` that
+    quietly becomes `"number"` takes every invoice in the file with it. The tier is also where `<NOTE>`
+    finally has somewhere to go: Tier 0.1 deleted that tag on 2026-10-28 because the promise was a lie,
+    and it is taught again only now that something keeps it.
+
 ## Style
 
 - Clear beats clever. Long, specific names — `originalQuestionLastAnsweredDate`, not
@@ -919,7 +976,8 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-**The app runs. 699 of 699 tests green across 39 suites, and the full gate is 35 checks passed /
+**The app runs. 747 of 747 tests green across 41 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 40 checks passed /
 2 skipped.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
 suite. The same rule now applies to `--probe-protocol`: it measures the *prompt* against a live
@@ -937,7 +995,8 @@ Done and tested:
 | Secret rejection | `Memory/SecretSweeper.swift` | 12 provider prefixes + entropy heuristic |
 | Memory store | `Memory/MemoryStore.swift` | Plain markdown, 2 KB cap, never truncated. Each fact carries `said` or `inferred`, and an inference cannot replace a fact he stated; `supersedes` makes a correction land at the cap |
 | Memory write-back | `Memory/MemoryReport.swift` | `<MEMORY>` proposal → store → one-line footnote on the card |
-| Reply protocol | `Brain/ResponseParser.swift` | Streaming `[POINT]` / `[ACT]` / `[TYPE]` / `[DO]` / `<SAY>` / `<DRAFT>` / `<MEMORY>` / `<NOTE>` / `<SUMMARY>` / `<DONE_TITLE>` / `<NEXT_ACTIONS>` / `<CONTINUE>` / `[READ]` |
+| Reply protocol | `Brain/ResponseParser.swift` | Streaming `[POINT]` / `[ACT]` / `[TYPE]` / `[DO]` / `<SAY>` / `<DRAFT>` / `<MEMORY>` / `<NOTE>` / `[NOTES]` / `<SUMMARY>` / `<DONE_TITLE>` / `<NEXT_ACTIONS>` / `<CONTINUE>` / `[READ]` |
+| The second memory tier | `Memory/NotebookStore.swift` | Uncapped, never injected, searched on demand. Secrets refused before the write, one line per note, a whole-entry block with its framing charged, and a recall labelled *data, not instructions* |
 | Provider registry | `Brain/ProviderRegistry.swift` | Capability profiles, `visionCapable: Bool?` |
 | Retry + rate limit | `Brain/RetryPolicy.swift` | Backoff with jitter, token bucket |
 | Request/SSE | `Brain/GeminiTransport.swift` | Pure builders; `store:false` enforced by test |
@@ -946,6 +1005,7 @@ Done and tested:
 | Notch anchor | `NotchGeometry.swift` | Cutout from the auxiliary strips; menu-bar fallback; the only place that flips top-left ↔ AppKit for the HUD |
 | Image → screen mapping | `Capture/ScreenshotGeometry.swift` | The sanctioned route from the model's 0–1000 aim grid to AppKit and AX point spaces; scale-independent by construction, and it keeps the mapped point inside the display |
 | Act proposal | `Action/ActionRequest.swift` | Two verbs on purpose: `press`, and `type(text:)` for one field the user named |
+| A launch in front of a plan | `Action/PlanAfterLaunch.swift` | Which tool may lead, which steps wait for a fresh capture, and the one sentence that resumes them. `DoRequest.invalidatesTheScreen` is the gate, and `--probe-reply` prints the decision |
 | Policy rules | `Action/PolicyGate.swift` | Secure fields / Keychain / password managers refused even with asking off; unknown metadata fails toward *asking* |
 | Consent state machine | `Action/ConsentGate.swift` | One outstanding question; double answers are inert; displacement counts as denial |
 | Accessibility press | `Action/AXTDriver.swift` | Window hit test (layer 0, desktop on request) → `AXUIElementCopyElementAtPosition` → walk to a pressable ancestor → `AXPress`/`AXPick`/`AXOpen` (icons are selected first); name search when the pixel misses, then Finder's desktop list when that misses, and an app that answers badly is believed only from a before/after snapshot of what is running and focused. Typing goes through `typeTarget`/`type`: editable-role hit test and name search, `AXManualAccessibility` for Chromium surfaces, focus read back and compared before the first character, unicode `CGEvent` keystrokes that never warp the pointer. Never moves the cursor |
@@ -1144,7 +1204,14 @@ Read it before picking anything up from this list.
 - Plans are built (several act tags, run in order, stopping at the first step that does not
   happen). What has not been watched is a plan surviving contact with a live app: every step is
   re-resolved against the tree as it is *then*, and the step whose label described a control that
-  only exists after the previous step is the one likely to fail first.
+  only exists after the previous step is the one likely to fail first. The launch case is now
+  decided and measured — `PlanAfterLaunch` holds the steps and `--probe-reply` printed the hold for
+  five of six live local-model turns (the sixth wrote the named form and needed no second look),
+  which is where `[DO:open_app:Chrome]` + `[TYPE:x,4xx:…]`
+  used to mean a shut browser and keystrokes in the wrong window — but the resumed round itself has
+  never been seen on his screen: whether the fresh capture gives the model a better aim than the one
+  it lost, and whether the extra 1.5 s plus a turn feels like help or like stalling, are both his to
+  judge.
 - **Circle-to-explain works: ⌃⌘D dims the screen and opens the microphone; you draw and speak,
   Return asks.**
   The primary surface is `Sources/Chunks/Annotate/AnnotationOverlay.swift`, imported from
@@ -1171,8 +1238,13 @@ Read it before picking anything up from this list.
   orientation (the crop came back mirrored — render it with `NSImageView`), and
   `NSGraphicsContext(bitmapImageRep:)` returns **nil** for a PNG-decoded rep, so a burn-in must draw
   into a rep it created itself. It needs no consent either way, because it moves and presses nothing.
-- `<NOTE>` offers never reach the live pipeline: `AnswerStreamer` collects the offer, nothing
-  consumes it yet. There is no Notebook to save into.
+- **The Notebook tier is built** (TASKS.md 3.3, 2026-11-02): `<NOTE>` writes an uncapped
+  `notebook.md` beside `memory.md` through `SecretSweeper`, `[NOTES:…]` searches it on demand and the
+  labelled block rides into the next turn, and the panel has a "Show notebook" row. What has not been
+  watched is his: whether the footnote line reads as kept-or-refused at a glance, whether a note he
+  dictated and never asked about again should be visible in the panel at all, and whether the row
+  survives the panel's 380 pt height with a populated memory list above it — `--render-panel` draws it
+  empty, which is exactly the case that cannot overflow.
 
 **Adding a test suite:** write the cases in `Tests/ChunksTestCases/`, then add
 `YourTests.register()` to `AllTests.swift`. `runAllChunksTests()` returns whether the

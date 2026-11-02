@@ -21,31 +21,9 @@ enum LocalBrainProbe {
         setvbuf(stdout, nil, _IONBF, 0)
         Task { @MainActor in
             out("probe-local: checking Ollama discovery and Gemma 4...")
-
-            let descriptors = await LocalBrainDiscovery.descriptors(for: ProviderRegistry.ollama)
-            guard !descriptors.isEmpty else {
-                out("probe-local: FAIL — Ollama is not answering on localhost:11434")
-                exit(1)
-            }
-            out("probe-local: discovered \(descriptors.count) model(s): \(descriptors.map(\.name).joined(separator: ", "))")
-
-            let requestedModel = flag("--model") ?? "gemma 4 e2b"
-            let resolution = BrainSelection.resolve(
-                storedProviderID: "ollama",
-                storedModelID: requestedModel,
-                discoveredModels: ["ollama": descriptors],
-                needsVision: true
-            )
-
-            guard !resolution.isBlocked, let model = resolution.model else {
-                out("probe-local: FAIL — could not resolve model '\(requestedModel)': \(resolution.notice ?? "unknown error")")
-                exit(1)
-            }
-            out("probe-local: resolved '\(requestedModel)' → \(model.id) (vision=\(model.visionCapable == true))")
-
-            // Temporarily set brain provider & model in UserDefaults for this process
-            UserDefaults.standard.set("ollama", forKey: BrainSettings.providerKey)
-            UserDefaults.standard.set(model.id, forKey: BrainSettings.modelKey)
+            guard let modelID = await selectLocalBrain(requested: flag("--model") ?? "gemma 4 e2b",
+                                                 report: out) else { exit(1) }
+            out("probe-local: resolved to \(modelID)")
 
             // 1. Text Turn
             out("probe-local: testing text turn...")
@@ -173,10 +151,43 @@ enum LocalBrainProbe {
                 exit(1)
             }
 
-            out("probe-local: ALL CHECKS PASSED for \(model.id)")
+            out("probe-local: ALL CHECKS PASSED for \(modelID)")
             exit(0)
         }
         RunLoop.main.run()
+    }
+
+    /// Point this process at the local model the way the panel's switch does, and say which one it
+    /// chose.
+    ///
+    /// Extracted because `--probe-reply --local` needs the same selection: a second copy of the
+    /// discovery-and-resolve path is a second opinion about which model answered, and the whole point
+    /// of that probe is that the *real* local model's reply is what gets audited.
+    /// Returns nil (after reporting why) when Ollama is not answering or the name resolves to nothing.
+    static func selectLocalBrain(requested: String,
+                                 report: (String) -> Void = { _ in }) async -> String? {
+        let descriptors = await LocalBrainDiscovery.descriptors(for: ProviderRegistry.ollama)
+        guard !descriptors.isEmpty else {
+            report("FAIL — Ollama is not answering on localhost:11434")
+            return nil
+        }
+        report("discovered \(descriptors.count) model(s): \(descriptors.map(\.name).joined(separator: ", "))")
+        let resolution = BrainSelection.resolve(
+            storedProviderID: "ollama",
+            storedModelID: requested,
+            discoveredModels: ["ollama": descriptors],
+            needsVision: true
+        )
+        guard !resolution.isBlocked, let model = resolution.model else {
+            report("FAIL — could not resolve model '\(requested)': \(resolution.notice ?? "unknown error")")
+            return nil
+        }
+        report("resolved '\(requested)' → \(model.id) (vision=\(model.visionCapable == true))")
+        // Process-scoped, deliberately not `UserDefaults`: writing these keys switches *his app* to
+        // the model this probe was curious about, and it stays switched when the probe exits. See
+        // `BrainSettings.processOverride`.
+        BrainSettings.processOverride = (ProviderRegistry.ollama.id, model.id)
+        return model.id
     }
 
     private static func flag(_ name: String) -> String? {

@@ -30,6 +30,8 @@ public func runAllChunksTests() -> Bool {
     ConversationChatTests.register()
     SessionIntentTests.register()
     ActionTests.register()
+    PlanAfterLaunchTests.register()
+    ReplyAuditTests.register()
     CandidateRankerTests.register()
     SpeechVoiceTests.register()
     SpeechEngineChoiceTests.register()
@@ -42,5 +44,6 @@ public func runAllChunksTests() -> Bool {
     LocalBrainErrorTests.register()
     HistoryGroupingTests.register()
     ReminderTests.register()
+    NotebookStoreTests.register()
     return TestRunner.run()
 }

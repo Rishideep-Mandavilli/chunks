@@ -403,8 +403,7 @@ final class BrainGateway {
         started: Date,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval)? {
-        let storedID = UserDefaults.standard.string(forKey: BrainSettings.providerKey)?
-            .trimmingCharacters(in: .whitespaces)
+        let storedID = BrainSettings.storedProviderID()
         guard let storedID, !storedID.isEmpty, storedID != ProviderRegistry.gemini.id else { return nil }
 
         guard let provider = ProviderRegistry.all.first(where: { $0.id == storedID }) else {
@@ -416,7 +415,7 @@ final class BrainGateway {
         let discovered = await LocalBrainDiscovery.descriptors(for: provider)
         let resolution = BrainSelection.resolve(
             storedProviderID: storedID,
-            storedModelID: UserDefaults.standard.string(forKey: BrainSettings.modelKey),
+            storedModelID: BrainSettings.storedModelID(),
             discoveredModels: [provider.id: discovered],
             needsVision: !images.isEmpty)
         if let notice = resolution.notice {

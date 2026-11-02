@@ -105,4 +105,23 @@ enum BrainSettings {
 
     /// The names the panel and a `defaults write` both accept.
     static let knownIDs = ["gemini", "ollama", "lm-studio"]
+
+    /// A brain chosen for this process only, by a probe.
+    ///
+    /// This exists because `--probe-local` used to answer the question "which brain is on this Mac?"
+    /// by *writing the answer into the app's real settings*. Measured 2026-11-02: after one
+    /// `./scripts/verify.sh`, his stored brain was `ollama / gemma4:e2b-it-qat` — a read-only-looking
+    /// probe had switched the product — and `--probe-protocol` then graded the production prompt
+    /// against a 2B model and reported three tag families as lost. A probe may decide what *it* asks;
+    /// it may not decide what his next turn asks.
+    nonisolated(unsafe) static var processOverride: (provider: String, model: String)?
+
+    static func storedProviderID() -> String? {
+        processOverride?.provider
+            ?? UserDefaults.standard.string(forKey: providerKey)?.trimmingCharacters(in: .whitespaces)
+    }
+
+    static func storedModelID() -> String? {
+        processOverride?.model ?? UserDefaults.standard.string(forKey: modelKey)
+    }
 }

@@ -246,14 +246,58 @@ public enum AnswerPanelTests {
                    "an explanation of scrolling is not a promise to scroll")
         }
 
-        test("a legacy NOTE split across deltas reaches the card as unknown text") {            let streamer = AnswerStreamer()
+        // The notebook's turn of the same rule, measured on 2026-11-02 the day the tier shipped: asked
+        // to "note that the landlord is Sharma", a local model said *"i have noted that the landlord
+        // is sharma"* and emitted no `<NOTE>`. A memory promise costs more than an act promise — an act
+        // that did not happen changes nothing, a note that did not happen is simply not there when he
+        // looks for it next month, with nothing on record saying it ever was.
+        test("a promise to keep a note with no <NOTE> behind it is retracted, in notebook words") {
+            let liar = AnswerStreamer()
+            liar.push("<SAY>i have noted that the landlord is Sharma.</SAY>")
+            liar.push("<SUMMARY>The note has been recorded.</SUMMARY>")
+            liar.finish()
+            expect(liar.retractUnbackedPromises(),
+                   "a kept-note promise with no <NOTE> must not reach the voice as a success")
+            expectEqual(liar.displayable.speech, AnswerStreamer.noteRetractionLine,
+                   "and the line must be about the notebook, not the screen — the screen line would "
+                   + "send him looking for a window that was never the problem")
+
+            let backed = AnswerStreamer()
+            backed.push("<SAY>i have noted that the landlord is Sharma.</SAY>")
+            backed.push("<NOTE>the landlord is Sharma</NOTE>")
+            backed.finish()
+            expect(!backed.retractUnbackedPromises(),
+                   "a promise with the tag behind it is a normal turn")
+            expectEqual(backed.noteLines, ["the landlord is Sharma"],
+                        "and the note is what the store receives")
+        }
+
+        test("reporting that he noted something is not a promise, and survives") {
+            // The false-positive trap: "noted that" on its own matches a sentence about *him*, and
+            // retracting that would tell him Chunks failed to save something he never asked it to
+            // save. The patterns are first-person promises only.
+            let reporter = AnswerStreamer()
+            reporter.push("<SAY>he noted that the wifi is slow at night, in the group chat.</SAY>")
+            reporter.finish()
+            expect(!reporter.retractUnbackedPromises(),
+                   "an account of what he said is not a claim that Chunks kept a note")
+        }
+
+        test("a NOTE split across deltas is joined into one note, not three text events") {
+            // The shape that made this tag dangerous when it had no consumer: the streamer holds back
+            // anything that might still grow, so `<NO` + `TE>…` must resolve to one line. Now that the
+            // Notebook exists, resolving *is* the requirement — a note that reaches the card as markup
+            // is a thing he asked to be kept and was not.
+            let streamer = AnswerStreamer()
             streamer.push("<SAY>The answer is 42.</SAY><NO")
-            streamer.push("TE>Debug Navigator</NO")
+            streamer.push("TE>The landlord is Sharma</NO")
             streamer.push("TE>")
             let result = streamer.finish()
-            expectEqual(result.speech, "The answer is 42.", "supported tags must still work")
-            expectEqual(result.detail, "<NOTE>Debug Navigator</NOTE>",
-                        "a retired NOTE must be shown whole, not dropped by the streamer")
+            expectEqual(result.speech, "The answer is 42.", "the spoken line is untouched by the tag")
+            expectEqual(streamer.noteLines, ["The landlord is Sharma"],
+                        "the whole note arrives, assembled across three deltas")
+            expect(!result.detail.contains("<NOTE>"),
+                   "and its markup is not left on the card: \(result.detail)")
         }
 
         test("a draft is collected apart from the answer, and the last one owns the button") {

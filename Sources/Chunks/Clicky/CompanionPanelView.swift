@@ -923,6 +923,25 @@ struct CompanionPanelView: View {
                     .accessibilityLabel("Show the memory file in Finder")
             }
 
+            // The second tier, in one line. No meter, because no cap — drawing a bar here would invite
+            // him to think it can fill up. The button is the proof instead: an uncapped file he cannot
+            // open is a file he has to take on trust, which is the same argument that made the memory
+            // file's "Show file" row a requirement rather than a nicety.
+            HStack(spacing: 8) {
+                Text(companionManager.notebookCount == 0
+                     ? "notebook: nothing kept yet — \"note this\" goes here, not into the 2 KB above"
+                     : "notebook: \(companionManager.notebookCount) note(s), \(companionManager.notebookBytes) bytes, no limit")
+                    .font(DS.Fonts.meta)
+                    .foregroundColor(C.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button("Show notebook") { companionManager.revealNotebookFile() }
+                    .font(DS.Fonts.meta)
+                    .buttonStyle(.plain)
+                    .foregroundColor(C.linkOnField)
+                    .accessibilityLabel("Show the notebook file in Finder")
+            }
+
             VStack(alignment: .leading, spacing: 0) {
                 if companionManager.memoryFacts.isEmpty {
                     Text("Nothing remembered yet. Say \"remember that I prefer X\" and it lands here — Chunks refuses to store a key or a password.")

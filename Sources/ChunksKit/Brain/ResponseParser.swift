@@ -162,6 +162,20 @@ public enum ReplyEvent: Equatable, Sendable {
     /// The model is asking to act on a control. A proposal only — `PolicyGate` decides
     /// whether it happens, and the user says yes.
     case act(ActionRequest)
+    /// A line he asked Chunks to keep, written into the notebook tier — uncapped, never auto-injected.
+    ///
+    /// Not a `<MEMORY>` block. Memory is 2 KB and is in every prompt, so it can only hold what changes
+    /// how Chunks answers *any* question; a note is a thing worth remembering about one subject, and a
+    /// file that refuses to grow is a file that refuses the second kind. The write is still validated
+    /// by `NotebookStore` (secrets first, then the one-line shape) and never performed by the model.
+    case note(String)
+    /// The model wants to know what the notebook already holds about something.
+    ///
+    /// Answered from disk and returned as context for the *next* turn, which is why it is a request
+    /// rather than an answer: the model cannot have had the note in front of it when it wrote this
+    /// reply. Keyword scoring, no embeddings, and the block comes back labelled as past data — see
+    /// `NotebookStore.block(for:)`.
+    case noteSearch(String)
     /// The model wants a file read. Refused or granted by `ReadRequest`'s policy before anything
     /// touches the disk, and the contents come back as context for the next turn.
     case fileRead(ReadRequest)
@@ -191,7 +205,7 @@ public final class ResponseParser {
         let end: String?         // literal that closes it, nil if self-closing (e.g. [POINT:…])
         let kind: Kind
         enum Kind { case say, memory, point, act, type, scroll, tool, summary,
-                   doneTitle, nextActions, continuation, read, draft }
+                   doneTitle, nextActions, continuation, read, draft, note, noteSearch }
     }
 
     private static let constructs: [Construct] = [
@@ -232,6 +246,15 @@ public final class ResponseParser {
         // about to paste cannot arrive as prose mixed with the explanation of it — and because the
         // card that holds it needs a Copy button, which no other surface on this card has.
         Construct(start: "<DRAFT>", end: "</DRAFT>", kind: .draft),
+        // A line worth keeping and not worth paying for on every turn: `<NOTE>the landlord's name is
+        // Sharma</NOTE>`. Its own tag rather than a `<MEMORY>` block because memory is capped at 2 KB
+        // and injected into every prompt, and this is neither — which is exactly why the second tier
+        // had to exist before the tag could be taught again honestly.
+        Construct(start: "<NOTE>", end: "</NOTE>", kind: .note),
+        // What the notebook already holds: `[NOTES:the landlord]`. A request rather than an answer,
+        // in the same shape as `[READ:]` — the model cannot have had the note when it wrote this
+        // reply, so the search runs on disk and the labelled block arrives next turn.
+        Construct(start: "[NOTES:", end: "]", kind: .noteSearch),
     ]
 
     private var buffer = ""
@@ -281,7 +304,8 @@ public final class ResponseParser {
     private func settledText(_ s: String, _ events: inout [ReplyEvent]) {
         if typeExtensionArmed {
             typeExtensionArmed = false
-            if !s.hasPrefix("\n"), !s.hasPrefix(" "), !s.hasPrefix("["), !s.isEmpty {
+            if !s.hasPrefix("\n"), !s.hasPrefix(" "), !s.hasPrefix("["), !s.hasPrefix("<"),
+               !s.isEmpty {
                 typeExtensionOpen = true
                 typeExtensionPayload = "]"
             }
@@ -289,11 +313,8 @@ public final class ResponseParser {
         if deferredTypeHead != nil || typeExtensionOpen {
             var gathered = s
             var closed = false
-            if gathered.hasPrefix("[") {
-                gathered = ""
-                closed = true
-            } else if let tag = gathered.range(of: "\n[") {
-                gathered = String(gathered[..<tag.lowerBound])
+            if let tag = ResponseParser.tagBoundary(in: gathered) {
+                gathered = String(gathered[..<tag])
                 closed = true
             }
             if deferredTypeHead != nil { deferredTypePayload += gathered }
@@ -301,6 +322,28 @@ public final class ResponseParser {
             if closed { closeTypePayloads(&events) }
         }
         events.append(.text(s))
+    }
+
+    /// Where a gathered payload must stop: the start of a construct, square or angle.
+    ///
+    /// Measured live on 2026-11-01 in front of a jury: a local model wrote `[TYPE:368,497:area 51]`
+    /// with no pipe, the gatherer took the *next* thing it emitted — `<NEXT_ACTIONS> - press enter on
+    /// the search bar` — as the text to type, and Chunks typed 61 characters of markup into the
+    /// desktop, because the aim resolved to whatever window owned those pixels. The guard recognised
+    /// a line opening `[ACT:` but not one opening `<NEXT_ACTIONS>`, which is a one-character-class
+    /// bug in a path whose whole job is to guess.
+    ///
+    /// A `<` mid-line is still payload: `#include <stdatomic.h>` is the reason this cannot be a
+    /// blanket test for the character.
+    static func tagBoundary(in text: String) -> String.Index? {
+        if text.hasPrefix("[") || text.hasPrefix("<") { return text.startIndex }
+        var search = text.startIndex
+        while let newline = text.range(of: "\n", range: search..<text.endIndex) {
+            let after = newline.upperBound
+            if after < text.endIndex, text[after] == "[" || text[after] == "<" { return after }
+            search = after
+        }
+        return nil
     }
 
     /// Turn whatever the text stream carried into the act it belonged to.
@@ -377,6 +420,26 @@ public final class ResponseParser {
                     // Fail open, as every other tag does: a malformed READ shown as text beats a
                     // silent nothing, which the user reads as the question being ignored.
                     events.append(.text(String(buffer[hit.range])))
+                }
+            case .note:
+                let body = (hit.inner ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                // Fail open, as `<DRAFT>` does: a swallowed note is the thing he asked to be kept,
+                // and an over-long one shown as markup is better than half of it on disk. The cap is
+                // the store's own, so a note this accepts is a note `NotebookStore` will not refuse.
+                if body.isEmpty || body.count > NotebookStore.maxEntryCharacters {
+                    events.append(.text(String(buffer[hit.range])))
+                } else {
+                    events.append(.note(body))
+                }
+            case .noteSearch:
+                let query = (hit.inner ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if query.isEmpty {
+                    // An empty search is a tag the model did not finish, not a request for the whole
+                    // file — and dumping an uncapped notebook into a turn is the failure the budget
+                    // exists to prevent.
+                    events.append(.text(String(buffer[hit.range])))
+                } else {
+                    events.append(.noteSearch(query))
                 }
             case .point:
                 let inner = hit.inner ?? ""

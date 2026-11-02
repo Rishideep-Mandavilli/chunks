@@ -15,16 +15,32 @@ sees when it is missing, you do not understand the item yet.
 
 ## State of the tree right now — read before you touch anything
 
-- **The tree is dirty: 105 paths differ from HEAD `bd36e2b`** (47 modified, 57 untracked — including
-  this file, which is untracked — and **one staged deletion**: `Sources/Chunks/Clicky/
-  ElementLocationDetector.swift`, which nothing in `Sources/` or `Tests/` references and which no
-  context note explains. It is not this session's doing; the build and the suite are green without
-  it, and it stays deleted unless he says otherwise). Do not run `git reset --hard`,
-  `git checkout --`, `git stash`, or `git clean` — that work is one command from being gone. If you
-  want a checkpoint, ask him; he commits when *he* has verified, not before.
-- **699/699 unit tests, 35 verify checks passed, 2 skipped** (2026-10-31, nonce GATEF-1793463644).
-  The two skips are the two standing ones and both now print their own reason: no Shortcuts *window*
-  open for the named aim, and the ranking reaching 0 pressable candidates inside Chrome's window veto.
+- **The tree is dirty against HEAD `ae7fd49`.** Do not run `git reset --hard`, `git checkout --`,
+  `git stash`, or `git clean` — that work is one command from being gone. If you want a checkpoint,
+  ask him; he commits when *he* has verified, not before.
+- **747/747 unit tests across 41 suites; 39 verify checks passed, 3 skipped, 22.7 s** (2026-11-02,
+  nonce GATE-KEEPA-1793634246). Two of the three skips are now deliberate: the local-brain checks are
+  kept aside behind `CHUNKS_LOCAL_BRAIN=1`, because the offline tier stays as a product (4.3) while
+  waking a 2B model on every gate is not the same thing. The third is the standing Shortcuts-window
+  skip; the Chrome-candidate skip came back PASS this run, which is window geometry, not code.
+- **`--probe-local` is a live-model check and it can go red for nobody's action.** Measured the same
+  day: one gate run returned 37 passed / 1 FAILED on it, and the next direct run of the same binary
+  passed all five of its turns. It grades what a local model answers in that second — an `[ACT:]` or
+  a `<CONTINUE>` that does not arrive is a model shrug, not a build regression. Read the probe's own
+  output before believing either verdict, and do not loosen an assertion until you have seen which of
+  the five turns moved.
+- **A probe switched his brain; fixed, and the brain is back on Gemini.** Until 2026-11-02
+  `--probe-local` answered "which model is on this Mac?" by writing `app.chunks.brainProvider` and
+  `brainModel`, so every gate run left the installed app pointed at Ollama — and `--probe-protocol`,
+  run afterwards, graded the production prompt against a 2B local model and reported three tag
+  families "lost". The probes now use `BrainSettings.processOverride`, scoped to their own process,
+  and `verify.sh` fails if any `*Probe.swift` writes `UserDefaults` again. The stored value was set
+  back to `gemini` on 2026-11-02 (the panel's own switch, `setOfflineBrain(false)`, writes the same
+  key) and re-measured: **`--probe-protocol` turns 3–7 PASS on Gemini** — `[TYPE:]` 5.9s,
+  `<SAY>`+`<SUMMARY>` 35.7s, `[SCROLL:]` 8.6s, `<NOTE>` 5.9s, `[NOTES:]` 10.2s — and **turns 1–2
+  SKIP** on `gemini-3.1-pro: 0 input tokens per minute on Free Tier`. So the "i have noted that…"
+  answer with no `<NOTE>` behind it was a local-model grammar failure, not the prompt's, and the
+  notebook tier round-trips on the brain he is keeping.
 - `verify.sh` now refuses to run against a stale or bare binary: it demands the installed signed
   bundle whose embedded source fingerprint matches the tree, renders into a fresh temp dir and
   fails a render whose command exited non-zero, and asserts the bundle is universal, hardened and
@@ -52,7 +68,61 @@ sees when it is missing, you do not understand the item yet.
 
 ---
 
+## Where every task stands — 2026-11-02, at a glance
+
+Read this first if you only want the state, not the argument. **Done-and-watched** = measured on the
+machine. **Done-unseen** = code green, `--render-*`/`--probe-*` verified, but no human has looked at it
+on a real screen. **Blocked-on-him** = a Tier 2 decision, not an engineering problem.
+
+**Tier 0 — dead promises.** 0.1 `<NOTE>` **closed twice over**: first by deleting the tag (2026-10-28),
+then properly, by building the tier that consumes it (3.3, 2026-11-02). 0.2, 0.3, 0.4, 0.5
+`caffeinate -di` — all done, all asserted by a `verify.sh` check that fails on a revert.
+
+**Tier 1 — needs his screen** (nothing here is broken; all of it is unlooked-at):
+- Reminder firing mid-sentence · a `<DRAFT>` copied and pasted somewhere · a plan surviving a live app
+  (WhatsApp's list is the only fixture) · the slow-503 failover and `ScreenCarry` on a real turn ·
+  the notch card and the window never photographed on his desktop · the panel's new rows populated ·
+  **a terminal command that has never once run on his machine** · two consecutive slow turns to see
+  the thinking-level memory work · `--probe-stt`, which needs a voice.
+- **New since yesterday:** the resumed round after a launch (3.8) · the notebook footnote and a
+  *populated* panel row (3.3) · `--probe-protocol` turn 1 and 2, which currently skip on free-tier
+  contention rather than proving the press and remind families.
+
+**Tier 2 — decisions only he can make:** Gemini quota (open — `3.1-pro` is still 0 tokens/min) · the
+**7× screenshot payload**, which is the real latency and needs his eyes on reading quality · who the
+product is for once it is sold · the planner's write scope · `maxCandidateSearchElements` vs a frozen
+notch · **new: two Gemini keys** (what it buys, what it does not) · **new: whether Chunks may write to
+his disk** · **new: the browser DOM port** · **new: concurrency and other agents** — the last three are
+the whole of what he asked for today, and each one has a scope argument attached rather than code.
+
+**Tier 3 — the hard capabilities.** 3.1 web content **partly built**: a named toolbar control resolves,
+and `--probe-candidates` has still never reached a *page* control (0 candidates inside the window veto).
+3.2 prompt diet **done** (~7.4k tokens, harness-backed). 3.3 **Notebook — built 2026-11-02**, unbounded,
+never injected, `<NOTE>`/`[NOTES:]` verified live on Gemini. 3.4 realtime duplex voice **not started**.
+3.5 bundled skills + MCP **zero files**. 3.6 presence/notch face **not started**. 3.7 onboarding
+**done-unseen**. 3.8 launch-hold **done-unseen**. **New 3.9–3.15** from his ask: 3.9 file writes
+(blocked-on-him), 3.10 VS Code by name (buildable now), 3.11 PDF stays read-only (a refusal wording),
+3.12 browser in three levels (L1 and L2 buildable now, L3 blocked-on-him), 3.13 process and window
+choreography (buildable now — the biggest honest slice of "control everything"), 3.14 a durable job
+queue (in-scope shape of "multiple tasks", with one question to answer first), 3.15 agent delegation
+(**out of scope as stated**; the in-scope version is driving their windows).
+
+**Tier 4 — the commercial path.** 4.1 Apple's gate: everything up to the account wall **done**
+(universal, hardened, exact entitlements, fingerprint-checked) — Developer ID, notarisation and Sparkle
+need his enrolment. 4.2 Google's gate **not started**, and it should not be until the client-only
+exception is in writing. 4.3 the buyer's gate **built, unmeasured** — the clean-account click count is
+still a guess.
+
+**Build order I'd argue for, if he wants one:** 3.13 → 3.12 L1 → 3.10 → 3.9 (after the write decision)
+→ 3.14 (after the unattended-steps decision). First because it is the largest felt capability that
+needs no new permission and no scope argument; last because a queue is the item that changes what the
+product is.
+
+---
+
 ## Tier 0 — a dead promise in the prompt. Do these first.
+
+
 
 **All five closed** — 0.1–0.4 on 2026-10-28 and 0.5 on 2026-11-01, verified by `./scripts/verify.sh` (33 checks, 1 skip) and 648/648
 unit tests. 0.1 took the second option (stop teaching it): the event, the construct and the prompt
@@ -71,7 +141,8 @@ viewport while Copy stays put — and the probe exits non-zero if any of it move
 Small, self-contained, no new permission surface, and each one removes something the app currently
 *says* that is not true. This class of bug has cost more time than any feature in this repo.
 
-### 0.1 `<NOTE>` is taught to the model and consumed by nothing — DONE
+### 0.1 `<NOTE>` is taught to the model and consumed by nothing — DONE, properly, on 2026-11-02
+
 
 `ResponseParser` emits `.noteOffer(title:)`, `AnswerStreamer` matches it with `break` and a comment
 saying the panel does not render it, and the system prompt defines the tag — `GeminiTransportTests`
@@ -138,6 +209,14 @@ from a log line — that has been true every single time it has been tested.
 - **Watch the plan survive a live app.** Every step is re-resolved against the tree as it is *then*;
   the step whose label described a control that only exists after the previous step is the one likely
   to fail first. WhatsApp's list is the fixture only he has.
+- **Watch a launch resume the plan.** Say *"open chrome and type 'how to use sql' in the search box"*
+  out loud, on the local brain, and watch for the second look: Chrome should open, the card should
+  say so, and about 1.5 s later Chunks should ask again and aim the typing at the window it just
+  made. `--probe-reply` proves the split (`plan: launch now, 1 step(s) held for a fresh capture`)
+  on any reply, and five of six live turns wrote exactly that shape — what has never been seen is
+  the resumed round on his screen, and whether it lands on the address bar or on the desktop. Two
+  questions only he can answer: is the fresh capture a better aim than the one it replaced, and does
+  the extra round read as help or as stalling?
 - **Watch the slow-503 failover and the carried screen** on a real turn (the hedge, the slice, and
   `ScreenCarry` re-attaching yesterday's picture when he says "answer it").
 - **The notch card and the window have never been photographed on a real screen.** Geometry is
@@ -196,6 +275,41 @@ Still open, and it needs him rather than you:
   you build the second.
 - **`maxCandidateSearchElements` (700) versus a frozen notch** — see Tier 3.1's 2026-10-31
   measurement. Raising it is the direct fix for "the page is never reached" and it doubles the wait.
+- **Two Gemini keys, one for answering and one for everything else.** Asked for on 2026-11-02, and it
+  is in scope — BYOK with two keys is still BYOK: no proxy, no metering, nothing of his leaving the
+  machine, so 4.2's CASA clause is untouched. What it genuinely buys is measured: the chain's `429`
+  rule exists because the free tier caps **~5 requests/minute per model per key**, so a second key is a
+  second untouched bucket, and a background turn (a routine firing, a day brief, a summary) can spend
+  key B instead of eating the budget he is about to speak into. What it does **not** buy, and the two
+  things not to confuse with quota: `gemini-3.1-pro` answers `0 input tokens per minute on Free Tier`
+  (seen again on the 2026-11-02 run) — that is a tier, and no second free key raises it; and the
+  **7× PNG payload** (126.3s vs 15.7s on the same display) is upload time, so a second key makes
+  contention rarer and never makes one turn faster. His decisions inside this one: which purposes go
+  to key B, whether key A's absence should degrade to key B or refuse out loud, and the fact that the
+  log and the card must say *which credential answered* — today they name the model, and after this
+  the model alone would not be the whole truth.
+- **Whether Chunks may write to his disk.** Every byte-level rule in this repo today is about *reads*
+  (invariant 9): allow-listed roots, a credential deny-list on the resolved path, his own words naming
+  the file. File editing (3.9 below) is a new capability class, not an extension of that one, and it
+  needs the same thinking done fresh: what may be written, where a backup goes, what "undo" means after
+  a rebuild, and a card that names the exact lines changing. `run_command` is already an always-asked
+  door to anything a shell can do, so the honest question is whether a first-class write tool is safer
+  *because* it is checked, or just safer-looking.
+- **The browser DOM route** (Tier 3.1 option 3, and 3.12 below). Restated here because he has now asked
+  for browser work: `AGENTS.md` says do not reach it without asking, because a debug port on his
+  browser is a bigger security surface than everything else in this app combined. Levels 1 and 2 of
+  3.12 need no such port and are already in scope.
+- **Concurrency, and whether other agents may do work.** "Assign multiple tasks" and "integrate with
+  multiple agents" collide with the scope file head-on: `AGENTS.md` forbids sub-agents, teams and any
+  hand-off to another identity — one assistant, one task per turn — and that line is what makes Chunks
+  a sellable *app* rather than a service. Three ways through, and they are his to choose between:
+  **(a)** amend `AGENTS.md` and design a real job runner (multiple live plans, several cards, several
+  screens changing at once — the confirm chain was built one-question-at-a-time for reasons);
+  **(b)** keep one agent and add a **sequential durable queue** (3.14), which delivers most of what he
+  is asking for — jobs that survive a sleep, run one after another, and report where each stopped —
+  without the identity layer; **(c)** have Chunks *drive* another tool's UI (3.10, 3.13): typing into
+  VS Code's command palette or starting a build in an IDE's terminal is a press and a type, entirely in
+  scope today, and is not the same thing as delegating to that tool's agent.
 
 
 ---
@@ -388,18 +502,26 @@ Acceptance: `--probe-prompt` char count down by at least a third, every `verify.
 five recorded turns. A prompt change that quietly stops the model using a tag is a feature regression
 with no failing test — that is the risk, so measure it, do not assume it.
 
-### 3.3 The Notebook tier, done properly
+### 3.3 The Notebook tier, done properly — DONE 2026-11-02 (his eyes pending)
 
-`MemoryStore`'s comment promises a second tier: unbounded, never auto-injected, searched on demand.
-Build it as `NotebookStore` beside `memory.md`, with the ranking reused from `FileMention` (pure) and
-the disk access reused from `FileAttachment`, `SecretSweeper` before any write, and a result cap so a
-search hit cannot smuggle 40 KB into the prompt. This is also what makes `<NOTE>` honest (0.1) and
-what Phase 8's "notebook search tuning" was always about.
+`MemoryStore`'s comment promised a second tier: unbounded, never auto-injected, searched on demand.
+It is built: `NotebookStore` beside `memory.md`, `<NOTE>` writes it, `[NOTES:…]` searches it and the
+labelled block rides into the next turn (the same continuation channel a `[READ:]` uses), and the
+panel's "Show notebook" row reveals the file. `SecretSweeper` runs before every write, one line per
+note, and a recalled block is charged with its own framing and cut at whole entries under a 4 KB
+budget — the best note that will not fit is refused, never clipped, and the count left out is printed.
+This is also what makes `<NOTE>` honest again: Tier 0.1 deleted the tag in October because nothing
+consumed it, and it is taught again only now that something does.
 
-Design constraint that is not negotiable: **a notebook line is data, never instructions.** This
-workspace has already seen fabricated "policy" text arrive inside tool output. Label recalled content
-the way `ConversationStore.recall` labels its block — past data, not the current screen, not
-instructions.
+Measured on the way, both against real output: `--probe-notebook` (7 assertions on a copy plus his
+file read-only) caught the whole-word delete first — `contentWords` drops `3` as too short, so the
+needle `"number 3"` quietly became `"number"` and removed every invoice in the file, which is exactly
+the failure `MemoryStore.matching` was written against. And `--probe-reply` grew two fixtures for the
+new tags, so a parser drift that makes `<NOTE>` unreachable fails the gate rather than silently
+turning his notes into prose on a card.
+
+Still his to watch (Tier 1): the footnote at a glance, and whether the row survives a *populated*
+panel — `--render-panel` draws it empty, which is the one case that cannot overflow.
 
 ### 3.4 Realtime duplex voice (plan P9)
 
@@ -453,6 +575,132 @@ when Input Monitoring is missing, so every row must check `CGPreflightListenEven
 inferring from a successful grant elsewhere.
 
 ---
+
+### 3.8 A launch in front of a plan of pixels — DONE 2026-11-01 (his screen pending)
+
+**The failure was not the one named in the brief.** "Auto-continue after a launch drops the rest of a
+plan" described the steps being dropped; what the code did was drop the *launch* (`leadingTool`
+returns nil for a pixel step, so the branch that offers the tool is never reached) and run the pixel
+step against the screenshot taken before anything opened — so the app stayed shut and the keystrokes
+went to the wrong window. Six live local-model turns, five with that shape. See `context.md`
+2026-11-01.
+
+`PlanAfterLaunch.decide` (ChunksKit, pure) now splits such a reply: the launch runs through the same
+`offerTool`/`runTool` door as a lone `[DO:]`, and **every** step waits, because the grammar carries no
+order between a tool and an act. What waits is one sentence, not a coordinate list, sent down the
+existing `continuePlanIfNeeded` route — same `maxPlanRounds` bound, same `planRecaptureDelay`, the
+model re-aims against a fresh capture. Resumes only when the launch happened; `set_volume` and
+`run_command` do not qualify (`DoRequest.invalidatesTheScreen`); a new sentence from him drops the
+hold.
+
+`--probe-reply` is the other half, and the one that was asked for: a reply in, every construct's
+verdict out, with the reason from the same reader the live turn uses, cross-checked against the
+streamer's own `unreadActTags` so a drifting audit fails rather than reporting clean. Five fixtures,
+sixteen assertions, no model and no screen — plus `--probe-reply --local`, which asks the local model
+the plan question and audits its real words, so `[ACT:DO:open_app:Chrome]` and the unterminated
+`</NEXT_ACTIONS` it also writes are found by a script instead of in front of an audience. Both are
+`verify.sh` checks now. Acceptance held: 729/729 unit tests (16 new), 38 checks / 2 skipped, and the
+live mode's first run caught the probe auditing the card instead of the reply.
+
+Still his to watch: the resumed round itself (Tier 1).
+
+### 3.9 Write a file he names — the disk capability, not the screen one
+
+**The failure today:** *"change the port to 8090 in config.yml"* has no answer. Chunks can read that
+file, can type into an editor if he has it open, and can be talked into a `run_command` that rewrites
+it with `sed` behind a card that says the whole shell line. None of those is the product behaviour.
+
+Build it as `[EDIT:~/path|what to change]` with the same five doors a press travels: roots allow-listed
+and the credential deny-list applied to the **resolved** path (invariant 9's rules, reused, not
+restated), the change computed as a whole old-text→new-text pair so an ambiguous match is a **question
+with the real candidates rather than a choice**, the file re-read immediately before the write and
+compared to what the card quoted (the exact analogue of "a card can outlive a relayout" in invariant
+8), a copy of the previous bytes kept somewhere he can find, and the outcome line saying which lines
+changed. `verify.sh` must assert it cannot touch `~/.ssh`-class fragments or a `.env`.
+
+Blocks on the Tier 2 decision above. Acceptance: `--probe-edit 'path|change'` prints the resolved
+path, the diff it would apply, the policy verdict and the card's sentence — and applies nothing.
+
+### 3.10 Drive VS Code, and any Electron editor, by name rather than by pixel
+
+**The failure today:** VS Code is Electron, so `AXManualAccessibility` gets its tree and typing works —
+but a *file* edit through the UI means finding the explorer row, opening it, aiming the cursor at a
+line, and every one of those is a pixel aim against a screen that changes when the file opens.
+
+Two pieces, both in scope now: **a commands route** — VS Code publishes a command palette, and
+`[DO:run_shortcut:…]`/`[ACT:app=Code name="Go to Line"]` already speak this vocabulary, so "open
+config.yml in VS Code and go to line 40" is a launch plus named steps; and **a file route** — 3.9's
+`[EDIT:]` writes the file and VS Code reloads it, which is faster, verifiable, and never moves his
+cursor. His call inside this: whether Chunks should prefer the file route when the editor is already
+open (it can make the editor dirty-versus-saved disagree with disk, which is the failure to design
+for) or drive the UI so the editor is the authority.
+
+Acceptance: `--probe-controls Code` lists what the app publishes, and a spoken "open the file I named
+in VS Code" lands on the right document — his screen for that one.
+
+### 3.11 Read the PDF; say what it is not
+
+Reading is done and tested (pages ranked by his words, whole pages, page numbers, scans drawn as
+pixels). **The failure today is the shape of the ask**: "fix the date on page 3 of this PDF" has no
+answer, and should not pretend to. PDF *writing* collides with `AGENTS.md`'s ❌ list (no generated
+files, no artifacts), and a rewritten PDF without the right provenance is a document that may end up
+signed. Keep the read tier honest, offer a `<DRAFT>` of the replacement text or an `.md`/`.txt` sibling
+he can edit in place, and refuse the write **as that** — the way the spreadsheet refusal is already
+worded. If he wants real PDF editing, that is a scope amendment, not a feature.
+
+### 3.12 Browser work in three levels, and the third needs a decision
+
+- **Level 1 — what is open.** Which tabs and windows exist, which one is frontmost, and reading the
+  page title/URL into context. Today `CGWindowListCopyWindowInfo` and the AX tree already give most of
+  this; it is a tool (`[DO:browser_state:]`), not a new permission. In scope, small, no decision.
+- **Level 2 — the page by the accessibility tree.** Chrome's own AX tree is what 3.1's ranking walks:
+  fill this field, press this button, read these words. It works today for *some* pages, fails where the
+  app publishes nothing inside the read budget, and its ceiling is the `maxCandidateSearchElements`
+  decision, not code. In scope.
+- **Level 3 — the DOM.** A debug port or an extension bridge: exact selectors, real page text,
+  deterministic. This is 3.1's "do not reach this without asking", and the reason has not changed: a
+  port his browser listens on is a bigger security surface than everything else in this app combined,
+  and it must be his eyes-open choice — plus it makes every page he visits reachable from Chunks, which
+  is a claim the current screen-read model never makes.
+
+### 3.13 Process and window choreography — the "control every application" set, minus the magic
+
+What he actually asks for, itemised, all of it through doors that already exist: list running apps and
+windows with their titles; focus, minimise, close, move, resize a named window; quit an app and report
+whether it refused; open a file *with* something (`open -a`); start a login-visible process and tell
+him it's still running (the `caffeinate` lesson: three outcomes, not two). `AXTDriver` already walks
+`AXWindows`; `ToolRunner` already launches. The work is a small tool family plus the policy each one
+needs — quitting and closing are permanent acts and belong beside `alwaysAskControlWords`, not under
+the "don't ask" switch.
+
+Acceptance: `--probe-windows Safari` prints what would be moved or closed and does none of it; a spoken
+"put the terminal on the second display" lands it, and the card says where it went.
+
+### 3.14 A durable job queue — several tasks, one brain, in order
+
+**The failure today:** a plan that needs six rounds dies at `maxPlanRounds` (4) with "I stopped after 4
+steps. Say the word and I'll carry on", and a routine is a prompt plus a time, not a job with state.
+So the felt need behind "assign multiple tasks" — start three things, walk away, find out what happened
+— is real, and can be met **without** sub-agents: a queue of jobs, each a stored plan with its steps,
+its status and its last outcome, run one at a time by the same single agent through the same
+`PolicyGate`/`ConsentGate`, resumable after sleep, and never running a step while a card is open or the
+display is asleep (the scheduler already refuses that for routines, which is the precedent).
+
+This is the one item on this list that changes what Chunks *is*, so it comes with a question he should
+answer before code: how long may an unattended job run, and which steps may run unattended at all. The
+rules that make Chunks safe are all about the moment of the press; a queue moves that moment away from
+his desk, and `AGENTS.md`'s "a scheduled act that runs while nobody is looking is a remote control for
+the machine" is the sentence to argue with first.
+
+### 3.15 Integrating with other agents and IDEs — out of scope as stated, in scope as driving
+
+Cursor's agent, Claude Code, a language server: handing work *to* another identity is the ❌ list
+("no sub-agents, no agent teams, no roster of named agents"), and it is the layer he explicitly cut
+when he scoped this as a HeyClicky replica minus the multi-agent part. What is in scope today is
+3.10/3.13 — Chunks driving their windows, typing into their fields, starting their builds, reading
+their output through the same tools that read anything else. If he wants the delegation layer after
+all, that is an `AGENTS.md` amendment with the sellability argument re-litigated, not a task to pick up
+quietly.
 
 ## How to work with him
 

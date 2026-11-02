@@ -103,6 +103,19 @@ enum ProtocolProbe {
                 streamer.actionRequests.contains { if case .scroll = $0.verb { return true }; return false }
                     || streamer.displayable.speech == AnswerStreamer.retractionLine
             },
+            // The two notebook families, taught on 2026-11-02 when the tier was built. They belong in
+            // this probe for the reason 3.2 gave: a unit suite builds the tags it already knows parse,
+            // so the only way to learn that a model will not write `<NOTE>` when he says "note this"
+            // is to ask it. "note that X" has no honest answer that is not the tag, so this one is
+            // graded strictly on purpose — a reply that keeps nothing is the failure itself.
+            Turn(question: "note that the landlord is Sharma and the flat is 4B",
+                 expects: "<NOTE>") { streamer in
+                !streamer.noteLines.isEmpty
+            },
+            Turn(question: "what do you have recorded about the gate code?",
+                 expects: "[NOTES:]") { streamer in
+                streamer.noteSearch != nil
+            },
         ]
 
         Task { @MainActor in

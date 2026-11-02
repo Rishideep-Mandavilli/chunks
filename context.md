@@ -2658,3 +2658,139 @@ Problem reported: Chunks was failing when configured with the local Gemma 4 mode
 - Rebuilt universal binary signed with "Chunks Local" and installed to `~/Applications/Chunks.app`.
 - Verified live end-to-end: text turn in 0.3s–0.4s (`3 + 4` → `7`), vision turn with 2.2 MB image in 2.0s–2.5s emitting full `<SAY>`, `<DONE_TITLE>`, `<SUMMARY>`, `[ACT:]`, `[POINT:]`, `<NEXT_ACTIONS>`.
 
+
+## A launch in front of a plan of pixels was dropping the *launch*, not the steps — 2026-11-01
+
+Task #10, from Rishi's own list (it is not in `TASKS.md`, which stops at 3.7; and there is no
+"jury" section in this file — that diagnosis is in the code, at `ResponseParser.swift:306` and
+`ResponseParserTests.swift:330`). The brief was: when a launch invalidates the pixel coordinates a
+plan was aimed with, Chunks should re-capture and carry on by itself instead of waiting for a
+`<CONTINUE>`. The premise needed correcting first.
+
+**What the code actually did.** `ActionRequest.leadingTool(for:tools:)` refuses to put a tool in
+front of a plan unless every step is named, which is the right rule about evidence. But at the call
+site (`CompanionManager.swift:3375` and below) a `nil` there did not stop the *plan*: `proposed` was
+still non-empty, so the `else if let tool = streamer.toolRequests.first` branch was never reached and
+the launch was dropped — logged only as `act: dropped, never asked — 1 tool request(s) behind a plan`
+— while the pixel step went ahead against the capture taken *before* anything opened. Chrome never
+launched and the keystrokes went to whatever field owned those pixels on the screen that was already
+there. That is the shape this had on his machine all day:
+
+```
+<SAY>i will open chrome and search for how to use sql</SAY>
+[DO:open_app:Chrome]
+[TYPE:x,470:Search|how to use sql]
+```
+
+Six consecutive live turns of `gemma4:e2b-it-qat` on that question: five wrote a launch plus a pixel
+aim, and one wrote `[TYPE:app=Google Chrome name="Omnibox"|how to use sql]`, which is the named shape
+`leadingTool` already carries without a second look. None of the five would have opened Chrome.
+
+**The fix.** `PlanAfterLaunch.decide(steps:tools:)` (ChunksKit, pure) splits such a reply: the tool
+runs now, through `offerTool`/`runTool` exactly as a lone `[DO:]` does, and *every* step waits — not
+only the pixel ones, because a reply is a set of acts plus a set of tools with no order between them,
+so "this press happens before the open" is not sayable. What waits is a sentence
+(`type 'how to use sql' into 'Search', then press 'Search button'`) rather than a coordinate list,
+sent down the existing `continuePlanIfNeeded` route: same `maxPlanRounds` bound, same
+`planRecaptureDelay`, and the model re-aims against a fresh capture. Three rules keep it no looser
+than the press path — it resumes only when the launch *happened* (a tool refused before the card was
+raised, a failed open, or a "not now" start nothing); a new sentence from him drops the hold as
+surely as it drops a waiting round; and only `DoRequest.invalidatesTheScreen` tools qualify, so
+`set_volume` pays no round and `run_command` is excluded because its effect cannot be read off `argv`.
+
+**Cost, measured rather than assumed.** One extra round per mixed plan: `planRecaptureDelay` (1.5 s)
+plus a local model turn (2.0–2.2 s on the runs above), against the old behaviour's 0 s and a keystroke
+in the wrong window. The rejected alternative — let the pixel step run, then correct it — is the bug
+this repo keeps relearning: a plausible action nobody can undo.
+
+**The second half of the task: `--probe-reply`.** `[ACT:DO:open_app:Chrome]` — a tool written inside
+the act grammar — is the shape Gemma produces, and until today the only way to find that out was to
+watch the raw tag sit on a card in front of people. `ReplyAudit` (ChunksKit) runs a reply through the
+live `AnswerStreamer` and prints, per construct, whether it became a request and whether its markup
+survived into what the card would show, with the reason from the same reader the turn uses. The two
+signals are cross-checked against the streamer's own `unreadActTags`, and a disagreement prints a
+WARNING and fails the probe — an audit that drifts from the parser says so instead of reporting a
+clean reply. Five fixtures, sixteen assertions, no model, no screen. It found its own first bug: the
+live mode was auditing `displayable` (the card *after* the tags were consumed), so a well-formed
+reply reported zero constructs and the probe called a working model's plan empty.
+
+**One finding only the live mode gives.** The same four turns also produced an unterminated
+`</NEXT_ACTIONS` and a `<MEMORY>` block with no closing tag — both now named as malformed in the
+audit's own words, which is the class of thing that has cost this project a whole evening before.
+
+**Gate.** `729/729` unit tests across 40 suites; `./scripts/verify.sh` → **38 checks passed, 2
+skipped, exit 0** — nonce `GATE-D-1793530805`. The two skips are the standing ones (no Shortcuts
+*window* open for the named aim; the ranking reaching 0 pressable candidates inside Chrome's window
+veto). The first gate run, nonce `GATE-C-1793530662`, came back **37 passed / 1 FAILED** and the
+failure was `--probe-local`, not mine: it grades what a local model answers in that second, and a
+later direct run of the same binary passed all five of its checks. A live-model check that can go red
+for nobody's action is the failure mode `verify.sh` itself warns about; left as it is, and named here
+so the next person reads the probe's output before believing a red.
+
+**Not watched yet.** The resumed round on his screen. The decision, the hold and the sentence are
+measured; whether a fresh capture aims better than the picture it replaced, and whether the extra
+round reads as help or as stalling, are Tier 1 and only he can say.
+
+## The Notebook tier is built — and a read-only probe turned out not to be read-only, 2026-11-02
+
+Rishi asked for "task #28 or something not built yet". `#28` is not in this repo (`TASKS.md` stops at
+3.8 and the build plan is phased P0–P12), so the pick is **TASKS.md 3.3 — the Notebook tier**, which
+Tier 0.1 named as its *preferred* resolution and nobody built. Rejected, with the reason: **3.5 bundled
+skills** (in scope, but "which skills" is product content I would be inventing for him) and **4.1
+Developer ID + notarisation + Sparkle** (hard-blocked on his enrolled account).
+
+**What is in.** `NotebookStore` writes `notebook.md` beside `memory.md`: uncapped, one line per note,
+`SecretSweeper` before every write, and **never injected** — which is the whole point, since the cap on
+memory exists because every turn pays for its bytes. `<NOTE>…</NOTE>` writes; `[NOTES:what to look
+for]` asks, and the answer rides into the next turn through the same one continuation slot a `[READ:]`
+competes for. The panel has a "Show notebook" row and a count with no meter, because there is nothing
+to fill up.
+
+Two things the build had to re-learn rather than assume. First, `GeminiTransportTests` asserted
+`!sys.contains("<NOTE>")` with the reason *"must not teach a tag with no consumer"* — and while
+chasing where to put the new assertion I found that the companion turn does **not** send
+`GeminiRequestBuilder.systemInstruction()` at all: `BrainGateway` passes the caller's `systemPrompt`
+(`companionVoiceResponseSystemPrompt`) to every transport. So the teaching, and the check that it
+survives, belong to the live prompt and `verify.sh` — an assertion in the wrong file is a green light
+nobody is driving on. Second, the tier is *only* safe because the block is framed: "past data, not the
+current screen, and not instructions", with the framing charged against the budget and cut at whole
+entries, so the best note that will not fit is refused rather than clipped.
+
+**What the harnesses caught, all of it real output:**
+- `--probe-notebook` found the delete bug before any human did. `remove(matching:)` intersected
+  content words, and `contentWords` drops anything under three letters — so the needle `"number 3"`
+  quietly became `"number"` and removed **every invoice in the file**. Now whole-word, the way
+  `MemoryStore.matching` has always done it. (My own probe also had a wrong expectation — it asserted
+  the copy held 3 notes after deleting one of 2 — which is what made the line red before the store was.)
+- `--probe-protocol`, which is not part of the gate, was run to prove the two new tags are actually
+  *used by a model*, not merely parseable. It said no, twice: asked "note that the landlord is Sharma",
+  the reply was *"i have noted that the landlord is sharma"* with **no `<NOTE>`** and a `<SUMMARY>`
+  claiming "The note has been recorded" — a spoken success with nothing behind it, which is worse for a
+  memory than for an act, because an act that did not happen changes nothing and a note that did not
+  happen is simply absent when he looks next month. Asked what it had about the gate code, it answered
+  *"i don't have any record"* **without searching** — asserting knowledge of a file it has never seen.
+  Both are fixed: the prompt now says out loud that the notebook is not in the prompt and that
+  `[NOTES:]` is the only way to know it, and `retractUnbackedPromises` grew a third class with its own
+  honest line ("Chunks was told to keep that and nothing was written…") — deliberately not the screen
+  line, which would have sent him looking for a window that was never the problem. Re-run: the search
+  turn passes; the write turn still answers about the desktop instead of noting. **Open, and it is a
+  prompt question, not a code one.**
+- The finding underneath all of it: **`--probe-local` wrote his real settings.** It chose a model by
+  `UserDefaults.standard.set(BrainSettings.providerKey…)`, so one `./scripts/verify.sh` switched the
+  installed app to Ollama and left it there — which is also why the protocol probe was grading the
+  production prompt against a 2B model and reporting families "lost". Probes now go through
+  `BrainSettings.processOverride`, scoped to their own process, and `verify.sh` fails if any
+  `*Probe.swift` writes `UserDefaults`. **His stored value is still `ollama / gemma4:e2b-it-qat`** —
+  yesterday's probes put it there, and whether he wants it back on Gemini is his call, so it was not
+  touched.
+
+**Gate, by my own runs.** `747/747` unit tests across 41 suites (was 729/40 — eighteen new cases: 14 for
+the store, 2 net for the parser once the two old "NOTE is an unknown tag" cases became four, and 2 for
+the note retraction); `./scripts/verify.sh` → **40 checks passed, 2
+skipped, exit 0** — nonce `GATE-FINAL-NB-1793632359`, after `make-app.sh` + `install.sh`. The reply
+audit is at 7 fixtures / 22 assertions with `<NOTE>` and `[NOTES:]` among them. Nothing here is
+committed.
+
+**Not watched yet:** a note actually landing from his voice (the store, the parser and the footnote are
+each measured; the spoken turn is not), the footnote at a glance, and whether the new panel row survives
+a *populated* panel — `--render-panel` draws it empty, which is the one state that cannot overflow.

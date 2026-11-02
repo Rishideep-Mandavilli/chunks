@@ -481,6 +481,27 @@ public enum DoRequest: Equatable, Sendable {
         guard rounded <= 100 else { return nil }
         return rounded
     }
+
+    /// Whether running this puts a *new window* on the screen, and so invalidates the screenshot any
+    /// remaining plan step was aimed at.
+    ///
+    /// This is the property `PlanAfterLaunch` needs, and it is deliberately narrower than "changes
+    /// something". `set_volume` changes the machine and nothing the eye has to re-read; the reminder
+    /// and schedule tools write a file. A launch, a page, a shortcut, a mail window and a reveal each
+    /// put pixels where the model's fractions were measured, and a pixel aim is only ever a proportion
+    /// of the picture it came from.
+    ///
+    /// `run_command` is `false` on purpose, not by omission: its effect cannot be read off `argv`
+    /// (`open -a Notes` is a launch and `ls` is not), and it already carries its own always-asked
+    /// card, so treating it as a launch would auto-continue a plan behind something Chunks cannot
+    /// describe in one sentence.
+    public var invalidatesTheScreen: Bool {
+        switch self {
+        case .openApp, .openURL, .runShortcut, .email, .reveal: return true
+        case .setVolume, .addReminder, .cancelReminder, .addRoutine, .removeRoutine, .runCommand:
+            return false
+        }
+    }
 }
 
 /// What the card asks, in the user's language.

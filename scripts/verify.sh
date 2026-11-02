@@ -294,13 +294,55 @@ else
   printf '        %s\n' "$(printf '%s' "$mic_out" | grep -vE '^\s*$' | tail -3 | tr '\n' '|')"
   fail=$((fail + 1)); failures+=("microphone opens")
 fi
-# The local brain check: if Ollama is running on localhost:11434, verify local discovery and Gemma 4
-if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+# The local brain, kept aside by default. The offline tier is a product (4.3: "no key, no cloud" is a
+# real tier, not a consolation), so its code stays; what stopped being free is running it on every
+# gate. Measured 2026-11-02: `--probe-local` answers on localhost:11434, allocates a 2B model, and
+# until that day wrote the app's real brain settings as a side effect. Opt in with
+# CHUNKS_LOCAL_BRAIN=1 when you are deliberately working on the local path.
+if [[ "${CHUNKS_LOCAL_BRAIN:-0}" == "1" ]] && curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
   check "local brain: Ollama discovery and Gemma 4 vision/text probe" "$BIN" --probe-local
 else
-  printf '  \033[33mSKIP\033[0m  local brain: Ollama not running on localhost:11434\n'
+  printf '  \033[33mSKIP\033[0m  local brain: kept aside — set CHUNKS_LOCAL_BRAIN=1 to run it\n'
   skip=$((skip + 1))
 fi
+
+# The reply audit. Deterministic: five reply shapes a model has actually been photographed writing,
+# run through the live parser. Three separate things have to be true, because exit 0 on its own would
+# also be returned by a probe that had stopped measuring anything:
+#   - `[ACT:DO:open_app:Chrome]` is still named MALFORMED. If the parser ever swallows that shape
+#     quietly, the tag stops reaching the card, the line disappears, and this check goes red — which
+#     is the point, because the swallowing would be invisible to every unit test that builds its own
+#     tags by hand.
+#   - a launch in front of a pixel still reports the steps it holds for a fresh capture.
+#   - the fixture run asserts a non-zero number of things and fails none of them.
+reply_out="$("$BIN" --probe-reply 2>&1)"; reply_status=$?
+if [[ $reply_status -eq 0 ]] \
+   && printf '%s' "$reply_out" | grep -q '\[ACT:DO:open_app:Chrome\].*MALFORMED' \
+   && printf '%s' "$reply_out" | grep -q 'held for a fresh capture' \
+   && printf '%s' "$reply_out" | grep -qE '[1-9][0-9]* assertion\(s\), 0 failure\(s\)'; then
+  printf '  \033[32mPASS\033[0m  reply audit: %s\n' \
+    "$(printf '%s' "$reply_out" | grep -E 'assertion\(s\), 0 failure' | head -1)"
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  reply audit  (exit %d)\n' "$reply_status"
+  printf '        %s\n' "$(printf '%s' "$reply_out" | grep -vE '^\s*$' | tail -3 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("reply audit")
+fi
+# The live half of the same probe: the local model's own reply, tag by tag, with nothing pressed.
+# Opt-in for the same reason as `--probe-local` — it asks a model on this Mac to answer.
+if [[ "${CHUNKS_LOCAL_BRAIN:-0}" == "1" ]] && curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+  check "reply audit: the local model's real reply" "$BIN" --probe-reply --local
+else
+  printf '  \033[33mSKIP\033[0m  reply audit (live): kept aside — set CHUNKS_LOCAL_BRAIN=1 to run it\n'
+  skip=$((skip + 1))
+fi
+
+# The notebook tier, on a copy of his file plus the tier's own rules. The probe exits non-zero if a
+# credential lands, if an over-long note is clipped instead of refused, if a whole-word delete takes
+# "number 30" with "number 3", if a capped block claims nothing was left out, or if the live
+# instruction stopped teaching <NOTE> and [NOTES:] — which is the regression that would make the
+# tier unread and unwritten while every unit test stayed green.
+check "notebook: keeps, refuses, ranks and caps as the rules say" "$BIN" --probe-notebook
 echo
 
 echo "file reading, end to end"
@@ -388,6 +430,19 @@ if grep -q '"store": false' Sources/ChunksKit/Brain/GeminiTransport.swift \
 else
   printf '  \033[31mFAIL\033[0m  store:false has gone missing from the request builder\n'
   fail=$((fail + 1)); failures+=("store:false")
+fi
+# A probe may decide what *it* asks; it may not decide what his next turn asks. Measured 2026-11-02:
+# `--probe-local` answered "which brain is on this Mac?" by writing the app's real settings, so one
+# gate run left his stored brain on Ollama and `--probe-protocol` then graded the production prompt
+# against a 2B model and reported three tag families lost. The probes use `BrainSettings
+# .processOverride` now, and this check fails if anyone puts the persistence back.
+if ! grep -qE 'UserDefaults\.standard\.(set|removeObject)' Sources/Chunks/*Probe*.swift \
+   && grep -q 'processOverride' Sources/Chunks/LocalBrainProbe.swift; then
+  printf '  \033[32mPASS\033[0m  no probe writes the settings it only means to read\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  a probe writes UserDefaults again — running it would switch his app\n'
+  fail=$((fail + 1)); failures+=("probe must not persist settings")
 fi
 echo
 

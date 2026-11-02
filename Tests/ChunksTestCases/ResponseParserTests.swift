@@ -173,29 +173,70 @@ public enum ResponseParserTests {
             expectEqual(proposal.add.first?.fact, "y")
         }
 
-        // MARK: Unknown tags
+        // MARK: The notebook tag
 
-        test("an unknown NOTE block round-trips as plain text, even across deltas") {
-            let reply = "Before <NOTE> Debug Navigator\n </NOTE> after."
+        test("a NOTE block becomes a note, whole and across deltas") {
+            // Taught again on 2026-11-02, one release after it was deleted: Tier 0.1 removed the tag
+            // because nothing consumed it, and the Notebook tier (TASKS.md 3.3) is the consumer. This
+            // case is the mirror of the one that used to assert it stayed *visible* — a tag with a
+            // consumer must be consumed, or the note he dictated is prose on a card.
+            let reply = "Before <NOTE> The landlord is Sharma\n </NOTE> after."
             let whole = ResponseParser()
             let wholeEvents = whole.feed(reply) + whole.finish()
-            expectEqual(wholeEvents, [.text(reply)],
-                        "old NOTE offers must remain visible instead of being silently consumed")
+            let noted = wholeEvents.compactMap { if case .note(let t) = $0 { t } else { nil } }
+            expectEqual(noted, ["The landlord is Sharma"],
+                        "the note arrives trimmed to one line, and the sentences around it stay text")
+            let echoed = wholeEvents.compactMap { if case .text(let t) = $0 { t } else { nil } }
+                .joined()
+            expect(!echoed.contains("<NOTE>"),
+                   "markup the app can honour must not be shown to him: \(echoed)")
 
             let streamed = ResponseParser()
             let streamedEvents = ResponseParserTests.feedAll(streamed, reply) + streamed.finish()
-            expectEqual(ResponseParserTests.texts(streamedEvents), reply,
-                        "splitting a retired tag across deltas must not lose its markup or content")
-            expect(streamedEvents.allSatisfy { if case .text = $0 { return true }; return false },
-                   "NOTE is unknown text, not an instruction to save or speak anything")
+            let splitNote = streamedEvents.compactMap { if case .note(let t) = $0 { t } else { nil } }
+            expectEqual(splitNote, ["The landlord is Sharma"],
+                        "a tag split one character at a time still becomes the same note")
         }
 
-        test("an unterminated NOTE block is preserved as unknown text") {
+        test("a note over the store's own line limit is shown, not clipped") {
+            // Fail open, exactly as `<DRAFT>` does: half a note on disk is a fact he did not write,
+            // and the cap here is the store's, so a tag this accepts is a tag `NotebookStore` accepts.
+            let long = String(repeating: "x", count: NotebookStore.maxEntryCharacters + 1)
+            let parser = ResponseParser()
+            let events = parser.feed("<NOTE>\(long)</NOTE>") + parser.finish()
+            expect(events.filter { if case .note = $0 { return true }; return false }.isEmpty,
+                   "an over-long note must not be written, trimmed or guessed at")
+            let echoed = events.compactMap { if case .text(let t) = $0 { t } else { nil } }.joined()
+            expect(echoed.contains("<NOTE>"), "and he sees what the model tried to save")
+        }
+
+        test("an unterminated NOTE block is preserved as text") {
+            // Unchanged from the retired-tag case, and for the same reason the fail-open rule exists:
+            // the parser cannot know what the note was, so it shows him the markup instead of keeping
+            // a fragment of it.
             let parser = ResponseParser()
             let reply = "The answer is 42. <NOTE>save this"
             let events = parser.feed(reply) + parser.finish()
-            expectEqual(events, [.text(reply)],
-                        "an incomplete legacy NOTE must not swallow the answer or its own contents")
+            let shown = events.compactMap { if case .text(let t) = $0 { t } else { nil } }.joined()
+            expectEqual(shown, reply,
+                        "an incomplete NOTE must not swallow the answer or its own contents — the "
+                        + "answer may arrive as its own event, but nothing may be lost")
+            expect(events.filter { if case .note = $0 { return true }; return false }.isEmpty,
+                   "and no half a note reaches the store")
+        }
+
+        test("a NOTES search is collected, and an empty one is shown rather than run") {
+            let parser = ResponseParser()
+            let events = parser.feed("[NOTES:the landlord]") + parser.finish()
+            expectEqual(events.compactMap { if case .noteSearch(let q) = $0 { q } else { nil } },
+                        ["the landlord"], "the query is what he asked about, whole")
+
+            let blank = ResponseParser()
+            let blankEvents = blank.feed("[NOTES:]") + blank.finish()
+            expect(blankEvents.filter { if case .noteSearch = $0 { return true }; return false }.isEmpty,
+                   "an empty query must not search the whole uncapped file into a prompt")
+            expect(blankEvents.contains(.text("[NOTES:]")),
+                   "and it must reach him as the tag the model wrote")
         }
 
         // MARK: <DRAFT>
@@ -326,6 +367,32 @@ public enum ResponseParserTests {
                         "x-ray machine", "axis stripping must not eat a real label")
         }
 
+        test("a pipe-less type tag never gathers the model's next tag as its payload") {
+            // Photographed on 2026-11-01 in front of a jury: a local model wrote the aim without its
+            // pipe, the gatherer looked for the next tag and only recognised a square bracket, so it
+            // took `<NEXT_ACTIONS> - press enter on the search bar` as the text to type and Chunks
+            // typed 61 characters of markup into the desktop, because the aim resolved to whatever
+            // window owned those pixels.
+            let streamer = AnswerStreamer()
+            streamer.push("[TYPE:368,497:area 51]\n<NEXT_ACTIONS>\n"
+                + "- press enter on the search bar\n</NEXT_ACTIONS")
+            streamer.finish()
+            let typed = streamer.actionRequests.compactMap(\.textToType)
+            expect(typed.isEmpty,
+                   "a tag with no payload must type nothing, not the next thing the model said: "
+                   + typed.map { "\($0.count) chars" }.joined(separator: ", "))
+        }
+
+        test("an angle bracket inside code is content, not a tag boundary") {
+            // The reason the fix above cannot be a blanket test for `<`: this is the case the gatherer
+            // exists for, and it is typing C.
+            let streamer = AnswerStreamer()
+            streamer.push("[TYPE:1,2:box]#include <stdio.h>\nint main(void) { return 0; }")
+            streamer.finish()
+            let typed = streamer.actionRequests.first?.textToType ?? ""
+            expect(typed.contains("#include <stdio.h>") && typed.contains("int main(void)"),
+                   "the payload is the whole program, brackets and all: \(typed)")
+        }
         test("a raw tag line ends a gathered payload instead of joining it") {
             let streamer = AnswerStreamer()
             streamer.push("[TYPE:1,2:box]part one\nrest of it\n[ACT:x=9,9:not a real act]")

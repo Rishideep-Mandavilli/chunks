@@ -2910,11 +2910,10 @@ a question that lists them, never a coin toss. The reasoning is invariant 9's an
 puts a file's contents on his screen inside an application, which is more than a reveal does and less
 than a write, and it is closer to a read going to a model than to a press.
 
-Two decisions recorded as open, because they are his. There is no read-only probe for this verb yet: the
-verdict lives in `CompanionManager`, and a probe that reimplemented it would be a second authority over
-his disk — so the resolver has to be hoisted into ChunksKit before a `--probe-open` can exist. And
-whether Chunks should use the file route when the editor is already open is a real question, because
-opening from disk can make the editor's saved-versus-dirty state disagree with what is on disk.
+One decision is still his: whether Chunks should use the file route when the editor is already open,
+because opening from disk can make the editor's saved-versus-dirty state disagree with what is on disk.
+The other half of that paragraph — no read-only probe, because the verdict lived in `CompanionManager` —
+is closed on 2026-11-03 below.
 
 **Also this session, on his request:** the Gemma checks came back on by default (`--probe-local` and
 `--probe-reply --local`), and both PASS — what stays fixed is the bug they carried, choosing a model by
@@ -2923,3 +2922,47 @@ any `*Probe.swift` touches `UserDefaults` again.
 
 **Gate:** 767/767 unit tests across 42 suites; `./scripts/verify.sh` → **42 checks passed, 1 skipped,
 exit 0** — nonce `OFW-GATE-1793647917`, after `make-app.sh` + `install.sh`.
+
+## 2026-11-03 — the open-a-file policy hoisted, and made probeable
+
+The gap the previous note recorded as open was real and it was the usual shape: `[DO:open_file_with:…]`
+decided *everything about his disk* inside `CompanionManager.resolvedOpenFileWith`, where a unit test
+cannot reach and a probe cannot quote without performing the act. So a security refusal — "that file
+holds credentials" — was a string in a UI file, and the first person to reword it would not know whether
+anything still guarded the path.
+
+`Sources/ChunksKit/Action/OpenFilePolicy.swift` is now the authority: `decide(app:written:resolved:
+appExists:)` returns one of five outcomes, and `refusal(for:)` writes the sentence for each. The shell
+supplies two facts it owns and nothing else — `FinderReveal` for what the disk says,
+`ToolRunner.isInstalled` for what is on the machine — through one adapter, `OpenFilePolicy.Resolved
+(written:)`. That adapter is where a detail mattered: `FinderReveal` has no case for "that string was
+never a path", it answers `nothing`, so the adapter asks `RevealPolicy` first. Without that, an empty
+payload reached him as "there is no file called …" — a search that never happened, described as a search
+that found nothing.
+
+**The ordering is a decision, not an accident.** An app that is not installed is answered *before* the
+file's boundary verdict, so `open_file_with:Nope|~/.ssh/id_rsa` says "Nope is not installed". A credential
+card about an app that cannot run would send him to fix a path he already wrote correctly, and the two
+sentences must stay apart because one is overrulable by naming a different file and the other is not.
+
+`--probe-open 'TextEdit|notes.md'` prints the roots, the disk's answer, the app's verdict, the outcome and
+the card's exact sentence — and opens nothing. `verify.sh` asserts all five answers stay distinguishable
+against his real `/Applications` and his real `~/.ssh`, and picks the app by asking which names resolve
+rather than typing one, which is how a second finding surfaced: `open_file_with:Code|…` refuses on this
+machine because three installed apps contain "code" (`Visual Studio Code`, `Claude Code URL Handler`,
+`Free Claude Code`) and `resolveApplicationPath` deliberately requires a single candidate. That rule is
+correct for `open_app` — the card said "Open X?" and something else appearing is the failure it was
+written against — and it is arguably too strict for *choosing a viewer for a document he named*, where
+the worst case is a wrong app opening the right file. Left as his call, recorded in TASKS.md 3.10.
+
+**3.15's lifetime question is answered.** "The Kaggle just runs the model whereas the Pi executes" —
+so the Pi holds the task record and the queue, the notebook is a disposable GPU endpoint, and the server
+side needs a `waiting_for_model` state so a model hop that times out is retried rather than reported as a
+failed job. Written into TASKS.md 3.15 A.6 as his decision, not a proposal.
+
+**Gate, measured after `make-app.sh` + `install.sh`:** 776/776 unit tests across 43 suites (the new suite
+is "Open a file policy", 9 cases). `./scripts/verify.sh` exit 0. 44 checks total, and the pass/skip split
+moves with the live model: run nonce `OFW-GATE-15083` → **42 passed, 2 skipped**; run nonce
+`OFW-GATE2-13777` → **41 passed, 3 skipped**, the extra skip being `self-test`'s model round, where the
+request went out and the key's rate limit answered nothing. The new check `open a file: one card, and
+four refusals that each name their own reason` PASSED on both runs.

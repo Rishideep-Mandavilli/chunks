@@ -139,6 +139,7 @@ finds a desktop icon. Two more read-only doors came out of the semantic work:
 .build/debug/chunks --probe-awake     # the sleep policy's verdict, and whether this machine takes an assertion at all
 .build/debug/chunks --probe-memory    # his real memory.md driven through the replacement rules, in a copy
 .build/debug/chunks --probe-reveal "Memora"  # which folder a reveal would open, and what it refuses
+.build/debug/chunks --probe-open 'TextEdit|notes.md'  # what opening a file in an app would ask, and which of its four refusals fires
 .build/debug/chunks --probe-crop '1400,100,300,200|667,200'  # an aim inside a region, and where it lands
 .build/debug/chunks --probe-fields WhatsApp    # every field an app publishes, and its real name
 .build/debug/chunks --probe-find 'read the invoice pdf'  # which file a sentence resolves to, and why
@@ -957,6 +958,27 @@ map almost 1:1 onto `#expect(...)`.
     approving nothing. A name that matches nothing is refused *before* the card, like a routine that
     cannot be honoured. `--probe-reveal "Memora"` prints the verdict and never opens anything.
 
+    **`[DO:open_file_with:TextEdit|notes.md]` shares that policy, and now shares its home.** It is the
+    file route rather than the explorer UI — the same app opens the same document whether its window is
+    on this Space or closed, and nothing moves his cursor — but it **puts a document's contents on
+    screen inside an application the model named**, so it answers to `RevealPolicy`'s roots and
+    credential deny-list exactly as a reveal does. Its five answers must stay distinguishable, because
+    two of them are his and three are the app's: one file plus an installed app is a card; two things
+    sharing the name is a question listing at most three places; nothing there is "there is no file
+    called X"; a credential is "that file holds credentials"; outside the roots is "that path is
+    outside the folders Chunks is allowed to open" — and an app that is not on the machine is said as
+    *that*, checked first, because "Code did not open notes.md" about an app he has never installed
+    sends him looking for a broken file. The decision and all five sentences live in
+    `OpenFilePolicy` (ChunksKit, pure), and the shell supplies only the two facts it owns — what the
+    disk says through `FinderReveal`, and whether the app resolves through `ToolRunner.isInstalled`.
+    That hoist was the fix: the rule used to be written inside `CompanionManager`, where a unit test
+    cannot reach it and a probe could not quote it without performing the act, and a security refusal
+    nobody can read at a terminal is a refusal that rots the first time someone edits the wording.
+    `--probe-open 'TextEdit|notes.md'` prints the disk's answer, the verdict, the card's exact
+    sentence and nothing was opened; `verify.sh` asserts all five shapes stay apart, choosing the app
+    by asking this machine which names resolve uniquely rather than typing one — three of his apps
+    contain "code", so `open_file_with:Code|…` is honestly ambiguous and refuses.
+
 12. **The notebook is uncapped, and a recalled line from it is data, never instructions.** Two tiers,
     one rule each: `memory.md` is 2 KB, injected into every turn, and refuses at its boundary;
     `notebook.md` is unbounded, **never injected**, and reaches a prompt only when a turn asks
@@ -1011,9 +1033,10 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-**The app runs. 767 of 767 tests green across 42 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 42 checks passed /
-1 skipped.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
+**The app runs. 776 of 776 tests green across 43 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 44 checks: 41–42 pass and 2–3 skip,
+and the ones that move are the live model round and the Chrome candidate sweep, never a check that
+went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
 suite. The same rule now applies to `--probe-protocol`: it measures the *prompt* against a live
 capture, and a run started while the Mac is at the login window would grade five questions about a
@@ -1048,6 +1071,7 @@ Done and tested:
 | What is open | `Action/OpenWindows.swift` | The read half: window list → one labelled block for the next turn, grouped by app, whole groups only under a 3 KB budget, with the count of what was left out |
 | Which window he meant | `Action/WindowAct.swift`, `Action/WindowDriver.swift` | The pure half decides (a title answers when every distinctive word he said is in it, two equal answers are refused *with both names listed*, and nothing is ever chosen by where it sits); the driver enumerates windows through Accessibility and performs raise/minimise/close/quit without moving the cursor |
 | File read policy | `Action/ReadRequest.swift` | `[READ:~/path|question]`: allow-listed roots, a credential deny-list matched on the **resolved** path so a symlink into `~/.ssh` is refused, 24 KB cap sliced by file kind (tail for logs, head for code) |
+| Opening a file in an app | `Action/OpenFilePolicy.swift` | The five answers behind `[DO:open_file_with:…]` and their exact sentences, decided where a test can reach and a probe can quote: installed app + one file is a card, two matches asks, and a credential or an out-of-roots path is refused before a card exists |
 | Read-input budget | `Action/ReadInputBudget.swift` | One 6,000-unit UTF-8-byte token upper bound for the whole attachment, charging the exact live frame — path, coverage warning and untrusted-data label included. PDFs enter as ranked whole pages in document order and an oversized best page is refused rather than clipped; text and office files enter as contiguous whole lines, with boundary fragments trimmed as bytes before decoding |
 | Document pages | `Action/DocumentReading.swift`, `Chunks/Clicky/DocumentRead.swift` | A PDF's text layer, extracted through PDFKit and cut to one turn by what the question names. 6 KB of characters, whole pages only (never half a page's middle), every block labelled with its page number, and a slice line that tells the model the rest was not read — the failure it prevents is "there is no indemnity clause" about page 16 of 17. A scan with no text layer is *drawn* instead: `renderedJPEG` paints its first two pages at the capture's own ceiling and they go as pixels, so a photographed receipt is answered rather than refused |
 | Finding the file a sentence means | `Files/FileMention.swift`, `Chunks/Clicky/FileAttachment.swift` | The shell scores every sentence against his file names — **no trigger-word gate, because a gate is a ceiling on how he can talk** — and attaches the winner in the same turn. Two shared words win outright; one plus the kind he named wins; the format he named (`png` beats `receipt`) then recency break the rest. Two files of the named kind and no name is a **question, not a coin toss** — the model gets a `~/`-quoted listing instead, and is told never to invent a path. Dotfiles and `.DS_Store` are never automatic candidates: `~/.zsh_history` answering "read the log in my downloads" would send every command he has typed this year to a cloud model |

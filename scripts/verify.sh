@@ -169,6 +169,46 @@ else
 fi
 check "fields: what an app publishes to the typist"  "$BIN" --probe-fields Finder
 
+# Opening a file in a named app: five answers, and the gate asserts all five stay distinguishable.
+# This verb puts a document on screen inside another application, so "that file holds credentials" is a
+# security rule while "there is no file called X" is his own typo — and a card that says the second
+# about the first sends him re-typing a path he already wrote correctly. The app is chosen by asking
+# the probe which names resolve on *this* machine, never typed here, because three of his apps contain
+# "code" and `open_file_with:Code|…` is honestly ambiguous.
+open_app=""
+for candidate in TextEdit Safari Music; do
+  if "$BIN" --probe-open "$candidate|$PWD/AGENTS.md" 2>&1 | grep -q "installed=true"; then
+    open_app="$candidate"; break
+  fi
+done
+if [[ -z "$open_app" ]]; then
+  printf '  \033[33mSKIP\033[0m  open a file: no app on this machine answers to a unique name\n'
+  skip=$((skip + 1))
+else
+  open_out="$("$BIN" --probe-open "$open_app|$PWD/AGENTS.md" 2>&1)"
+  secret_out="$("$BIN" --probe-open "$open_app|~/.ssh/id_rsa" 2>&1)"
+  outside_out="$("$BIN" --probe-open "$open_app|/etc/hosts" 2>&1)"
+  missing_out="$("$BIN" --probe-open "$open_app|no-such-file-here-xyz.md" 2>&1)"
+  noapp_out="$("$BIN" --probe-open "NoSuchAppHere|$PWD/AGENTS.md" 2>&1)"
+  parse_out="$("$BIN" --probe-open "$open_app|" 2>&1)"; parse_status=$?
+  if printf '%s' "$open_out" | grep -q "one match" \
+     && printf '%s' "$open_out" | grep -q "the card would ask" \
+     && printf '%s' "$open_out" | grep -q "asks even with the switch off? no" \
+     && printf '%s' "$secret_out" | grep -q "refused — That file holds credentials" \
+     && printf '%s' "$outside_out" | grep -q "refused — That path is outside the folders" \
+     && printf '%s' "$missing_out" | grep -q "refused — There is no file called no-such-file-here-xyz" \
+     && printf '%s' "$noapp_out" | grep -q "refused — NoSuchAppHere is not installed" \
+     && [[ $parse_status -eq 1 ]] && printf '%s' "$parse_out" | grep -q "refused at parse"; then
+    printf '  \033[32mPASS\033[0m  open a file: one card, and four refusals that each name their own reason\n'
+    pass=$((pass + 1))
+  else
+    printf '  \033[31mFAIL\033[0m  open a file: the five verdicts are no longer distinguishable\n'
+    printf '        %s\n' "$(printf '%s\n%s\n%s\n%s\n%s\n%s' "$open_out" "$secret_out" \
+        "$outside_out" "$missing_out" "$noapp_out" "$parse_out" | grep -v 'roots:' | grep -vE '^\s*$' | tail -4 | tr '\n' '|')"
+    fail=$((fail + 1)); failures+=("open a file policy")
+  fi
+fi
+
 # The window verbs, read-only: enumeration, the card's wording for each, and the contract that closing
 # and quitting stay asked about even with asking switched off. It performs nothing — the verbs are
 # printed as questions — so this can run against his real screen.

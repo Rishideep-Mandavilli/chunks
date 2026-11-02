@@ -42,6 +42,9 @@ struct leanring_buddyApp: App {
         if let target = AXProbe.requestedReveal() {
             AXProbe.runReveal(target)
         }
+        if let body = AXProbe.requestedOpen() {
+            AXProbe.runOpen(body)
+        }
         if AXProbe.isVoiceProbeRequested {
             AXProbe.runVoiceProbe()
         }

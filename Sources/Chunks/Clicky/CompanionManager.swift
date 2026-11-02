@@ -3009,52 +3009,17 @@ final class CompanionManager: ObservableObject {
     /// choose to trust with them.
     private func resolvedOpenFileWith(_ request: DoRequest) -> DoRequest? {
         guard case .openFileWith(let app, let written) = request else { return request }
-        switch RevealPolicy.verdict(for: written, homeDirectory: NSHomeDirectory()) {
-        case .allowed(let path):
-            guard FileManager.default.fileExists(atPath: path) else {
-                Log.write("tool: open refused — nothing at \(path)")
-                hud.reportConfirm("There is no file at \(RevealPolicy.label(for: path)).")
-                return nil
-            }
-            return .openFileWith(app: app, path: path)
-        case .lookup(let name):
-            switch FinderReveal.resolve(name) {
-            case .found(let path):
-                return .openFileWith(app: app, path: path)
-            case .ambiguous(let paths):
-                let where_ = paths.prefix(3).map { path in
-                    "\((path as NSString).lastPathComponent) in "
-                        + "\((path as NSString).deletingLastPathComponent)"
-                }
-                Log.write("tool: open refused — \(paths.count) things called \"\(name)\"")
-                hud.reportConfirm("More than one thing is called \(name): "
-                    + where_.joined(separator: "; ") + ". Say which one.")
-                return nil
-            case .nothing:
-                Log.write("tool: open refused — nothing called \"\(name)\"")
-                hud.reportConfirm("Chunks found nothing called \(name) in your Documents, "
-                    + "Downloads or Desktop.")
-                return nil
-            case .refused(let why):
-                Log.write("tool: open refused — \(why)")
-                hud.reportConfirm(why == "secret"
-                    ? "That file holds credentials, so Chunks will not put it on screen."
-                    : "That path is outside the folders Chunks is allowed to open.")
-                return nil
-            }
-        case .secret:
-            Log.write("tool: open refused — secret")
-            hud.reportConfirm("That file holds credentials, so Chunks will not put it on screen.")
-            return nil
-        case .outside:
-            Log.write("tool: open refused — outside the allowed roots")
-            hud.reportConfirm("That path is outside the folders Chunks is allowed to open.")
-            return nil
-        case .unreadable:
-            Log.write("tool: open refused — not a path: \(written)")
-            hud.reportConfirm("That is not a path Chunks can open.")
+        let outcome = OpenFilePolicy.decide(app: app, written: written,
+                                            resolved: OpenFilePolicy.Resolved(written: written),
+                                            appExists: ToolRunner.isInstalled(app))
+        guard outcome.canProceed else {
+            let refusal = OpenFilePolicy.refusal(for: outcome)
+            Log.write("tool: open refused — \(refusal)")
+            hud.reportConfirm(refusal)
             return nil
         }
+        guard case .opens(let namedApp, let path) = outcome else { return nil }
+        return .openFileWith(app: namedApp, path: path)
     }
 
     /// Acts the model proposed that the card never asked about.
@@ -4112,6 +4077,31 @@ final class CompanionManager: ObservableObject {
             } catch {
                 print("⚠️ Onboarding demo error: \(error)")
             }
+        }
+    }
+}
+
+extension OpenFilePolicy.Resolved {
+    /// What the disk says about the string the model wrote, in the policy's vocabulary.
+    ///
+    /// `FinderReveal` answers `nothing` for a payload that was never a path or a name — it has no
+    /// fourth case — so that question is asked of `RevealPolicy` first. Without this, `[DO:open_file_with:Code|]`
+    /// would be reported as "there is no file called …", which sends him looking for a file when what
+    /// arrived was not a name at all.
+    init(written: String) {
+        if case .unreadable = RevealPolicy.verdict(for: written, homeDirectory: NSHomeDirectory()) {
+            self = .notAPath
+            return
+        }
+        switch FinderReveal.resolve(written) {
+        case .found(let path):
+            self = .path(path)
+        case .ambiguous(let paths):
+            self = .ambiguous(paths)
+        case .nothing:
+            self = .nothing
+        case .refused(let why):
+            self = why == "secret" ? .secret : .outside
         }
     }
 }

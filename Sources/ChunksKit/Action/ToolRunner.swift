@@ -204,6 +204,15 @@ public enum ToolRunner {
         }
     }
 
+    /// Whether an application by that name is installed.
+    ///
+    /// Public because a refusal has to say *which half* failed: "Code did not open notes.md" about an
+    /// app that is not on the machine sends him looking for a broken file. The shell asks before it
+    /// builds a card, and so does `--probe-open`.
+    public static func isInstalled(_ name: String) -> Bool {
+        resolveApplicationPath(name: name, candidates: installedApplications()) != nil
+    }
+
     static func installedApplications() -> [String] {
         let finder = FileManager.default
         var paths: [String] = []

@@ -69,11 +69,19 @@ sees when it is missing, you do not understand the item yet.
 
 ---
 
-## Where every task stands — 2026-11-02, at a glance
+## Where every task stands — 2026-11-03, at a glance
 
 Read this first if you only want the state, not the argument. **Done-and-watched** = measured on the
 machine. **Done-unseen** = code green, `--render-*`/`--probe-*` verified, but no human has looked at it
 on a real screen. **Blocked-on-him** = a Tier 2 decision, not an engineering problem.
+
+**Closed 2026-11-03, the two bugs that were still open:** the launch-hold's *other* half (a plan whose
+first step is a launch now runs the launch, re-captures and resumes instead of dropping the steps), and
+the open-a-file policy, which has moved into ChunksKit as `OpenFilePolicy` with `--probe-open` reading
+its real verdict — so the five answers (one card, two matches, no such file, a credential, out of
+roots) are now unit-tested and probeable instead of living where neither can reach. 3.15's lifetime
+question is **answered, not built**: the Pi executes and holds the job state, the notebook only serves
+the model.
 
 **Tier 0 — dead promises.** 0.1 `<NOTE>` **closed twice over**: first by deleting the tag (2026-10-28),
 then properly, by building the tier that consumes it (3.3, 2026-11-02). 0.2, 0.3, 0.4, 0.5
@@ -678,6 +686,22 @@ and a probe that re-implemented it would be a second opinion about his disk — 
 hoisted into ChunksKit first), and whether Chunks should prefer the file route when the editor is already
 open is still his call, because that can make the editor's saved-versus-unsaved state disagree with disk.
 
+**Update 2026-11-03: the first of those two gaps is closed.** The decision moved to
+`Action/OpenFilePolicy.swift` in ChunksKit — `decide(app:written:resolved:appExists:)` plus the five
+sentences — and the shell is now two facts: `FinderReveal` for what the disk says, `ToolRunner.isInstalled`
+for what is on the machine. `--probe-open 'TextEdit|notes.md'` prints the disk's answer, the verdict and
+the card's exact wording and opens nothing, and `verify.sh` asserts that the five answers stay
+distinguishable (a credential, an out-of-roots path, a missing file, an uninstalled app, one open card).
+Nine unit cases pin the ordering, including the one that is easy to get wrong: an app that is not
+installed is answered *before* the file, because a card about credentials would send him to fix a path
+he already wrote correctly. Measured on his machine while writing the check: `open_file_with:Code|…`
+refuses, and refuses for a reason that is true — three apps in `/Applications` contain "code"
+(`Visual Studio Code`, `Claude Code URL Handler`, `Free Claude Code`), so the strict single-candidate
+rule in `resolveApplicationPath` cannot choose. The gate therefore asks which names resolve rather than
+typing one. Whether to loosen that rule for a *file* open — where a wrong app is an inconvenience, not
+the wrong document on screen — is his call, and it is a different decision from `open_app`, which is
+what the rule was written for.
+
 Acceptance: `--probe-controls Code` lists what the app publishes, and a spoken "open the file I named
 in VS Code" lands on the right document — his screen for that one.
 
@@ -825,10 +849,25 @@ directions, because a contract nobody wrote down becomes two incompatible halves
 5. **The approval body.** `POST /tasks/{id}/approval` should say what it is approving (a cost, a
    destination, an action) in a machine-readable field, because that string is exactly what Chunks puts
    on a card — and Chunks must not paraphrase a spend decision it did not compute.
-6. **A lifetime answer.** A Kaggle notebook is ephemeral: it idle-times-out, and a job in flight dies
-   with it. Either move the executor to the Pi (which is already provisioned in `infra/pi/`) and keep
-   Kaggle for the model only, or have the server refuse long tasks when it is not the durable half.
-   This is the one architectural decision in the list, and it is his.
+6. **A lifetime answer — decided by him on 2026-11-03.** *"The Kaggle just runs the model whereas the
+   Pi executes."* So the split is not a choice to make later: **the Pi is the durable half** — it owns
+   the task records, the queue, the browser and the clock — and **the notebook is a GPU that answers
+   questions**, reached over HTTP for one inference at a time. Three consequences for the contract, all
+   of them now the harness' job rather than Chunks':
+   - **Job state lives on the Pi, never in the notebook's memory.** A Kaggle notebook idle-times-out,
+     restarts, and its process dies with it; a job whose "where was I?" lives there is lost, and the
+     user reads that as `failed`. The Pi writes the task record before it asks the model anything.
+   - **The model hop is disposable and must look like it.** A request to the notebook timing out is a
+     retry against a fresh endpoint, not a failed job — so `GET /tasks/{id}` needs to distinguish
+     `waiting_for_model` from `running`, or Chunks will report a stall as a loss. `infra/pi/` is already
+     provisioned at ~1.3 GB resident with 2 GB of swap, which is why the *record* fits on the Pi even
+     though the weights do not.
+   - **The Pi answers for both halves.** `--probe-handoff` and the six outcomes talk to the Pi's URL
+     only; if the notebook is down, that is `unreachable` *from the Pi's point of view*, reported as the
+     model tier being unavailable, and never as "the job failed".
+   What is left as his decision is only which endpoint the Pi uses for the model (Kaggle while
+   iterating, Modal or a local machine later) — that is a URL in a config file, and none of the above
+   changes when it moves.
 
 **B. What Chunks owns (this repo), and the order to do it in:**
 1. `RemoteExecutor.swift` in ChunksKit — pure request/response types over the contract above: a task

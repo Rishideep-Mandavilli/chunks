@@ -709,6 +709,56 @@ enum AXProbe {
         exit(0)
     }
 
+    /// `--probe-open 'TextEdit|notes.md'` — read-only: what `[DO:open_file_with:…]` would decide.
+    ///
+    /// This verb puts a file's contents on screen inside an application the model named, so its two
+    /// sharpest answers — "that file holds credentials" and "that is outside the folders I may open" —
+    /// are security rules. They used to be written inside `CompanionManager`, where a unit test cannot
+    /// reach them and a probe could not quote them without performing the act, so the decision moved to
+    /// `OpenFilePolicy` and this function only supplies the two facts the shell owns: what the disk
+    /// says, and which apps are installed. It opens nothing.
+    static func requestedOpen() -> String? {
+        guard let index = CommandLine.arguments.firstIndex(of: "--probe-open"),
+              index + 1 < CommandLine.arguments.count else { return nil }
+        let body = CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespaces)
+        return body.isEmpty ? nil : body
+    }
+
+    static func runOpen(_ body: String) -> Never {
+        let home = NSHomeDirectory()
+        print("probe-open: \"\(body)\" · roots: "
+            + FinderReveal.searchRoots(home: home).joined(separator: ", "))
+        let parsed = DoRequest.parse("open_file_with:\(body)")
+        guard case .openFileWith(let app, let written)? = parsed else {
+            print("probe-open: refused at parse — the tag is not an app and a file Chunks can name, "
+                + "so it never reaches the disk and no card is built")
+            exit(1)
+        }
+        let installed = ToolRunner.isInstalled(app)
+        let resolved = OpenFilePolicy.Resolved(written: written)
+        let outcome = OpenFilePolicy.decide(app: app, written: written,
+                                            resolved: resolved, appExists: installed)
+        print("probe-open: app \"\(app)\" installed=\(installed) · disk: \(resolved)")
+        if case .opens(let namedApp, let path) = outcome {
+            let request = DoRequest.openFileWith(app: namedApp, path: path)
+            print("probe-open: one match — \(path)")
+            print("probe-open: the card would ask \"\(ToolLayer.question(for: request))\" "
+                + "and nothing was opened")
+            print("probe-open: asks even with the switch off? "
+                + (ToolLayer.alwaysAsks(request) ? "yes" : "no"))
+            exit(0)
+        }
+        let refusal = OpenFilePolicy.refusal(for: outcome)
+        print("probe-open: refused — \(refusal)")
+        print("probe-open: no card is built, so an Allow could never have led to a file opening")
+        guard !refusal.isEmpty else {
+            print("probe-open: BUG — an outcome that cannot proceed produced no sentence, "
+                + "so he would have been shown an empty card")
+            exit(1)
+        }
+        exit(0)
+    }
+
     /// Print the answer and exit. Never returns, so a probe can never fall through into
     /// launching the menu bar app — a probe that also opened panels would confuse the next
     /// person reading the output.

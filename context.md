@@ -3230,3 +3230,43 @@ never been run. Both now start `NSApplication.shared.run()` on the main thread.
 **Green:** 825/825 tests; the gate is 50 checks with `--probe-ink` (18 assertions) and `--render-ink` in
 it; smoke 18/18 with no new crash report. Unseen, and his to judge: the ink on his own screen during a
 real turn — help or clutter, and whether it should fade rather than vanish.
+
+## 2026-11-04 (early) — the third crash of the same signature, and it was not our assertion
+
+He reported the app dying again mid-turn: *"the auto timeout is closing the chunks, before it even
+stop loading and speaking out."* It was not a timeout. A crash report at 00:53:57, the process 56
+seconds old, sixteen after the turn answered — and the stack had **no `MainActor.assumeIsolated` of
+ours anywhere on it**. The caller was SwiftUI's own: `NSHostingView.mouseEntered` →
+`HoverEventDispatcher.receiveEvents` → `ViewResponder.hitTest` → `assumeIsolated` → the same
+`swift_getObjectType` fault that the two timer blocks produced on 2026-11-03.
+
+So the grep that made our call sites safe was never going to finish the job: the assertion that
+faults belongs to a framework, and no amount of searching our sources finds it. What *is* ours is the
+state of the thread it ran on. A main thread that has just been blocked inside a main-actor task
+leaves the runtime's current-executor answer read out of a job that may already be gone, and the next
+AppKit callback — a timer, a tracking-area enter, anything — asks the question and faults.
+
+The blocker was the act path. `AXTDriver` waits by design: 150 ms to retry a Chromium surface that
+publishes its verbs lazily, a settle before a value read-back, a pause between keystroke chunks. Every
+one of those ran on the main thread, inside the main actor, because the driver is synchronous and the
+shell is `@MainActor`. Now every Accessibility call the shell makes goes through
+`CompanionManager.driver(…)`, one `Task.detached` awaited exactly where the call used to be — the
+chain keeps its order (resolve, policy, card, press, re-read-and-compare), nothing runs beside the
+consent gate, and the driver touches nothing main-thread-only.
+
+**Measured, both halves.** `--probe-mainthread`: a 150 ms wait costs the main run loop **135 ms** of
+timer lateness inline and **1 ms** detached. The instrument was wrong twice before it was right — the
+first version hopped its own sampling tick, so no tick landed during the block and it reported a 150 ms
+stall as 0 ms; the second invalidated the timer before draining, cancelling exactly the fires it was
+counting. And because a probe cannot catch a call site that has not been written yet, `verify.sh` also
+greps for any `AXTDriver.` in the shell outside a hop.
+
+**The gate then caught a second thing, unrelated to the crash.** `read: a Word file` failed on
+`~$5103310103-K.s.satwik-.docx` — a Word *owner file*, written beside an open document, 165 bytes of
+author metadata with no document in it, and **newer than the document**, so `ls -t` and the product's
+own recency tie-break both choose it. The fixture discovery was fixed, and so was the rule it was
+pointing at: `~$…` joins the dotfiles in `FileMention.isAutomaticCandidate`, hoisted out of the disk
+layer into the pure one and tested there — including the case that a full path and a bare name must
+give the same answer.
+
+Green: 827/827, gate 51 passed / 2 environment skips, smoke 18/18.

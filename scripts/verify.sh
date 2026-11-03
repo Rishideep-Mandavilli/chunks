@@ -473,7 +473,11 @@ echo "file reading, end to end"
 # the day it is written and fails for a reason that has nothing to do with the app the day after.
 TEXT_FIXTURE="$PWD/AGENTS.md"
 PDF_FIXTURE="$(ls -1t "$HOME"/Downloads/*.pdf 2>/dev/null | head -1 || true)"
-DOC_FIXTURE="$(ls -1t "$HOME"/Downloads/*.docx 2>/dev/null | head -1 || true)"
+# The newest real Word document, never a `~$…` owner file: Word drops one beside an open document and
+# it is *newer* than the document, so a plain `ls -t` picks 165 bytes of author metadata and calls it
+# "a Word file" — which is exactly how this check failed on 2026-11-04, and the same trap the product's
+# own ranking had to be closed against (`FileMention.isAutomaticCandidate`).
+DOC_FIXTURE="$(ls -1t "$HOME"/Downloads/*.docx 2>/dev/null | grep -v '/~\$' | head -1 || true)"
 IMG_FIXTURE="$(ls -1t "$HOME"/Downloads/*.png "$HOME"/Downloads/*.jpg "$HOME"/Downloads/*.jpeg 2>/dev/null | head -1 || true)"
 
 check "find: a sentence names one file"              "$BIN" --probe-find 'read the resume in my downloads'
@@ -518,6 +522,27 @@ file_check "the ink render, one of every mark" "$RENDER_DIR/ink.png" 20000
 echo
 
 echo "the safety contract, asserted not assumed"
+# Every Accessibility call the shell makes must run off the main thread. The crash of 2026-11-04 was
+# SwiftUI's own `MainActor.assumeIsolated` faulting on a main thread the act path had just blocked, and
+# that call site is not ours to grep — so what is grepped is the *state*: a driver call outside a
+# `driver { }` hop is a 150 ms wait on the main thread again, which is the ground a later callback
+# crashes on. The type names and the pure helpers are listed because they read nothing from another
+# process; `fieldLabel` and `isTrusted` are one attribute each and stay where they are.
+ax_unhopped="$(grep -n 'AXTDriver\.' Sources/Chunks/Clicky/CompanionManager.swift \
+  | grep -v 'driver({' \
+  | grep -vE 'AXTDriver\.(PressResult|TypeResult|ScrollResult|SemanticMiss|RankedPress|PressTarget|TypeTarget|ScrollTarget|PressSnapshot|isTrusted|fieldLabel|appNamesMatch|isAmbiguousFailure|waitForLanding)' \
+  | grep -vE ':[[:space:]]*(///|//)' || true)"
+if [[ -z "$ax_unhopped" ]]; then
+  printf '  \033[32mPASS\033[0m  no Accessibility call runs on the main thread\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  Accessibility work is back on the main thread — it blocks the loop a\n'
+  printf '        SwiftUI callback then assumes the main actor on, and that is the crash of 2026-11-04:\n'
+  printf '%s\n' "$ax_unhopped" | head -6 | sed 's/^/        /'
+  fail=$((fail + 1)); failures+=("main-thread act path")
+fi
+check "main thread: a blocked loop is measurable, and the act path does not block it" \
+  "$BIN" --probe-mainthread
 check "bundle: universal, matching deployment target, hardened with exact entitlements" \
   python3 - "$BIN" "$PWD/scripts/Chunks.entitlements" <<'PY'
 import json, pathlib, plistlib, re, subprocess, sys

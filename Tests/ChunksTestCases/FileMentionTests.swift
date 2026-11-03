@@ -190,5 +190,32 @@ public enum FileMentionTests {
             expectEqual(FileMention.nameWords(in: "read the pdf invoice"), ["invoice"],
                         "and the one real name in the sentence survives")
         }
+
+        test("a Word owner file is never the file he meant") {
+            // Word writes `~$<document>.docx` beside a document while it is open: 165 bytes of author
+            // metadata, no document, and — the trap — *newest by modification time*, which is how a
+            // ranking breaks a tie. Measured 2026-11-04 when the gate's own fixture discovery chose
+            // `~$5103310103-K.s.satwik-.docx` as "a Word file" to read.
+            expect(!FileMention.isAutomaticCandidate("~$resume.docx"),
+                   "an owner file is not a candidate for a ranking")
+            expect(!FileMention.isAutomaticCandidate("/Users/rishi/Downloads/~$resume.docx"),
+                   "and the rule holds when it arrives as a full path, not only as a name")
+            expect(FileMention.isAutomaticCandidate("resume.docx"),
+                   "the document it belongs to still is — the exclusion is the lock file, not .docx")
+        }
+
+        test("the files that are never automatic stay named-readable") {
+            // The refusal is about *choosing for him*. Naming one of these out loud is a different
+            // door — `ReadRequest`, with the credential list — and this asserts the set that stays
+            // out of the ranking, so a future candidate list cannot quietly widen it.
+            for name in [".DS_Store", ".localized", ".zsh_history", "~$Q3 plan.docx"] {
+                expect(!FileMention.isAutomaticCandidate(name),
+                       "\(name) must never be picked up by a score")
+            }
+            for name in ["Q3 plan.docx", "invoice.pdf", "notes.md", "IMG_2044.jpeg"] {
+                expect(FileMention.isAutomaticCandidate(name),
+                       "an ordinary work file is still a candidate — \(name)")
+            }
+        }
     }
 }

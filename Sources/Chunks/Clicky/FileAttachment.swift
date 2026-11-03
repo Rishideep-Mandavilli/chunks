@@ -57,15 +57,10 @@ enum FileAttachment {
 
     /// Files that are never automatic candidates, whatever the sentence says.
     ///
-    /// A leading dot is a configuration file or a shell history. Both are readable when he *names*
-    /// one — that goes through `ReadRequest` and its credential list — but neither may be picked up
-    /// by a ranking, because "read the log in my downloads" attaching `~/.zsh_history` would send
-    /// every command he has typed this year to a cloud model. `.DS_Store` is a binary Finder index
-    /// wearing a name that a text detector does not catch.
-    static let neverAutomatic: Set<String> = [".DS_Store", ".localized"]
-
+    /// The rule is `FileMention.isAutomaticCandidate` — pure, and tested there, because "which file did
+    /// he mean" is the part that needs the negative cases. This layer only walks the disk.
     static func isAutomaticCandidate(_ name: String) -> Bool {
-        !name.hasPrefix(".") && !neverAutomatic.contains(name)
+        FileMention.isAutomaticCandidate(name)
     }
 
     /// Every readable file in those roots, as candidates.

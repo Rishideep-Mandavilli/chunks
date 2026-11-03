@@ -1106,7 +1106,60 @@ where their drive does; and every claim about an act derived from the effect on 
 return code — which is the difference between the two features above and the three bugs his screenshots
 found last night.
 
-## How to work with him
+### 3.19 Chunks draws on the screen — the diagram is the explanation
+
+He asked for this on 2026-11-04, and the sentence matters: *"it's chunks should be able to do, not just
+me drawing… the chunks should able to draw and explain me."* Everything in 3.18 item 1 is him marking the
+screen for Chunks to read. This is the other direction: Chunks marking the screen for **him**, while it
+talks.
+
+**Why the hard half is already done.** The surface exists and is safe — `InkLayerManager` is a
+display-sized, click-through, never-key, never-captured layer that already draws exactly what he drew.
+The coordinate authority exists: his aim comes back as a 0–1000 fraction and `ScreenshotGeometry` maps it
+onto the display, which is the same mapping a mark Chunks draws needs. The verb exists: `[POINT:]` already
+resolves a model's aim to a control, so a mark can be aimed at what the model *named* rather than at a
+pixel it invented. And the safety rule already holds — drawing on the screen changes nothing on it, so
+this is a **display** act like the caption, not a machine act: no policy gate, no consent card, nothing
+that could press, type or move. What does not exist is the grammar, the shape of a diagram, and the
+discipline that keeps a drawn mark honest.
+
+**The design, in the order it should be built.**
+
+1. **A tag, and only the primitives the ink can already draw.** `[MARK:arrow,955,140→the Send button]`,
+   `[MARK:pin,500,500|this is the field]`, `[MARK:box,x1,y1,x2,y2|the chat list]`. Fractions in the same
+   0–1000 grid every other aim uses — never pixels, because invariant 1 is a standing sentence in this
+   file and a model will happily write `1400,860` for something it is guessing at. Parse in ChunksKit
+   (`MarkRequest`), pure, with the negative cases: a coordinate above 1000 is read as pixels and
+   refused, a malformed tag fails **open** into visible text, and a mark with no aim is dropped with a
+   log line, because a mark at (0,0) would circle the menu bar and read as a claim about it.
+2. **The label is the load-bearing part.** A box around a region says "this"; a box that says "the
+   invoice total" says what the answer is about. So a mark without words is refused rather than drawn:
+   an unlabelled arrow is the clutter he would be right to call noise, and the card already has the
+   sentence the mark belongs to.
+3. **Marks belong to the turn, and to nothing else.** They go up when the reply streams them and come
+   down when the card about them goes — the lifetime 3.18 item 1 already implements, with its turn
+   token, reused rather than re-decided. A mark that outlives its answer points at whatever moved under
+   it, which is the failure mode this project keeps hitting from the other side.
+4. **Never in a picture, in both directions.** The layer is `sharingType = .none`, so the next turn's
+   capture cannot see Chunks' own marks — measured, not assumed (`--probe-ink`). Without that, an
+   explanation turn would read the arrow it drew itself as a feature of his screen and explain it. That
+   is the loop this closes by construction.
+5. **The prompt teaches it once, and the protocol probe checks it stays.** Two live turns in
+   `--probe-protocol` ("show me where the send button is", "what is in this list") must produce a
+   `[MARK:]` with a real aim and a label; `--render-ui` draws a card beside a rendered mark so the pair
+   can be looked at; `--probe-ink` grows to assert the layer takes a model's marks as well as his.
+
+**What is deliberately not here.** No text rendered *into* the ink layer beyond a short label — the card
+is where sentences live, and a paragraph drawn over his desktop is unreadable and untestable. No
+freehand sketching by the model: it cannot aim a curve, and a wrong curve is worse than none. No
+animation choreography; a mark appearing is the whole motion. And no drawing during a turn he did not
+ask about — a routine's answer gets a card, not ink over whatever he is working on.
+
+**Acceptance, in order:** (a) unit cases for the parse, the grid mapping and the refusals; (b) a render
+of one of every mark with a label, opened and looked at; (c) `--probe-ink` extended to model-supplied
+marks, in the gate; (d) a live spoken turn — *"show me on screen where that button is"* — watched on his
+display, which is the only part that can tell help from clutter.
+
 
 - He verifies in his own terminal. Ship the harness, name the honest gap, and give him **numbered
   plain-language steps with the exact command, the expected output, and what to report back**. Prose

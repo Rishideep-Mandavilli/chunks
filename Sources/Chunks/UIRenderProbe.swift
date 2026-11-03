@@ -158,6 +158,9 @@ enum UIRenderProbe {
             view.layoutSubtreeIfNeeded()
             frames.append((state.label, state.model, view, window, height))
         }
+        if let first = frames.first {
+            HoverBindings.describe(first.view, surface: "the notch card, which is up while he works")
+        }
 
         let totalHeight = frames.reduce(gutter) { $0 + $1.height + gap } + gap
         let canvas = NSImage(size: NSSize(width: width + gutter * 2 + 150, height: totalHeight))
@@ -424,6 +427,7 @@ enum UIRenderProbe {
         ))
         let views = [("1 · a afternoon of turns, one still running", left),
                      ("2 · nothing asked yet", right)]
+        HoverBindings.describe(left, surface: "the app window")
 
         let canvas = NSImage(size: NSSize(width: size.width * 2 + gap * 3,
                                           height: size.height + gap * 2))
@@ -498,6 +502,7 @@ enum UIRenderProbe {
             ))
             hosted.frame = NSRect(x: 0, y: 0, width: width, height: entry.height)
             hosted.layoutSubtreeIfNeeded()
+            if views.isEmpty { HoverBindings.describe(hosted, surface: "the menu-bar panel") }
             views.append((entry.label, hosted, entry.height))
         }
 
@@ -836,4 +841,39 @@ extension View {
 
 private extension NSSize {
     var rect: NSRect { NSRect(origin: .zero, size: self) }
+}
+
+/// SwiftUI's hover bindings, counted on a real hosted view.
+///
+/// Measured rather than grepped, because the crash is not in code we can see: on 2026-11-04 the app
+/// died 16 seconds after an answer with a SIGSEGV inside `NSHostingView.mouseEntered` →
+/// `HoverEventDispatcher.receiveEvents` → `ViewResponder.hitTest` → `MainActor.assumeIsolated`,
+/// faulting in the runtime's main-executor check — the same check that killed it twice on
+/// 2026-11-03 from our own timer blocks. Those call sites are gone and a grep keeps them gone, but
+/// SwiftUI's assertion is reached only because *some* view asked for hover, so the thing to prove is
+/// that nothing does. A tracking area owned by a class from SwiftUI's own bundle is the dispatcher's
+/// footprint: no bindings, no area, no path into the crashing function.
+enum HoverBindings {
+
+    /// Tracking areas SwiftUI installed for itself, over the whole view tree.
+    static func count(in view: NSView) -> Int {
+        var total = 0
+        for area in view.trackingAreas where isSwiftUI(area.owner) { total += 1 }
+        for sub in view.subviews { total += count(in: sub) }
+        return total
+    }
+
+    static func describe(_ view: NSView, surface: String) {
+        let owners = Set(view.subviews.flatMap { $0.trackingAreas }.compactMap { area in
+            area.owner.map { NSStringFromClass(type(of: $0)) }
+        })
+        print("hover: \(surface) — \(count(in: view)) SwiftUI-owned tracking area(s)"
+            + (owners.isEmpty ? "" : ", owners seen: \(owners.joined(separator: ", "))"))
+    }
+
+    private static func isSwiftUI(_ owner: AnyObject?) -> Bool {
+        guard let owner else { return false }
+        let bundle = Bundle(for: type(of: owner)).bundleIdentifier ?? ""
+        return bundle.hasPrefix("com.apple.SwiftUI")
+    }
 }

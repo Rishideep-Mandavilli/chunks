@@ -139,6 +139,11 @@ struct leanring_buddyApp: App {
                 }
             }
         }
+        if MainThreadProbe.isRequested {
+            // The thread, not the code: this is the only way to see the state a SwiftUI callback
+            // crashes in, since the crashing call site belongs to SwiftUI.
+            MainThreadProbe.start()
+        }
         if InkProbe.isRequested {
             // The ink is a display-sized window, so the question it has to answer is the one the
             // overlay got wrong once: does it let go, and does it take anything with it.

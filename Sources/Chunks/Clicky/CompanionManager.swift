@@ -1952,6 +1952,37 @@ final class CompanionManager: ObservableObject {
         return await offerPointedAct(act, screenCaptures: screenCaptures, position: position)
     }
 
+    /// Runs one Accessibility call off the main thread, and waits for it right there.
+    ///
+    /// `AXTDriver` blocks by design: it retries a Chromium surface 150 ms after a lazy first read,
+    /// settles a value read-back, and paces a keystroke chunk. Those waits used to run on the main
+    /// thread *inside the main actor's task scope*, and that is a crash rather than a freeze: while
+    /// the thread is blocked there, AppKit queues the events it would normally deliver, and the
+    /// callback that arrives next asks the Swift runtime "am I on the main actor?" — a question whose
+    /// answer is read out of the current task's job, which may already be finished. Three crashes in
+    /// one evening had that one signature: twice from our own `assumeIsolated` in timer blocks (fixed
+    /// by hopping them, and grepped for since), and once on 2026-11-04 at 00:53 from SwiftUI's hover
+    /// dispatch inside `NSHostingView.mouseEntered` — not our code, not reachable by a grep, and only
+    /// dangerous because the thread it ran on had been left in that state.
+    ///
+    /// The driver is safe to move: Accessibility messaging and `CGEventPost` are thread-safe, and the
+    /// only AppKit it touches is `NSWorkspace.runningApplications`, which is a read. Nothing else
+    /// changes: every call is awaited exactly where it was made, so the chain — resolve, policy, card,
+    /// press, re-read-and-compare — keeps its order, and no act ever runs beside another.
+    private func driver<T>(_ work: @escaping @Sendable () -> T) async -> T {
+        await Task.detached(priority: .userInitiated) { AXCarry(work()) }.value.carried
+    }
+
+    /// One Accessibility result carried back across threads.
+    ///
+    /// `AXUIElement` is a Core Foundation reference and Accessibility messaging is documented
+    /// thread-safe, so the value genuinely is transferable; the box exists because the compiler cannot
+    /// know that, and `@unchecked` states the reason rather than hiding it.
+    private struct AXCarry<T>: @unchecked Sendable {
+        let carried: T
+        init(_ carried: T) { self.carried = carried }
+    }
+
     /// An act aimed at a point in the screenshot: map it, hit-test it, then decide.
     private func offerPointedAct(_ act: ActionRequest,
                                  screenCaptures: [CompanionScreenCapture],
@@ -1984,11 +2015,11 @@ final class CompanionManager: ObservableObject {
         }
         // The pixel first, the name second: a model aiming a few points off an icon is a
         // rounding error, not a wrong request, and the element it *named* is the one it meant.
-        guard let target = AXTDriver.target(label: act.label, at: axPoint) else {
+        guard let target = await driver({ AXTDriver.target(label: act.label, at: axPoint) }) else {
             // Say which of the two failures this was, because the fix is different for each:
             // nothing at the point means the aim or the mapping is off, something unpressable
             // means the app has not published that surface to Accessibility.
-            guard let element = AXTDriver.elementAt(axPoint) else {
+            guard let element = await driver({ AXTDriver.elementAt(axPoint) }) else {
                 let reason = AXTDriver.PressResult.noElement(containing: axPoint).userFacingReason
                 Log.write("act: nothing found at \(axPoint)")
                 hud.reportConfirm(reason)
@@ -2042,7 +2073,7 @@ final class CompanionManager: ObservableObject {
                 + "\(element.role ?? "-")/\(element.elementLabel) at "
                 + "\(element.frame.map { "(\($0.midX), \($0.midY))" } ?? "-")")
         }
-        if AXTDriver.aimNamesSomethingElse(label: act.label, element: element) {
+        if await driver({ AXTDriver.aimNamesSomethingElse(label: act.label, element: element) }) {
             // The other direction: the aim found a control, the control has a name, and that name
             // is not what the user asked for. With asking off there is no card to catch it, so the
             // log carries it and the outcome line names the control that was actually pressed.
@@ -2072,9 +2103,9 @@ final class CompanionManager: ObservableObject {
             return .stopped(line: reason)
         }
         if act.textToType != nil {
-            switch AXTDriver.typeResolve(named) {
+            switch await driver({ AXTDriver.typeResolve(named) }) {
             case .failure(let miss):
-                return .stopped(line: reportNamedMiss(miss, prefix: "type", act: act))
+                return .stopped(line: await reportNamedMiss(miss, prefix: "type", act: act))
             case .success(let field):
                 let element = field.info
                 Log.write("type: named field — \"\(named.name)\" → \(element.role ?? "-")/"
@@ -2087,9 +2118,9 @@ final class CompanionManager: ObservableObject {
             }
         }
         if let intent = act.scrollIntent {
-            switch AXTDriver.scrollResolve(named, direction: intent.direction) {
+            switch await driver({ AXTDriver.scrollResolve(named, direction: intent.direction) }) {
             case .failure(let miss):
-                return .stopped(line: reportNamedMiss(miss, prefix: "scroll", act: act))
+                return .stopped(line: await reportNamedMiss(miss, prefix: "scroll", act: act))
             case .success(let scroller):
                 let element = scroller.info
                 Log.write("scroll: named — \"\(named.name)\" → \(element.role ?? "-")/"
@@ -2104,16 +2135,16 @@ final class CompanionManager: ObservableObject {
                                                 position: position)
             }
         }
-        switch AXTDriver.resolve(named) {
+        switch await driver({ AXTDriver.resolve(named) }) {
         case .failure(let miss):
             // The name search compares the words the app publishes *about* a control, and most of the
             // modern web publishes none: measured 2026-10-28, `app=Chrome name=Mute` could not see the
             // mute button in the page's own player bar, because the words were in a child. The ranking
             // is the fallback, not a bypass — same policy, same card, same re-read before pressing,
             // one more kind of words allowed as evidence, and the card says which kind it used.
-            switch AXTDriver.candidateResolve(named) {
+            switch await driver({ AXTDriver.candidateResolve(named) }) {
             case .failure(let rankedMiss):
-                return .stopped(line: reportNamedMiss(rankedMiss, prefix: "act", act: act))
+                return .stopped(line: await reportNamedMiss(rankedMiss, prefix: "act", act: act))
             case .success(let ranked):
                 return await offerRankedAct(act, named: named, ranked: ranked, position: position)
             }
@@ -2180,9 +2211,9 @@ final class CompanionManager: ObservableObject {
     /// next turn. Naming what is there ends the guessing, for the model and for the user reading the
     /// card.
     private func reportNamedMiss(_ miss: AXTDriver.SemanticMiss, prefix: String,
-                                 act: ActionRequest) -> String {
+                                 act: ActionRequest) async -> String {
         var line = miss.userFacingReason
-        if case .fieldNotFound(let app, _, _) = miss, let hint = availableFieldsHint(app) {
+        if case .fieldNotFound(let app, _, _) = miss, let hint = await availableFieldsHint(app) {
             line += " " + hint
         }
         hud.reportConfirm(line)
@@ -2191,8 +2222,12 @@ final class CompanionManager: ObservableObject {
     }
 
     /// The fields an app publishes, in the words `name=` has to use.
-    private func availableFieldsHint(_ app: String) -> String? {
-        let names = AXTDriver.editableFields(ownedByNamed: app).fields.compactMap { info in
+    ///
+    /// Off the main thread: this is a sweep of up to 700 elements with a settle pause between retries,
+    /// which is the longest thing the act path does after a refusal — see `driver`.
+    private func availableFieldsHint(_ app: String) async -> String? {
+        let sweep = await driver({ AXTDriver.editableFields(ownedByNamed: app) })
+        let names = sweep.fields.compactMap { info in
             [info.title, info.descriptionText]
                 .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .first { !$0.isEmpty }
@@ -2560,12 +2595,12 @@ final class CompanionManager: ObservableObject {
         guard let text = act.textToType else {
             return .stopped(line: "That ask was not a type act.")
         }
-        guard let field = AXTDriver.typeTarget(label: act.label, at: axPoint) else {
+        guard let field = await driver({ AXTDriver.typeTarget(label: act.label, at: axPoint) }) else {
             // Web content is the one place a caret exists with no field around it: a Chromium
             // editor publishes nothing until the click puts the cursor in it. The question names
             // the click, so what he approves is exactly what happens — click, caret, keystrokes.
-            if let text = act.textToType, AXTDriver.webEditorCandidate(at: axPoint),
-               let hit = AXTDriver.elementAt(axPoint) {
+            if let text = act.textToType, await driver({ AXTDriver.webEditorCandidate(at: axPoint) }),
+               let hit = await driver({ AXTDriver.elementAt(axPoint) }) {
                 var withClick = act
                 withClick.webFocusClick = true
                 let question = ActionRequest.webTypeQuestion(
@@ -2582,7 +2617,7 @@ final class CompanionManager: ObservableObject {
             // point holds an `AXStaticText "Search"` that answers `AXPress` and is not a field —
             // the field only exists after it is pressed. "There is no text field there" is true and
             // useless; the useful sentence says what to do instead.
-            if let opener = AXTDriver.target(label: act.label, at: axPoint) {
+            if let opener = await driver({ AXTDriver.target(label: act.label, at: axPoint) }) {
                 reason = "\(opener.info.elementLabel) is not a field yet — press it first, "
                     + "then type in the next step."
             }
@@ -2612,20 +2647,20 @@ final class CompanionManager: ObservableObject {
         // nothing else changes: the field the click reveals still goes through the same focus
         // read-back every other field gets before a single character moves.
         if act.webFocusClick, let axPoint {
-            let result = AXTDriver.typeWeb(text, at: axPoint)
+            let result = await driver({ AXTDriver.typeWeb(text, at: axPoint) })
             hud.reportConfirm(result.userFacingReason)
             if result.didType { hud.offerTypedTextForCopy(text) }
             Log.write("type: web focus-click at \(axPoint) → \(result.userFacingReason)")
             return (result.userFacingReason, result.didType)
         }
-        guard let now = fieldNow(act, at: axPoint), now.info == approved
+        guard let now = await fieldNow(act, at: axPoint), now.info == approved
         else {
             let line = "That field moved or closed, so Chunks did not type into it."
             hud.reportConfirm(line)
             Log.write("type: field gone or drifted — approved \(approved.elementLabel)")
             return (line, false)
         }
-        let result = AXTDriver.type(text, into: now)
+        let result = await driver({ AXTDriver.type(text, into: now) })
         hud.reportConfirm(result.userFacingReason)
         if result.didType { hud.offerTypedTextForCopy(text) }
         Log.write("type: \(act.label) → \(result.userFacingReason)")
@@ -2640,8 +2675,9 @@ final class CompanionManager: ObservableObject {
     private func offerScroll(_ act: ActionRequest, direction: ActionRequest.ScrollDirection,
                              pages: Int, at axPoint: CGPoint,
                              position: (index: Int, of: Int)? = nil) async -> StepOutcome {
-        guard let scroller = AXTDriver.scrollTarget(direction: direction, label: act.label,
-                                                    at: axPoint) else {
+        guard let scroller = await driver({ AXTDriver.scrollTarget(direction: direction,
+                                                                   label: act.label,
+                                                                   at: axPoint) }) else {
             let reason = AXTDriver.ScrollResult.noScrollableElement(
                 containing: axPoint).userFacingReason
             hud.reportConfirm(reason)
@@ -2664,14 +2700,14 @@ final class CompanionManager: ObservableObject {
     private func scrollAct(_ act: ActionRequest, direction: ActionRequest.ScrollDirection,
                            pages: Int, at axPoint: CGPoint?,
                            approved: AXElementInfo) async -> (line: String, happened: Bool) {
-        guard let now = scrollerNow(act, direction: direction, at: axPoint),
+        guard let now = await scrollerNow(act, direction: direction, at: axPoint),
               now.info == approved else {
             let line = "That list moved or closed, so Chunks did not scroll it."
             hud.reportConfirm(line)
             Log.write("scroll: scroller gone or drifted at \(axPoint) — approved \(approved.elementLabel)")
             return (line, false)
         }
-        let result = AXTDriver.scroll(direction, pages: pages, into: now)
+        let result = await driver({ AXTDriver.scroll(direction, pages: pages, into: now) })
         hud.reportConfirm(result.userFacingReason)
         Log.write("scroll: \(act.label) → \(result.userFacingReason)")
         return (result.userFacingReason, result.didScroll)
@@ -2698,7 +2734,7 @@ final class CompanionManager: ObservableObject {
         if let point = act.pointerClickPoint {
             // No re-read-and-compare here, because there is no element to compare — what he approved
             // is the place, and the place is what is clicked.
-            let clicked = AXTDriver.click(at: point)
+            let clicked = await driver({ AXTDriver.click(at: point) })
             let line = clicked ? "Clicked the area at (\(Int(point.x)),\(Int(point.y)))."
                                : "The click could not be posted."
             hud.reportConfirm(line)
@@ -2706,7 +2742,7 @@ final class CompanionManager: ObservableObject {
                 + (clicked ? "both events posted" : "event source refused"))
             return (line, clicked)
         }
-        guard let now = pressTargetNow(act, at: axPoint) else {
+        guard let now = await pressTargetNow(act, at: axPoint) else {
             let line = "That control moved or closed, so Chunks did not press it."
             hud.reportConfirm(line)
             Log.write("act: target gone — approved \(approved.elementLabel)")
@@ -2721,8 +2757,8 @@ final class CompanionManager: ObservableObject {
         }
         // Read *before* pressing: after the press the answer is already contaminated by the very
         // activation this check is looking for.
-        let snapshotBefore = AXTDriver.pressSnapshot()
-        let pressed = AXTDriver.press(now)
+        let snapshotBefore = await driver({ AXTDriver.pressSnapshot() })
+        let pressed = await driver({ AXTDriver.press(now) })
         let result: AXTDriver.PressResult
         if case .actionFailed(let code, let action, _, let element) = pressed,
            AXTDriver.isAmbiguousFailure(code),
@@ -2748,34 +2784,35 @@ final class CompanionManager: ObservableObject {
     /// be the thing the card described. A named request cannot fall back to a point, because the
     /// whole reason it is named is that no point was ever agreed to.
     private func pressTargetNow(_ act: ActionRequest, at axPoint: CGPoint?)
-        -> AXTDriver.PressTarget? {
+        async -> AXTDriver.PressTarget? {
         if let named = act.semanticTarget {
             // A card that described a *ranked* control is re-read the same way, and against the words
             // it quoted rather than against an element's own name — which on this route is empty.
             // The name search is not tried first here on purpose: if the page has since published a
             // name for something else, that something else is not what he was asked about.
             if let approved = act.rankedAim {
-                guard case .success(let found) = AXTDriver.candidateResolve(named),
+                guard case .success(let found) = await driver({ AXTDriver.candidateResolve(named) }),
                       CandidateRanker.stillAnswers(approved, now: found.ranked.element) else {
                     return nil
                 }
                 return found.target
             }
-            if case .success(let target) = AXTDriver.resolve(named) { return target }
+            if case .success(let target) = await driver({ AXTDriver.resolve(named) }) { return target }
             return nil
         }
         guard let axPoint else { return nil }
-        return AXTDriver.target(label: act.label, at: axPoint)
+        return await driver({ AXTDriver.target(label: act.label, at: axPoint) })
     }
 
     /// The approved field, found again. The type path's twin of `pressTargetNow`.
-    private func fieldNow(_ act: ActionRequest, at axPoint: CGPoint?) -> AXTDriver.TypeTarget? {
+    private func fieldNow(_ act: ActionRequest, at axPoint: CGPoint?)
+        async -> AXTDriver.TypeTarget? {
         if let named = act.semanticTarget {
-            if case .success(let field) = AXTDriver.typeResolve(named) { return field }
+            if case .success(let field) = await driver({ AXTDriver.typeResolve(named) }) { return field }
             return nil
         }
         guard let axPoint else { return nil }
-        return AXTDriver.typeTarget(label: act.label, at: axPoint)
+        return await driver({ AXTDriver.typeTarget(label: act.label, at: axPoint) })
     }
 
     /// The approved scroller, found again.
@@ -2783,15 +2820,16 @@ final class CompanionManager: ObservableObject {
     /// Re-resolved rather than cached because the scroll happens after the card was answered, and a
     /// list that has since been replaced by a detail view must not be moved by the old verdict.
     private func scrollerNow(_ act: ActionRequest, direction: ActionRequest.ScrollDirection,
-                             at axPoint: CGPoint?) -> AXTDriver.ScrollTarget? {
+                             at axPoint: CGPoint?) async -> AXTDriver.ScrollTarget? {
         if let named = act.semanticTarget {
-            if case .success(let scroller) = AXTDriver.scrollResolve(named, direction: direction) {
+            if case .success(let scroller) = await driver({ AXTDriver.scrollResolve(named, direction: direction) }) {
                 return scroller
             }
             return nil
         }
         guard let axPoint else { return nil }
-        return AXTDriver.scrollTarget(direction: direction, label: act.label, at: axPoint)
+        return await driver({ AXTDriver.scrollTarget(direction: direction, label: act.label,
+                                                     at: axPoint) })
     }
 
     // MARK: - Running a tool

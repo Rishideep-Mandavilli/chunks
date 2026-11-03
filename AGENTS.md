@@ -153,6 +153,7 @@ finds a desktop icon. Two more read-only doors came out of the semantic work:
 .build/debug/chunks --probe-read '~/Downloads/build.log|why did it fail'  # one path, end to end
 .build/debug/chunks --probe-voice-answer "yes"  # what a spoken sentence would do to the open card, answering nothing
 .build/debug/chunks --probe-ink        # the ink that stays on screen: inert, invisible to captures, lets go
+.build/debug/chunks --probe-mainthread # does a wait in the act path stall the main run loop
 .build/debug/chunks --render-caption /tmp/caption.png   # the speech caption, drawn offscreen, three rows
 .build/debug/chunks --render-ink /tmp/ink.png   # one of every drawn mark, offscreen, to look at
 .build/debug/chunks --render-ui /tmp/notch-card.png   # every notch state drawn offscreen, to look at
@@ -195,6 +196,21 @@ because the first version of that check matched the prose describing the rule ra
 The same reasoning covers `Thread.sleep` on the main actor: waiting for a window to land is a
 `Task.sleep`, never a blocking one, because the notch freezes for the length of the wait the user is
 watching.
+
+**And nothing that blocks may run on the main thread at all, because the next callback inherits the
+state.** A third report came 16 seconds after an answer on 2026-11-04, with the same
+`swift_getObjectType` fault and *no `assumeIsolated` of ours anywhere on the stack*: the caller was
+SwiftUI — `NSHostingView.mouseEntered` → `HoverEventDispatcher` → its own `assumeIsolated`. The
+crashing assertion is not ours, so it cannot be grepped away; what is ours is the thread it ran on,
+which the act path had just blocked. `AXTDriver` waits by design (a 150 ms retry on a lazy Chromium
+surface, a settle before a read-back, a pause between keystroke chunks), so every Accessibility call
+the shell makes now goes through `CompanionManager.driver(…)`, one `Task.detached` awaited exactly
+where the call used to be made — the chain keeps its order, nothing runs beside the policy gate, and
+the driver touches nothing main-thread-only (Accessibility messaging and `CGEventPost` are thread-safe;
+the only AppKit is a `NSWorkspace.runningApplications` read). `--probe-mainthread` measures the
+mechanism — a 150 ms wait costs the main run loop 135 ms of timer lateness inline and 1 ms detached —
+and `verify.sh` greps for any `AXTDriver.` call in the shell outside a hop, because a probe cannot
+catch a call site that has not been written yet.
 
 1. **All coordinates are `LogicalPoint`.** Screenshots are device pixels (2x); AX reports
    logical points; `NSPanel` frames are logical. Conversion happens exactly once, inside
@@ -1048,6 +1064,17 @@ watching.
    intent is the model's job: every attachment is labelled *"Chunks' best guess at the file he means
    — if his sentence was about something else, ignore this and answer about his screen."*
 
+   **The never-automatic list is a name rule now, and it has three members.** A leading dot, `.DS_Store`
+   and `.localized` were the original set; `~$…` is the third and it arrived the hard way. Word writes an
+   *owner file* beside a document while that document is open — 165 bytes of author metadata, no
+   document, and **newest by modification time**, which is exactly what a tie-break chooses. Measured
+   2026-11-04: the gate's own fixture discovery picked `~$5103310103-K.s.satwik-.docx` as "a Word file"
+   and the read refused it, which is the check catching the product answering a sentence about a resume
+   from a lock file. The rule now lives in `FileMention.isAutomaticCandidate` — pure, judged on the last
+   path component so a bare name and a full path cannot give different answers — because the negative
+   cases are the ones that matter, and because it had sat in the disk layer, untested, since it was
+   written.
+
 10. **A screen is carried backwards only when his words ask for it.** *"read and understand this
     problem"* then *"now answer it"* is one conversation, but every turn captures the screen afresh —
     so on the second turn the problem is only still there by luck. `ScreenCarry` keeps the last turn's
@@ -1164,8 +1191,8 @@ watching.
 
 ## Current state
 
-**The app runs. 825 of 825 tests green across 46 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 50 checks: 44–46 pass and 4–6 skip,
+**The app runs. 827 of 827 tests green across 46 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 53 checks: 48–51 pass and 2–5 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red

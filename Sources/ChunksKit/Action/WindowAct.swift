@@ -57,6 +57,18 @@ public struct WindowAct: Equatable, Sendable {
         public var title: String
         public var frame: CGRect
         public var isMinimized: Bool
+        /// Whether this is Finder's desktop rather than a window.
+        ///
+        /// The desktop is published as a window — it has a frame, a title slot and an element — and it
+        /// was offered to verbs until 2026-11-03, when the geometry probe cheerfully computed a plan to
+        /// "move the desktop to the left half" and `--probe-windows Finder` printed *Minimise "desktop"
+        /// in Finder?*. Writing a new frame to it does not tidy anything; it disturbs the layout of his
+        /// icons. Listing it is correct (it is genuinely on the screen); acting on it is not.
+        ///
+        /// Decided in the driver from two facts only an actual desktop has together: no `AXTitle` of its
+        /// own, and a frame exactly the whole of a display. A full-screen app's window is the same size
+        /// but always has a title, so it is not caught — and must not be, because moving that is real work.
+        public var isDesktop: Bool
         /// Whether this window is the one its app has focused, so "the front window" is answerable.
         public var isFocused: Bool
         /// Whether Chunks can *do anything* to this window, which is not the same as seeing it.
@@ -79,7 +91,7 @@ public struct WindowAct: Equatable, Sendable {
 
         public init(pid: Int, appName: String, title: String, frame: CGRect,
                     isMinimized: Bool = false, isFocused: Bool = false,
-                    isReachable: Bool = true) {
+                    isReachable: Bool = true, isDesktop: Bool = false) {
             self.pid = pid
             self.appName = appName
             self.title = title
@@ -87,6 +99,7 @@ public struct WindowAct: Equatable, Sendable {
             self.isMinimized = isMinimized
             self.isFocused = isFocused
             self.isReachable = isReachable
+            self.isDesktop = isDesktop
         }
 
         /// The name a card shows. A window with no title of its own is named by its app, because
@@ -110,6 +123,10 @@ public struct WindowAct: Equatable, Sendable {
         /// fourth answer, because "I can't see it" would be a lie and a card would be a promise Chunks
         /// cannot keep.
         case unreachable(Candidate)
+        /// The candidate is the desktop, which is published as a window and must never be treated as
+        /// one: a fifth answer rather than a filter, so that "minimise the desktop" is refused with the
+        /// reason instead of silently doing nothing or disturbing his icon layout.
+        case notAWindow(Candidate)
     }
 
     /// Resolve a spoken window into one candidate, or say precisely why it could not.
@@ -133,16 +150,23 @@ public struct WindowAct: Equatable, Sendable {
             let nameable = reachable.first(where: { $0.isFocused }) ?? reachable.first ?? owned.first
             return nameable.map { .one($0) } ?? .none
         }
+        // The desktop is published as a window and is not one. It stays in the listing — it is genuinely
+        // on the screen — but a verb that reached it would be writing a frame to his icon layout, so the
+        // only way to it is a refusal that says what it is.
+        let actable = reachable.filter { !$0.isDesktop }
+        if actable.isEmpty, let desk = reachable.first(where: { $0.isDesktop }) {
+            return .notAWindow(desk)
+        }
         guard let asked = title?.trimmingCharacters(in: .whitespacesAndNewlines), !asked.isEmpty
         else {
             // No title: only answerable when the app has one window to mean. Two is a refusal that
             // names them, because "close Safari" with three tabs open is three different losses.
-            if reachable.count == 1 { return .one(reachable[0]) }
-            if !reachable.isEmpty { return .ambiguous(reachable) }
+            if actable.count == 1 { return .one(actable[0]) }
+            if !actable.isEmpty { return .ambiguous(actable) }
             if let one = offSpace.first { return .unreachable(one) }
             return .none
         }
-        let scored = reachable.compactMap { candidate -> (candidate: Candidate, score: Int)? in
+        let scored = actable.compactMap { candidate -> (candidate: Candidate, score: Int)? in
             guard titleAnswers(asked, title: candidate.title) else { return nil }
             return (candidate, specificity(of: candidate.title, asked: asked))
         }
@@ -163,6 +187,18 @@ public struct WindowAct: Equatable, Sendable {
         let distinct = distinctByFrame(winners)
         if distinct.count == 1 { return .one(distinct[0]) }
         return .ambiguous(distinct)
+    }
+
+    /// Which window a *placement* sentence names.
+    ///
+    /// Deliberately focus's rules rather than close's: a move is reversible and loses nothing, so the
+    /// one thing that matters is picking the right window and not picking two. The choice logic is not
+    /// reimplemented here, because a second copy of "every distinctive word must answer, two equal
+    /// answers are refused with both listed, position never decides" is how the two verbs would start
+    /// disagreeing about which window he meant.
+    public static func resolvePlacement(app: String, title: String?,
+                                        in candidates: [Candidate]) -> Resolution {
+        resolve(verb: .focus, app: app, title: title, in: candidates)
     }
 
     /// Whether a window's title answers the words he said: every distinctive word he used has to be in
@@ -260,6 +296,9 @@ public struct WindowAct: Equatable, Sendable {
                 : "\"\(candidate.title)\" in \(candidate.appName)"
             return "Chunks can see \(what), but it is not a window Chunks can reach from here — it is "
                 + "on another Space, hidden, or minimised. Bring it into view and ask again."
+        case .notAWindow:
+            return "That is the desktop, not a window Chunks can \(verb.phrase.lowercased()). "
+                + "Name a window in an app instead."
         }
     }
 }

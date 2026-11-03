@@ -350,6 +350,7 @@ public enum WindowActTests {
                 case .none: return "none"
                 case .appNotRunning(let name): return "not running \(name)"
                 case .unreachable(let found): return "unreachable \(found.appName)/\(found.title)"
+                case .notAWindow(let found): return "not a window \(found.appName)/\(found.title)"
                 }
             }
             let firstAnswer = WindowAct.resolve(verb: .close, app: "Mail", title: "Inbox", in: left)
@@ -420,6 +421,42 @@ public enum WindowActTests {
                    "the model has to know promising to close it would be a lie: \(lines)")
             expect(!lines.contains("another Space"),
                    "and the listing must not claim a position it cannot verify: \(lines)")
+        }
+
+        test("the desktop is listed as a window and refused as an act") {
+            // Found by the geometry probe on its first run, which volunteered to place Finder's desktop
+            // in the left half. `--probe-windows Finder` had already been printing *Minimise "desktop"
+            // in Finder?* for a day. Writing a frame to the desktop disturbs his icon layout and tidies
+            // nothing, so it is refused with the reason rather than filtered into silence.
+            let desk = WindowAct.Candidate(pid: 678, appName: "Finder", title: "desktop",
+                                          frame: CGRect(x: 0, y: 0, width: 1710, height: 1107),
+                                          isDesktop: true)
+            for verb in [WindowAct.Verb.focus, .minimize, .close] {
+                let resolution = WindowAct.resolve(verb: verb, app: "Finder", title: nil,
+                                                   in: [desk])
+                expectEqual(resolution, .notAWindow(desk),
+                            "\(verb.rawValue) on the desktop must be refused, not offered")
+                expect(WindowAct.refusal(verb: verb, app: "Finder", title: nil,
+                                         resolution: resolution).contains("desktop"),
+                       "and the sentence has to say what it actually found")
+            }
+            // Quitting Finder is a different question — the act is on the process, and the desktop was
+            // never the thing being named.
+            expectEqual(WindowAct.resolve(verb: .quit, app: "Finder", title: nil, in: [desk]),
+                        .one(desk),
+                        "quit names an app, not a window, so a desktop candidate does not block it")
+        }
+
+        test("a real window beside the desktop is chosen, not refused") {
+            let desk = WindowAct.Candidate(pid: 678, appName: "Finder", title: "desktop",
+                                          frame: CGRect(x: 0, y: 0, width: 1710, height: 1107),
+                                          isDesktop: true)
+            let window = WindowAct.Candidate(pid: 678, appName: "Finder", title: "Downloads",
+                                             frame: CGRect(x: 42, y: 79, width: 913, height: 522))
+            let resolution = WindowAct.resolve(verb: .close, app: "Finder", title: nil,
+                                               in: [desk, window])
+            expectEqual(resolution, .one(window),
+                        "the desktop is not a second window to be ambiguous about — it is not a window")
         }
     }
 }

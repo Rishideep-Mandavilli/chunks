@@ -3026,3 +3026,63 @@ says.
 **Gate, measured:** 784/784 across 43 suites. `./scripts/verify.sh` exit 0 — **43 checks passed,
 1 skipped** (no Shortcuts window open), nonce `GATE-W-27503`, after `make-app.sh` + `install.sh`
 nonce `REBUILD6-926`. The window check now also fails if any listed candidate is under the size floor.
+
+## 2026-11-03 (later) — 3.13 slice 2: geometry by name, and the desktop that is not a window
+
+He said to build 3.13 in order after the fixes. The remaining slice was the one `AGENTS.md` had deferred
+longer than anything else: **moving and resizing a window, and "put that on the second display"** — the
+only act in the app that writes a rectangle, and therefore the one invariant 1 punishes silently.
+
+`[DO:move_window:Safari|Inbox|left]` takes twelve words and nothing else. A coordinate is **refused at
+parse, not clamped**: `|400,220` never becomes a placement, because a rectangle a vision model guesses from
+a picture is the same category of number that put a press on the wrong row of a chat list, and unlike a
+press, a wrong position is something he fixes by hand. Spoken variants fold into the table ("top left" →
+`top-left`) because that is how a transcript arrives.
+
+The maths lives in `WindowPlacementPolicy` (ChunksKit, pure) and deliberately **converts nothing**:
+`CGDisplayBounds` is already global top-left logical points, which is the space `kAXPositionAttribute` is
+written in, so the only AppKit number used is the menu-bar/Dock inset, and it is used as a *difference
+inside one screen* — a difference is the same in either orientation, which is how the flip stays out of
+the code instead of being got right. The 1x/2x/3x coverage the repo demands is asserted as the property
+that matters: same screen at any scale, identical rectangle. Plus a **negative-origin** second display,
+because that is what a two-monitor Mac actually looks like and a rect normalised to zero gets it wrong
+without an error.
+
+**Two findings I did not expect, both from running the probe instead of only writing it.**
+
+First, my own check failed the gate before it passed. I asserted `display=9` would answer "There is no
+display 9" — and it answered "refused at parse", because the grammar caps display numbers at 8 and I had
+written a check that walked one door and assumed the other. The gate caught it on run
+(`FAIL geometry`), and the fix was to test both: `display=3` reaches the runtime refusal, `display=9` is a
+parse refusal. Two different sentences, and only the first is about his hardware.
+
+Second, and the one that matters more: **the probe volunteered to move the desktop.** Finder publishes the
+desktop as a window — frame, element, the lot — and `--probe-geometry 'Finder|desktop|left'` computed a
+plan to resize it, while `--probe-windows Finder` had already been printing *Minimise "desktop" in
+Finder?* since slice 1 shipped. Writing a frame there disturbs his icon layout and tidies nothing. So the
+desktop is now **listed** (it is genuinely on the screen, and hiding it would be a worse lie) and
+**refused as an act by name**, with a fifth resolution case so the sentence says what it found. Detection
+is the conjunction only a desktop has: no `AXTitle` of its own *and* a frame exactly the whole of a
+display. A full-screen app's window is the same size but always titled, so real windows are not caught —
+and a test asserts both halves of that, because "filter the desktop out" would have quietly filtered out
+the wrong things.
+
+Also from the real machine: a Chrome tab arrived titled *"GVPCE – you're sharing this tab with Gemini for
+the duration of this conversation - Google Chrome – Rishideep"*. The card quotes that in full. Truncating
+it is a wording decision he owns, and it is the same decision the close card already needs — recorded, not
+silently changed.
+
+**Voice research, done in parallel and verified by me rather than trusted from a subagent's summary.**
+Gemini has native TTS today — `gemini-3.8-flash-tts` and `gemini-3.8-flash-lite-tts`, streaming headerless
+16-bit PCM at 24 kHz mono, called with his own key over the same transport Chunks already uses. That fits
+the product's shape exactly (BYOK, no server of ours, one call per streamed sentence). The claim that the
+free tier trains on the text is **not** something I confirmed — it is on the pricing page, not the speech
+page, and it matters enough to check before shipping. "VoiceStudio" is real (98,965 stars, AGPL-3.0-only)
+and is **not** usable: its own model inventory records the default engine's weights as non-commercial, and
+embedding it in a closed product needs a paid licence. Kokoro (Apache-2.0, 82M) is the honest open
+alternative for the offline tier, with one licence question to clear on the StyleTTS2 base.
+
+**Gate, measured:** 801/801 across 44 suites. `./scripts/verify.sh` exit 0 — **44 checks passed, 1
+skipped** (no Shortcuts window open), nonce `GATE-G3-12495`, after `make-app.sh` + `install.sh` nonce
+`GATE-GEO-3218`. The geometry check runs against whatever window is really on his screen, filtered so the
+desktop is not picked, and skips honestly when there is nothing to place.

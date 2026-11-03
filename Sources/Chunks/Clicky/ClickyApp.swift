@@ -164,6 +164,11 @@ struct leanring_buddyApp: App {
         if WindowProbe.isRequested {
             MainActor.assumeIsolated { WindowProbe.run() }
         }
+        if let body = WindowProbe.requestedGeometry() {
+            // Prints the rectangle a move would write and moves nothing — the only way to check
+            // invariant 1's arithmetic on his real displays without putting a window in the wrong place.
+            MainActor.assumeIsolated { WindowProbe.runGeometry(body) }
+        }
         if AnnotationSafetyProbe.isRequested {
             // Hopped to the main thread, not `assumeIsolated`. This `init` is not guaranteed to run
             // on main and on 2026-10-12 it did not: every probe line was logged `[bg]`, meaning the

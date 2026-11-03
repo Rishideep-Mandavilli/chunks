@@ -1330,6 +1330,7 @@ final class CompanionManager: ObservableObject {
     - [DO:open_file_with:Code|~/notes.md] opens one of his files **in the app he named** — the file route, not clicking an explorer panel. use it for "open this in VS Code", "open the invoice in Excel". the path is a real one you have seen (from a listing, a `[READ:]`, or the card) or a bare name he used; Chunks looks that up in his folders and tells him when two things share it, so never invent one. outside his folders or holding credentials is refused out loud. it opens the file, it does not change it — there is no write tool.
     - [DO:list_windows:all] or [DO:list_windows:Safari] asks what is open, and the list arrives on the next turn: every window with its title, which app owns it, which is focused and which is minimised. use it when his question is about windows the screenshot cannot show — another Space, minimised, or behind the front one — and never guess an answer about them: you cannot see them, so ask. it reads and changes nothing, so it needs no card; do not promise "closing that now" in the same reply.
     - [DO:focus_window:Safari|Inbox] brings one window forward: `App|window title`, and the title may be left off when the app has only one window to mean. [DO:minimize_window:Safari|Inbox] puts it in the Dock. [DO:close_window:Code|config.yml] closes it, and [DO:quit_app:Safari] quits the app — **those two are always confirmed with a card, even when he has switched asking off**, because both throw away unsaved work, so say "i'll ask you to allow it" for them and not for the others. Name a window the way its own title bar does; when two windows answer the same words Chunks refuses and lists both, so be specific rather than hopeful. None of these opens an app — that is [DO:open_app:…] — and none of them moves his cursor.
+    - [DO:move_window:Safari|Inbox|left] puts one window where he **named**, in the same `App|window title|place` shape. the place is one word only: `left`, `right`, `top`, `bottom`, `top-left`, `top-right`, `bottom-left`, `bottom-right`, `full`, `centre`, or a display — `main`, `second`, `display=2`. **never write coordinates**: `[DO:move_window:Safari|Inbox|400,220]` is refused at parse, because a rectangle you are guessing from a picture is not a place he asked for and he has to drag it back by hand. use it for "move that to the left half", "put it on the second display", "make that full screen". `centre` moves without resizing; every other place sizes the window to the half or quarter. one display plugged in means there is no `second` and Chunks says so.
     - [DO:run_command:caffeinate -di -t 3600] runs one program with fixed arguments. there is no shell: no ; && | > or $(…) — a tag containing any is refused, so never write a second command inside the first. the program is a bare name found in /bin, /usr/bin, /usr/local/bin or /opt/homebrew/bin, never a path. for "keep this mac awake" the flags are `-d` (the display stays on), `-i` (no idle sleep) or both as `-di`; **`-u` is not one of them** — it asserts the user is active and holds nothing that stops a sleep, measured 2026-10-31 on the machine this runs on. destructive or privileged programs (rm, mv, dd, diskutil, sudo, defaults, security, codesign, chown, kill, shutdown) and anything that fetches or sends over a network (curl, wget, ssh, scp, rsync, brew, npm, pip) are refused outright — say what you would run and let him run it. **this tool is always confirmed with a card, even when he has switched asking off**, so say "i'll ask you to allow it" for this one and nothing else. prefer [DO:run_shortcut:…] for a habit he already automated.
     - [DO:routine_add:Morning glance|daily at 08:00|brief me on what is open] adds a question Chunks asks itself on a schedule: name | cadence | question. the cadence is exactly `daily at HH:mm`, `weekdays at HH:mm`, `every 30 minutes` or `every 2 hours`; a time he did not say is a notification at the wrong hour, so ask. name and question share about 100 characters — he reads the whole card before agreeing. when it fires it goes through the same turn as a spoken question: it sees the screen then, and still has to ask before it presses. [DO:routine_remove:Morning glance] takes one out by the exact name in the list below; not in the list: say so and offer to add the one he means.
     - [DO:remind:stretch|40 min] says one line once and forgets it: the sentence | when. the when is exactly `40 min`, `2 hours`, `3 days`, `at 21:00`, `9 pm` or `tomorrow at 07:30`; seconds have no tool because the clock that fires them ticks once a minute, so a thing due in half a minute is answered in words rather than armed late. `at HH:mm` lets the app work out whether the hour is still ahead today. a reminder never captures his screen, calls a model or presses anything: when due it is one line on the card and one sentence aloud. [DO:remind_cancel:stretch] takes one out by the words on it; never guess.
@@ -2895,11 +2896,16 @@ final class CompanionManager: ObservableObject {
             return nil
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .reveal, .runCommand,
              .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .listWindows,
-             .openFileWith:
+             .openFileWith, .moveWindow:
             // A command needs no pre-check: `commandArgv` has already refused the shell
             // metacharacters, the path-shaped program and the destructive names, so anything that
             // reaches this line is one program from a known folder with fixed arguments — and it is
             // asked about whatever the asking switch says.
+            //
+            // A move is here rather than in its own arm because its refusals are *resolution* refusals
+            // — no such window, no second display, screen too small — and those are decided once, in
+            // `resolvedWindowAct`, beside the reveal's. Two places reading the display list to answer
+            // one question is how a card and an act start disagreeing.
             return nil
 
         case .addReminder(let text, _):
@@ -2935,6 +2941,13 @@ final class CompanionManager: ObservableObject {
     /// a card can outlive the window it named, and the second look is what makes "it did not close"
     /// honest rather than an act on whatever now carries that title.
     private func resolvedWindowAct(_ request: DoRequest) -> DoRequest? {
+        // A move carries a third thing the other verbs do not — a place — and the place can be refused
+        // for reasons that have nothing to do with the window: no second display plugged in, the display
+        // he numbered unplugged, or a screen too small for the slot. All of it is knowable before the
+        // card, so it is decided here, once, and the card only ever asks about a move that can happen.
+        if case .moveWindow(let name, let windowTitle, let target) = request {
+            return resolvedMove(app: name, title: windowTitle, target: target)
+        }
         let verb: WindowAct.Verb
         let app: String
         let title: String?
@@ -2963,6 +2976,38 @@ final class CompanionManager: ObservableObject {
         case .close: return .closeWindow(app: candidate.appName, title: candidate.title)
         case .quit: return .quitApp(name: candidate.appName)
         }
+    }
+
+    /// Decide a move before it is asked about, and log the rectangle it would write.
+    ///
+    /// The card names the window the act will really move, and the log line carries the frame — because
+    /// the only way to argue about a placement after the fact is to know what was asked for, and a card
+    /// that said "Move Inbox to the left half?" over a half computed from a stale display list is the
+    /// same class of lie as a press aimed at a control that moved.
+    private func resolvedMove(app: String, title: String?,
+                              target: WindowPlacementPolicy.Target) -> DoRequest? {
+        let surfaces = WindowDriver.surfaces()
+        let resolution = WindowAct.resolvePlacement(app: app, title: title,
+                                                   in: WindowDriver.candidates(appNamed: app))
+        let decision = WindowPlacementPolicy.decide(target: target, app: app, title: title,
+                                              resolution: resolution, surfaces: surfaces)
+        guard case .place(let candidate, let surface, let rect) = decision else {
+            // `decide` returns a sentence for every outcome that is not a placement, including the
+            // unreachable-window case, so nothing here invents wording of its own.
+            guard case .refused(let reason) = decision else {
+                Log.write("window: move refused — the decision produced no placement and no reason")
+                hud.reportConfirm("Chunks could not decide where to move that window.")
+                return nil
+            }
+            Log.write("window: move refused — \(reason)")
+            hud.reportConfirm(reason)
+            return nil
+        }
+        Log.write("window: move → \"\(candidate.title)\" in \(candidate.appName) to "
+            + WindowPlacementPolicy.phrase(for: target) + " — display \(surface.index) (\(surface.name)), "
+            + "frame (\(Int(rect.minX)), \(Int(rect.minY)), "
+            + "\(Int(rect.width))x\(Int(rect.height)))")
+        return .moveWindow(app: candidate.appName, title: candidate.title, to: target)
     }
 
     /// `[DO:reveal:…]` names a *thing*; the card has to name the path it will really open.

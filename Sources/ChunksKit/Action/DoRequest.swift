@@ -141,6 +141,21 @@ public enum DoRequest: Equatable, Sendable {
     /// question, never a coin toss.
     case openFileWith(app: String, path: String)
 
+    /// `[DO:move_window:Safari|Inbox|left]` — put one window where he named, by **name only**.
+    ///
+    /// The third field is a place a person says out loud (`left`, `top-right`, `full`, `centre`,
+    /// `second`, `display=2`) and never a rectangle: a coordinate is the one thing a vision model cannot
+    /// be trusted with here, because it is describing a screen it is guessing about, and unlike a wrong
+    /// press a wrong position is something he then rearranges by hand. `AGENTS.md` deferred this slice
+    /// for exactly that reason — it is the only act in the app that writes a rectangle — and the
+    /// arithmetic lives in `WindowPlacementPolicy`, in Accessibility's own top-left point space, with the
+    /// round-trip coverage at 1x/2x/3x that invariant 1 demands.
+    ///
+    /// Reversible and lossless, so it is not in `alwaysAsks`: "don't ask" covers tidying a window, and
+    /// the rule that keeps it honest is that the window is re-resolved against the live tree before the
+    /// card is worded, exactly like a close.
+    case moveWindow(app: String, title: String?, to: WindowPlacementPolicy.Target)
+
     /// Whether this request only *reads* the machine, and so must never be offered as a question.
     ///
     /// One property rather than a list at each call site, because getting it wrong is asymmetric: a
@@ -271,6 +286,14 @@ public enum DoRequest: Equatable, Sendable {
             else { return nil }
             return .quitApp(name: name)
 
+        // Moving and resizing are one verb, because a slot does both at once: "left" is a position and
+        // a width, and a tag that split them would let a model ask for a half-width window parked at the
+        // right edge — a rectangle no sentence describes.
+        case "move_window", "move", "place_window", "resize_window", "arrange_window",
+             "snap_window":
+            guard let parsed = DoRequest.windowPlacement(in: argument) else { return nil }
+            return .moveWindow(app: parsed.app, title: parsed.title, to: parsed.target)
+
         // What is open. `all` means every app; anything else is an app name, matched the same
         // half-name way the window verbs match it, so "list windows in chrome" works.
         case "list_windows", "windows", "what_is_open":
@@ -306,6 +329,28 @@ public enum DoRequest: Equatable, Sendable {
         let title = parts.dropFirst().joined(separator: "|").trimmingCharacters(in: .whitespaces)
         guard title.count <= 120 else { return nil }
         return (app, title.isEmpty ? nil : title)
+    }
+
+    /// `App|Title|where` for a move. The third field is required, and it is parsed by
+    /// `WindowPlacementPolicy`, which is where the refusal of a raw coordinate lives.
+    ///
+    /// A title is optional in the same way the other window verbs take one — "move Safari left" with one
+    /// Safari window is answerable — but the place never is, because a move with no destination is not
+    /// an act with a describable effect.
+    static func windowPlacement(in argument: String)
+        -> (app: String, title: String?, target: WindowPlacementPolicy.Target)? {
+        let parts = argument.components(separatedBy: "|")
+        guard parts.count >= 2 else { return nil }
+        let app = parts[0].trimmingCharacters(in: .whitespaces)
+        guard !app.isEmpty, !app.contains("/"), !app.hasPrefix("."), app.count <= 60 else { return nil }
+        // Everything before the last field is the title, so a title containing a `|` still leaves the
+        // place in the right hand: `Safari|Inbox|Draft|left` means the window called "Inbox|Draft".
+        let placeText = parts.last.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        guard let target = WindowPlacementPolicy.parseTarget(placeText) else { return nil }
+        let title = parts.dropFirst().dropLast().joined(separator: "|")
+            .trimmingCharacters(in: .whitespaces)
+        guard title.count <= 120 else { return nil }
+        return (app, title.isEmpty ? nil : title, target)
     }
 
     /// A routine question short enough to read on the card that asks for it.
@@ -607,7 +652,8 @@ public enum DoRequest: Equatable, Sendable {
     public var invalidatesTheScreen: Bool {
         switch self {
         case .openApp, .openURL, .runShortcut, .email, .reveal,
-             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith: return true
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith, .moveWindow:
+            return true
         case .setVolume, .addReminder, .cancelReminder, .addRoutine, .removeRoutine, .runCommand,
              .listWindows:
             return false
@@ -667,6 +713,8 @@ public enum ToolLayer {
             // Names the folder as well as the file, for the reason a reveal does it: approving a
             // location you cannot see is approving nothing.
             return "Open \(revealLabel(path)) in \(app)?"
+        case .moveWindow(let app, let title, let target):
+            return WindowPlacementPolicy.question(target: target, candidate: Self.windowCandidate(app, title))
         }
     }
 
@@ -737,7 +785,7 @@ public enum ToolLayer {
             return .readsTheMachine
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .addRoutine, .removeRoutine,
              .addReminder, .cancelReminder, .reveal, .runCommand,
-             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith:
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith, .moveWindow:
             return .changesSystemState
         }
     }
@@ -817,6 +865,12 @@ public enum ToolLayer {
             let name = (path as NSString).lastPathComponent
             return succeeded ? "Opened \(name) in \(app)."
                              : "\(app) did not open \(name)."
+        case .moveWindow(let app, let title, let target):
+            // Says *where*, because with asking off this line is the only record that anything happened,
+            // and "Moved the window." does not tell him which way to look.
+            return WindowPlacementPolicy.outcomeLine(target: target,
+                                               candidate: Self.windowCandidate(app, title),
+                                               succeeded: succeeded)
         }
     }
 }

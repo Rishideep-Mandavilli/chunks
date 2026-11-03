@@ -44,6 +44,18 @@ public enum ToolRunner {
         }
     }
 
+    /// Move one window to a named place. Returns whether the window **ended up there**.
+    static func performMove(app: String, title: String?,
+                            target: WindowPlacementPolicy.Target) -> Bool {
+        let resolution = WindowAct.resolvePlacement(app: app, title: title,
+                                                   in: WindowDriver.candidates(appNamed: app))
+        guard case .place(let candidate, _, let rect) = WindowPlacementPolicy.decide(
+            target: target, app: app, title: title, resolution: resolution,
+            surfaces: WindowDriver.surfaces())
+        else { return false }
+        return WindowDriver.place(candidate, to: rect)
+    }
+
     /// `@MainActor` because this launches GUI applications, and the shell that calls it already
     /// lives on the main actor.
     @MainActor
@@ -73,6 +85,13 @@ public enum ToolRunner {
             return performWindowVerb(.close, app: app, title: title)
         case .quitApp(let name):
             return WindowDriver.quit(appNamed: name)
+
+        case .moveWindow(let app, let title, let target):
+            // Re-decided here, not remembered from the card: the window may have moved, another one may
+            // have opened, and the display he meant may have been unplugged in the seconds since he
+            // answered. `WindowPlacementPolicy.decide` is the same function `--probe-geometry` prints, so the
+            // probe's rectangle and the act's rectangle cannot diverge.
+            return performMove(app: app, title: title, target: target)
 
         case .openFileWith(let app, let path):
             // The policy already ran: the shell resolved the path against `RevealPolicy`'s roots and

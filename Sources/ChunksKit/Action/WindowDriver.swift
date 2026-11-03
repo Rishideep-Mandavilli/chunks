@@ -47,6 +47,10 @@ public enum WindowDriver {
     /// Allow would lead to nothing.
     public static func candidates(appNamed name: String? = nil) -> [WindowAct.Candidate] {
         let server = serverWindows()
+        // A window whose frame is the whole of a display and which has no title of its own is Finder's
+        // desktop. Both facts together are the test: a full-screen app's window is the same size but
+        // always carries a title, and refusing that would refuse real windows he does want moved.
+        let wholeDisplays = surfaces().map(\.globalFrame)
         var out: [WindowAct.Candidate] = []
         let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
         for app in apps {
@@ -71,14 +75,16 @@ public enum WindowDriver {
                 // chrome is not a window a person means, and counting one is how an honest refusal turns
                 // into a wrong one.
                 guard frame.width >= minListedWidth, frame.height >= minListedHeight else { continue }
+                let ownTitle = AXTDriver.stringAttribute(window, kAXTitleAttribute as String)
                 let candidate = WindowAct.Candidate(
                     pid: pid,
                     appName: appName,
-                    title: AXTDriver.stringAttribute(window, kAXTitleAttribute as String)
+                    title: ownTitle
                         ?? AXTDriver.stringAttribute(window, kAXDescriptionAttribute as String) ?? "",
                     frame: frame,
                     isMinimized: boolAttribute(window, kAXMinimizedAttribute as String),
-                    isFocused: focused != nil && CFEqual(focused as CFTypeRef, window as CFTypeRef))
+                    isFocused: focused != nil && CFEqual(focused as CFTypeRef, window as CFTypeRef),
+                    isDesktop: (ownTitle ?? "").isEmpty && wholeDisplays.contains(frame))
                 fromAccessibility.append(candidate)
                 out.append(candidate)
             }
@@ -239,4 +245,92 @@ public enum WindowDriver {
         }) else { return false }
         return app.terminate()
     }
+
+    // MARK: - Geometry
+
+    /// The displays, in **Accessibility's own space**: global logical points, top-left origin.
+    ///
+    /// `CGDisplayBounds` is already that space, which is why a whole display needs no conversion here —
+    /// and why this file can hand a rectangle straight to `kAXPositionAttribute`. The *usable* rect is
+    /// the one place AppKit's bottom-left origin is touched, and it is touched only as a **difference
+    /// inside one screen**: `frame.maxY - visible.maxY` is the menu bar's height and
+    /// `visible.minY - frame.minY` is the Dock's, and a difference is the same in either orientation.
+    /// That is what keeps invariant 1 honest without a flip anywhere.
+    ///
+    /// Main display first, and 1-based, because "display 1" has to mean the one he calls that.
+    public static func surfaces() -> [WindowPlacementPolicy.Surface] {
+        let mainID = CGMainDisplayID()
+        var built: [WindowPlacementPolicy.Surface] = []
+        for screen in NSScreen.screens {
+            guard let number = screen.deviceDescription[
+                NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { continue }
+            let id = CGDirectDisplayID(number.uint32Value)
+            let bounds = CGDisplayBounds(id)
+            guard bounds.width > 0, bounds.height > 0 else { continue }
+            let visible = screen.visibleFrame
+            let topInset = screen.frame.maxY - visible.maxY
+            let leftInset = visible.minX - screen.frame.minX
+            let usable = CGRect(x: bounds.minX + leftInset, y: bounds.minY + topInset,
+                                width: visible.width, height: visible.height)
+            built.append(WindowPlacementPolicy.Surface(index: 0, name: screen.localizedName,
+                                                 isMain: id == mainID,
+                                                 globalFrame: bounds, usableFrame: usable))
+        }
+        let ordered = built.sorted { left, right in
+            if left.isMain != right.isMain { return left.isMain }
+            return left.globalFrame.minX < right.globalFrame.minX
+        }
+        // The index is assigned after ordering, so a number he says out loud is the position he sees in
+        // Display Settings rather than whatever order the window server enumerated.
+        return ordered.enumerated().map { pair in
+            var surface = pair.element
+            surface.index = pair.offset + 1
+            return surface
+        }
+    }
+
+    /// How close the window has to end up for the move to be reported as done.
+    ///
+    /// Four points, not zero: a window manager that snaps to a grid, a rounded corner radius, or a
+    /// display scale of 3x all make an exact equality a coin toss, and a tolerance that is too wide
+    /// would call a move that did nothing a success.
+    public static let placementTolerance: CGFloat = 4
+
+    /// Put one window in one rectangle, and **believe the frame, not the return code.**
+    ///
+    /// Both writes can answer `.success` while the app ignores the size it was handed — a fixed-size
+    /// panel does exactly that — and a card that said "Moved Inbox to the left half" about a window that
+    /// stayed put is the same lie the reveal made until tonight. So the answer is a re-read of the
+    /// window's own rectangle, polled for a moment because a move animates.
+    ///
+    /// Size first, then position: an app that clamps a position against its current size would otherwise
+    /// refuse the new position for a window it has not resized yet. Nothing here moves the cursor.
+    public static func place(_ candidate: WindowAct.Candidate, to rect: CGRect) -> Bool {
+        guard let window = element(for: candidate) else { return false }
+        var size = rect.size
+        var origin = rect.origin
+        guard let sizeValue = AXValueCreate(.cgSize, &size),
+              let positionValue = AXValueCreate(.cgPoint, &origin) else { return false }
+        let sized = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
+        let moved = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString,
+                                                 positionValue)
+        guard sized == .success, moved == .success else { return false }
+        return settles(at: rect, window: window)
+    }
+
+    /// Poll the window's own frame until it matches, or the short ceiling runs out.
+    static func settles(at rect: CGRect, window: AXUIElement) -> Bool {
+        let deadline = Date().addingTimeInterval(placementSettleSeconds)
+        while true {
+            let now = frame(of: window)
+            if abs(now.width - rect.width) <= placementTolerance,
+               abs(now.height - rect.height) <= placementTolerance,
+               abs(now.minX - rect.minX) <= placementTolerance,
+               abs(now.minY - rect.minY) <= placementTolerance { return true }
+            if Date() >= deadline { return false }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    static let placementSettleSeconds = 0.6
 }

@@ -148,6 +148,7 @@ finds a desktop icon. Two more read-only doors came out of the semantic work:
 .build/debug/chunks --probe-reply      # one reply, every tag's verdict, and what the plan would do
 .build/debug/chunks --probe-notebook 'the landlord'  # his notebook read-only, then the tier's rules on a copy
 .build/debug/chunks --probe-windows Safari  # every window Chunks can see, and what each verb would ask
+.build/debug/chunks --probe-geometry 'Safari|Inbox|left'  # the rectangle a move would write, and nothing moved
 .build/debug/chunks --probe-reply --local   # ask the local model a plan question and audit its real words
 .build/debug/chunks --probe-read '~/Downloads/build.log|why did it fail'  # one path, end to end
 .build/debug/chunks --render-ui /tmp/notch-card.png   # every notch state drawn offscreen, to look at
@@ -783,6 +784,47 @@ map almost 1:1 onto `#expect(...)`.
    is the only thing standing between a complete listing and a number he cannot use. Measured on the
    same screen after the fix: 7 windows, 1157 bytes, both Chrome tabs distinguished.
 
+   **A window is moved to a place he named, never to a coordinate.** `[DO:move_window:Safari|Inbox|left]`
+   is the third verb that writes to a window, and the only one that writes a *rectangle* — which is why
+   `AGENTS.md` deferred it longer than anything else in Tier 3. The grammar accepts exactly twelve words
+   (`left`, `right`, `top`, `bottom`, the four corners, `full`, `centre`, `main`, `second`) plus
+   `display=N`, and **refuses a number with a comma or a decimal point at parse** — not clamps it,
+   refuses it. The reason is invariant 1's whole history: a vision model will happily write `400,220` for
+   a rectangle it is guessing at, every past coordinate mistake produced a plausible number rather than
+   an error, and unlike a wrong press, a wrong position is something he then drags back by hand. Spoken
+   variants fold to the same table ("top left" → `top-left`), because that is how the sentence arrives
+   from a transcript.
+
+   The arithmetic is in `WindowPlacementPolicy` (ChunksKit, pure) and **converts nothing**, on purpose:
+   a display arrives already in global top-left logical points — `CGDisplayBounds`, which is the space
+   `kAXPositionAttribute` is written in — and every slot is a fraction of the *usable* rect, so a window
+   cannot be placed under the menu bar or the Dock. The one AppKit touch is the inset, computed as a
+   **difference inside a single screen** (`frame.maxY - visible.maxY` is the menu bar,
+   `visible.minY - frame.minY` is the Dock), because a difference is the same in either orientation and
+   that is what keeps the flip out of the code entirely. Coverage is the 1x/2x/3x round trip invariant 1
+   asks for, stated as the property that actually matters: the same screen described at any backing scale
+   produces the identical rectangle, plus a secondary display at a **negative origin**, which is what a
+   real two-monitor Mac has and what a rect normalised to zero silently gets wrong.
+
+   Three rules keep it no looser than the press path. **The act re-decides at execution**, not from the
+   card: the window may have moved, another may have opened, and the display he numbered may have been
+   unplugged while he read the question. **A move that the app ignored is reported as a failure** —
+   `place` writes size then position and then re-reads the window's own frame against a 4 pt tolerance,
+   because both `AXValue` writes can answer `.success` while a fixed-size panel refuses to resize, and
+   "Moved Inbox to the left half" over a window that stayed put is the reveal's lie again. **The desktop
+   is not a window**: Finder publishes it as one, with a frame and an element, and the first run of
+   `--probe-geometry` volunteered to place it in the left half while `--probe-windows Finder` had been
+   printing *Minimise "desktop" in Finder?* for a day. It is listed (it is genuinely on the screen) and
+   refused as an act, by name, because writing a frame to it disturbs his icon layout and tidies nothing.
+   Detection is two facts only a desktop has together — no `AXTitle` of its own, and a frame exactly the
+   whole of a display — so a full-screen app's window, which is the same size but always titled, is not
+   caught.
+
+   What is honestly limited: a move needs an element, so a window on another Space — which the listing
+   now shows him — cannot be moved, and the answer says so rather than promising. Moving and resizing by
+   raw pixels, and "put that on the second display" when only one is plugged in, are refusals, not
+   guesses.
+
    **A command has three outcomes, and `runTool` is the only place any tool executes.**
    `[DO:run_command:…]` waits `commandWatchSeconds` (3) and then **stops watching without killing**:
    the user approved the whole line, and `caffeinate -di -t 21600` is a six-hour sleep hold that is
@@ -1077,8 +1119,8 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-**The app runs. 784 of 784 tests green across 43 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 44 checks: 41–43 pass and 1–3 skip,
+**The app runs. 801 of 801 tests green across 44 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 45 checks: 42–44 pass and 1–3 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
@@ -1111,9 +1153,10 @@ Done and tested:
 | Policy rules | `Action/PolicyGate.swift` | Secure fields / Keychain / password managers refused even with asking off; unknown metadata fails toward *asking* |
 | Consent state machine | `Action/ConsentGate.swift` | One outstanding question; double answers are inert; displacement counts as denial |
 | Accessibility press | `Action/AXTDriver.swift` | Window hit test (layer 0, desktop on request) → `AXUIElementCopyElementAtPosition` → walk to a pressable ancestor → `AXPress`/`AXPick`/`AXOpen` (icons are selected first); name search when the pixel misses, then Finder's desktop list when that misses, and an app that answers badly is believed only from a before/after snapshot of what is running and focused. Typing goes through `typeTarget`/`type`: editable-role hit test and name search, `AXManualAccessibility` for Chromium surfaces, focus read back and compared before the first character, unicode `CGEvent` keystrokes that never warp the pointer. Never moves the cursor |
-| Tool requests | `Action/DoRequest.swift` | `[DO:open_app:X]` / `[DO:open_url:host\|Chrome]` / `[DO:set_volume:N]` / `[DO:run_shortcut:X]` / `[DO:email:a@b]` / `[DO:routine_add:name\|cadence\|question]` / `[DO:routine_remove:name]` / `[DO:reveal:Memora]` / `[DO:run_command:caffeinate -di -t 3600]` / `[DO:focus_window:Safari\|Inbox]` / `[DO:minimize_window:…]` / `[DO:close_window:…]` / `[DO:quit_app:…]` / `[DO:list_windows:all]` / `[DO:open_file_with:Code|~/notes.md]`, parsed only into effects that fit one sentence — and a routine whose whole card sentence runs past `maxQuestionCharacters` is refused at parse, not clipped on the card |
+| Tool requests | `Action/DoRequest.swift` | `[DO:open_app:X]` / `[DO:open_url:host\|Chrome]` / `[DO:set_volume:N]` / `[DO:run_shortcut:X]` / `[DO:email:a@b]` / `[DO:routine_add:name\|cadence\|question]` / `[DO:routine_remove:name]` / `[DO:reveal:Memora]` / `[DO:run_command:caffeinate -di -t 3600]` / `[DO:focus_window:Safari\|Inbox]` / `[DO:minimize_window:…]` / `[DO:close_window:…]` / `[DO:quit_app:…]` / `[DO:list_windows:all]` / `[DO:open_file_with:Code|~/notes.md]` / `[DO:move_window:Safari\|Inbox\|left]`, parsed only into effects that fit one sentence — and a routine whose whole card sentence runs past `maxQuestionCharacters` is refused at parse, not clipped on the card |
 | What is open | `Action/OpenWindows.swift` | The read half: window list → one labelled block for the next turn, grouped by app, whole groups only under a 3 KB budget, with the count of what was left out |
-| Which window he meant | `Action/WindowAct.swift`, `Action/WindowDriver.swift` | The pure half decides (a title answers when every distinctive word he said is in it, two equal answers are refused *with both names listed*, and nothing is ever chosen by where it sits); the driver enumerates windows through Accessibility and performs raise/minimise/close/quit without moving the cursor |
+| Which window he meant | `Action/WindowAct.swift`, `Action/WindowDriver.swift` | The pure half decides (a title answers when every distinctive word he said is in it, two equal answers are refused *with both names listed*, and nothing is ever chosen by where it sits); the driver enumerates windows through Accessibility **and** the window server — Accessibility alone publishes nothing for an app on another display — and performs raise/minimise/close/quit without moving the cursor |
+| Where a window goes | `Action/WindowPlacementPolicy.swift` | Twelve named places and nothing else: halves, quarters, full, centre, `main`/`second`/`display=N`. Refuses a coordinate at parse, computes in Accessibility's own top-left point space with no conversion, and is covered at 1x/2x/3x and on a negative-origin second display. `--probe-geometry` prints the rectangle it would write |
 | File read policy | `Action/ReadRequest.swift` | `[READ:~/path|question]`: allow-listed roots, a credential deny-list matched on the **resolved** path so a symlink into `~/.ssh` is refused, 24 KB cap sliced by file kind (tail for logs, head for code) |
 | Opening a file in an app | `Action/OpenFilePolicy.swift` | The five answers behind `[DO:open_file_with:…]` and their exact sentences, decided where a test can reach and a probe can quote: installed app + one file is a card, two matches asks, and a credential or an out-of-roots path is refused before a card exists |
 | Read-input budget | `Action/ReadInputBudget.swift` | One 6,000-unit UTF-8-byte token upper bound for the whole attachment, charging the exact live frame — path, coverage warning and untrusted-data label included. PDFs enter as ranked whole pages in document order and an oversized best page is refused rather than clipped; text and office files enter as contiguous whole lines, with boundary fragments trimmed as bytes before decoding |

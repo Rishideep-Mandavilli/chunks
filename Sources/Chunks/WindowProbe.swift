@@ -118,6 +118,15 @@ enum WindowProbe {
                     failures.append("an unreachable window must be refused with why it cannot be "
                         + "acted on, not with \"no such window\": \(refusal)")
                 }
+            case .notAWindow(let candidate):
+                let refusal = WindowAct.refusal(verb: verb, app: target, title: nil,
+                                                resolution: .notAWindow(candidate))
+                out("  \(pad("[DO:\(Self.tagName(verb)):\(target)]", 34)) → REFUSED  "
+                    + "\"\(candidate.title)\" is the desktop, not a window")
+                if !refusal.contains("desktop") {
+                    failures.append("the desktop must be refused by naming it as the desktop, which is "
+                        + "the only way he learns why nothing happened: \(refusal)")
+                }
             }
         }
 
@@ -144,6 +153,13 @@ enum WindowProbe {
                                          resolution: .unreachable(candidate)))
                 if candidate.isReachable {
                     failures.append("an unreachable candidate claimed to be reachable")
+                }
+            case .notAWindow(let candidate):
+                out("windows: \"\(title)\" in \(named) is the desktop — refused, not offered: "
+                    + WindowAct.refusal(verb: .close, app: named, title: title,
+                                         resolution: .notAWindow(candidate)))
+                if !candidate.isDesktop {
+                    failures.append("a candidate refused as the desktop was not marked as one")
                 }
             }
         }
@@ -180,11 +196,100 @@ enum WindowProbe {
         exit(1)
     }
 
+    /// `--probe-geometry 'Safari|Inbox|left'` — where a move *would* put a window, and nothing else.
+    ///
+    /// Geometry is the one act in this app that writes a rectangle, and every rectangle bug this repo has
+    /// hit produced a plausible number rather than an error: a click at double the intended offset on
+    /// Retina, an aim that clamped to the last row, a window list that reached above the top of the
+    /// display. So the rectangle a move would write has to be readable at a terminal before anyone says
+    /// the sentence out loud — and it has to come from the same `WindowPlacementPolicy.decide` the act
+    /// runs, because a probe that did its own maths would be a second authority over his screen and the
+    /// first place the two disagreed would be the bug.
+    static var isGeometryRequested: Bool { CommandLine.arguments.contains("--probe-geometry") }
+
+    static func requestedGeometry() -> String? {
+        guard let index = CommandLine.arguments.firstIndex(of: "--probe-geometry"),
+              index + 1 < CommandLine.arguments.count else { return nil }
+        let body = CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespaces)
+        return body.isEmpty ? nil : body
+    }
+
+    static func runGeometry(_ body: String) -> Never {
+        setvbuf(stdout, nil, _IONBF, 0)
+        let surfaces = WindowDriver.surfaces()
+        out("geometry: \(surfaces.count) display(s) — global top-left logical points")
+        for surface in surfaces {
+            out("  \(surface.index). \(pad(surface.name, 22)) whole "
+                + "(\(Int(surface.globalFrame.minX)), \(Int(surface.globalFrame.minY)), "
+                + "\(Int(surface.globalFrame.width))x\(Int(surface.globalFrame.height)))  usable "
+                + "(\(Int(surface.usableFrame.minX)), \(Int(surface.usableFrame.minY)), "
+                + "\(Int(surface.usableFrame.width))x\(Int(surface.usableFrame.height)))"
+                + (surface.isMain ? "  main" : ""))
+        }
+
+        guard let parsed = DoRequest.parse("move_window:\(body)"),
+              case .moveWindow(let app, let title, let target) = parsed else {
+            out("geometry: refused at parse — \"\(body)\" is not a window and a place Chunks knows. "
+                + "A coordinate is never accepted: \(WindowPlacementPolicy.vocabulary).")
+            exit(1)
+        }
+
+        let resolution = WindowAct.resolvePlacement(app: app, title: title,
+                                                   in: WindowDriver.candidates(appNamed: app))
+        let decision = WindowPlacementPolicy.decide(target: target, app: app, title: title,
+                                                    resolution: resolution, surfaces: surfaces)
+        guard case .place(let candidate, let surface, let rect) = decision else {
+            let reason: String
+            if case .refused(let why) = decision { reason = why } else { reason = "no placement" }
+            out("geometry: refused — \(reason)")
+            out("geometry: no card would be built, so an Allow could never have led to a window moving")
+            exit(0)
+        }
+
+        out("geometry: window — \"\(candidate.title)\" in \(candidate.appName) (pid \(candidate.pid)) "
+            + "at (\(Int(candidate.frame.minX)), \(Int(candidate.frame.minY)), "
+            + "\(Int(candidate.frame.width))x\(Int(candidate.frame.height)))")
+        out("geometry: would write — display \(surface.index) (\(surface.name)) at "
+            + "(\(Int(rect.minX)), \(Int(rect.minY)), \(Int(rect.width))x\(Int(rect.height)))")
+        let card = WindowPlacementPolicy.question(target: target, candidate: candidate)
+        out("geometry: the card would ask \"\(card)\" and nothing was moved")
+
+        var failures: [String] = []
+        // The two properties that make this slice safe, asserted on the real display rather than only
+        // in the unit fixtures: a placed window stays inside the area a window may occupy, and it stays
+        // inside the display it was placed on. A rectangle outside either one is invariant 1's bug —
+        // plausible, silent, and a window he has to drag back by hand.
+        if !surface.usableFrame.contains(rect) {
+            failures.append("the frame \(rect) escapes the usable area \(surface.usableFrame) — "
+                + "it would land under the menu bar or the Dock")
+        }
+        if !surface.globalFrame.contains(rect) {
+            failures.append("the frame \(rect) is not on display \(surface.index) at all")
+        }
+        if rect.width < WindowPlacementPolicy.minWindowSize.width
+            || rect.height < WindowPlacementPolicy.minWindowSize.height {
+            failures.append("the frame is smaller than anything a person can type into: "
+                + "\(rect.width)x\(rect.height)")
+        }
+        if ToolLayer.alwaysAsks(parsed) {
+            failures.append("a move is reversible and loses nothing, so it must not be always-asked")
+        }
+        if !parsed.invalidatesTheScreen {
+            failures.append("a move changes the screen, so a plan with a pixel step after it must "
+                + "wait for a fresh capture — and it only does that if this says true")
+        }
+        for failure in failures { out("geometry: FAIL — \(failure)") }
+        if failures.isEmpty {
+            out("geometry: PASS — the rectangle is inside the display, usable, and the contract holds")
+            exit(0)
+        }
+        exit(1)
+    }
+
     /// The request the shell would stage for this verb, so the probe asks the same question the card
     /// does rather than a paraphrase of it.
     private static func request(verb: WindowAct.Verb, app: String,
-                                title: String?) -> DoRequest {
-        switch verb {
+                                title: String?) -> DoRequest {        switch verb {
         case .focus: return .focusWindow(app: app, title: title)
         case .minimize: return .minimizeWindow(app: app, title: title)
         case .close: return .closeWindow(app: app, title: title)

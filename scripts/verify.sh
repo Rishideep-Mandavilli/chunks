@@ -213,6 +213,48 @@ fi
 # and quitting stay asked about even with asking switched off. It performs nothing — the verbs are
 # printed as questions — so this can run against his real screen.
 check "windows: what Chunks can see, and what each verb would ask" "$BIN" --probe-windows
+
+# Geometry, read-only. Moving a window is the one act in this app that writes a rectangle, and every
+# coordinate bug this repo has hit produced a plausible number rather than an error — so the check asks
+# the probe for a rectangle on his real display and asserts three things it can actually fail: the frame
+# lands inside the usable area, a coordinate is refused at parse (never clamped), and a display that is
+# not plugged in is refused rather than rounded to the one that is. The window is taken from the
+# enumeration above rather than typed, so the check cannot pass because a fixture happened to exist.
+# The desktop is enumerated as a window and is not one, so it is filtered before the pick: taking the
+# first line blindly meant this check skipped whenever the desktop happened to be the only thing the
+# frontmost-app enumeration published.
+first_window="$("$BIN" --probe-windows 2>&1 | grep -E '^  [A-Za-z]' | grep '"' \
+  | grep -v '"desktop"' | head -1)"
+# The app name is padded with spaces and may itself contain spaces ("Google Chrome"), so it is cut by
+# the position of the first quote rather than by whitespace.
+geom_app="$(printf '%s' "$first_window" \
+  | awk '{i=index($0,"\""); s=substr($0,3,i-3); sub(/[ ]+$/,"",s); print s}')"
+geom_title="$(printf '%s' "$first_window" | sed -E 's/.*"([^"]*)".*/\1/')"
+if [[ -z "$geom_app" || -z "$geom_title" || "$geom_title" == "desktop" ]]; then
+  printf '  \033[33mSKIP\033[0m  geometry: no real window on screen to place (the desktop is not one)\n'
+  skip=$((skip + 1))
+else
+  geom_out="$("$BIN" --probe-geometry "$geom_app|$geom_title|left" 2>&1)"
+  pixel_out="$("$BIN" --probe-geometry "$geom_app|$geom_title|400,220" 2>&1)"; pixel_status=$?
+  # `display=3` is inside the grammar's cap and outside this Mac's one screen, so it reaches the runtime
+  # answer. `display=9` is past the cap and is refused at parse — two different doors, and a check that
+  # only walked one would not notice the other closing.
+  nodisplay_out="$("$BIN" --probe-geometry "$geom_app|$geom_title|display=3" 2>&1)"
+  overcap_out="$("$BIN" --probe-geometry "$geom_app|$geom_title|display=9" 2>&1)"; overcap_status=$?
+  if printf '%s' "$geom_out" | grep -q "would write" \
+     && printf '%s' "$geom_out" | grep -q "geometry: PASS" \
+     && [[ $pixel_status -eq 1 ]] && printf '%s' "$pixel_out" | grep -q "refused at parse" \
+     && [[ $overcap_status -eq 1 ]] && printf '%s' "$overcap_out" | grep -q "refused at parse" \
+     && printf '%s' "$nodisplay_out" | grep -q "There is no display 3"; then
+    printf '  \033[32mPASS\033[0m  geometry: a named place lands inside the display, a pixel never parses\n'
+    pass=$((pass + 1))
+  else
+    printf '  \033[31mFAIL\033[0m  geometry: the rectangle, the pixel refusal or the missing display changed\n'
+    printf '        %s\n' "$(printf '%s\n%s\n%s\n%s' "$geom_out" "$pixel_out" "$nodisplay_out" \
+        "$overcap_out" | grep -vE '^\s*$|Built-in Retina|display\(s\)' | tail -4 | tr '\n' '|')"
+    fail=$((fail + 1)); failures+=("window geometry")
+  fi
+fi
 # The command tool's executor, run with two fixed programs the harness chooses — never an argument,
 # because a flag that ran whatever it was handed is the door the parser exists to close.
 cmd_out="$("$BIN" --probe-command 2>&1)"

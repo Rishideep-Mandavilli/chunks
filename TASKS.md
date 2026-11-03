@@ -134,7 +134,8 @@ never injected, `<NOTE>`/`[NOTES:]` verified live on Gemini. 3.4 realtime duplex
 **done-unseen**. 3.8 launch-hold **done-unseen**. **New 3.9–3.15** from his ask: 3.9 file writes
 (blocked-on-him), 3.10 VS Code by name (buildable now), 3.11 PDF stays read-only (a refusal wording),
 3.12 browser in three levels (L1 and L2 buildable now, L3 blocked-on-him), 3.13 process and window
-choreography (buildable now — the biggest honest slice of "control everything"), 3.14 a durable job
+choreography (**slices 1 and 2 built** — the four window verbs, then geometry by name with a coordinate
+refused at parse; the listing half went to 3.12 level 1), 3.14 a durable job
 queue (in-scope shape of "multiple tasks", with one question to answer first), **3.15 hand a browser
 job to Cloud-Computer on the Pi** (new 2026-11-02; he already owns the other half, and it is blocked on
 the integration-vs-delegation decision), 3.16 agent delegation (**out of scope as stated**; the
@@ -761,7 +762,7 @@ worded. If he wants real PDF editing, that is a scope amendment, not a feature.
   browser on his Pi with its own spend gates and NDJSON traces, so a debug port on the browser he reads
   his mail in may never need to be opened at all. Read this level as the fallback, not the plan.
 
-### 3.13 Process and window choreography — slice 1 DONE 2026-11-02 (his screen pending)
+### 3.13 Process and window choreography — slices 1 and 2 DONE 2026-11-03 (his screen pending)
 
 **Slice 1 is built and on his machine.** `[DO:focus_window:Safari|Inbox]`,
 `[DO:minimize_window:…]`, `[DO:close_window:…]` and `[DO:quit_app:Safari]` — resolved against the live
@@ -780,22 +781,54 @@ distinctive word he said must be in the title), with specificity breaking a tie,
 that made `nameScore` strict for *controls* is already handled here by refusing two equal answers with
 both names listed.
 
+**Slice 2, built 2026-11-03 — geometry by name.** `[DO:move_window:Safari|Inbox|left]` puts a window in
+one of twelve places a person says out loud: the four halves, the four corners, `full`, `centre`, plus
+`main`, `second` and `display=N` for a second monitor. **A coordinate is refused at parse, not clamped** —
+`|400,220` never reaches the machine, because a rectangle a vision model guesses is the exact class of
+number invariant 1 was written around, and unlike a wrong press a wrong position is dragged back by hand.
+`centre` moves without resizing; every other place sizes the window to the slot.
+
+The arithmetic is `WindowPlacementPolicy` (ChunksKit, pure) and converts nothing: displays arrive in
+`CGDisplayBounds`, which is already Accessibility's global top-left logical points, and the menu-bar and
+Dock insets are taken as a **difference inside one screen**, which is orientation-independent. Coverage is
+the 1x/2x/3x round trip the repo demands of any coordinate work, expressed as the property that matters —
+the same screen at any backing scale yields the identical rectangle — plus a secondary display at a
+**negative origin**, the shape a real two-monitor Mac has. `--probe-geometry 'App|Title|left'` prints the
+display list, the window, the frame it *would* write and the card's sentence, and moves nothing; the gate
+asserts the frame lands inside the display, that a pixel never parses, and that a display number past the
+grammar's cap and one that is simply not plugged in are two different refusals.
+
+Three decisions inside the slice, each argued from the failure it prevents: **the act re-decides at
+execution**, not from the card, because a window can move and a monitor can be unplugged while he reads;
+**a move the app ignored is reported as a failure**, because both `AXValue` writes answer `.success` even
+when a fixed-size panel refuses to resize, and `place` therefore re-reads the window's own frame against a
+4 pt tolerance — the reveal's lie, one evening earlier; and **the desktop is listed but refused as an
+act**, found by this very probe volunteering to place Finder's desktop in the left half while
+`--probe-windows Finder` had been printing *Minimise "desktop" in Finder?* for a day. Detection is two
+facts only a desktop has together (no `AXTitle` of its own, and a frame exactly the whole of a display),
+so a full-screen app's window — same size, always titled — is not caught.
+
+Honest limits, not gaps: a move needs an element, so a window on **another display** is listed and cannot
+be moved, and the answer says so. And a very long window title is quoted in full on the card — measured on
+his machine a Chrome tab arrived as *"GVPCE – you're sharing this tab with Gemini for the duration of this
+conversation - Google Chrome – Rishideep"*, which no two-line card can show. Truncating it is a wording
+decision, and it belongs to the same question as the close card's wording.
+
 **Still to build, in this order:**
-- **Geometry: move, resize, and "put that on the second display".** Deferred on purpose, not forgotten —
-  it is the one slice that has to get invariant 1 right (AX frames are top-left logical points; an
-  `NSWindow` frame is bottom-left; `CGDisplayBounds` is top-left and `CGDisplayPixelsWide` returns
-  points), so it needs the round-trip coverage at 1x, 2x and 3x that the repo requires of any coordinate
-  work, and a probe that prints where a window *would* land without landing it.
-- **`open_file_with:App|path`** — `open -a`, with `RevealPolicy`'s roots and credential deny-list
-  applied to the resolved path, because it is a read-shaped act with a launch attached.
-- **Listing what is open** belongs to 3.12 level 1, not here: it is context for a turn, not an act, and
-  it should ride the same channel a `[READ:]` and a `[NOTES:]` do.
 - **Quitting an app that refuses** currently reports one line. Whether Chunks should then say *why*
   (the app's own unsaved-document sheet is on screen and could be read) is a question for him.
+- **The card's title length**, now that a real tab has broken it. Same question as above, one answer.
+- ~~Geometry: move, resize, "put that on the second display"~~ — **built above**, 2026-11-03.
+- ~~`open_file_with:App|path`~~ — built 2026-11-02; its policy hoisted into `OpenFilePolicy` and made
+  probeable 2026-11-03.
+- ~~Listing what is open~~ — built as 3.12 level 1, and it rides the `[READ:]`/`[NOTES:]` channel as
+  planned.
 
 Acceptance for what is built: `--probe-windows [App]` prints the enumeration, each verb's question and
-the contract verdict, and exits 0; the unit suite pins parse, wording, ambiguity, the app filter, the
-subset title rule, specificity, and that position never decides.
+the contract verdict, and exits 0; `--probe-geometry 'App|Title|where'` prints the rectangle and exits 0
+on a placement, 1 on a tag that will not parse; the unit suite pins parse, wording, ambiguity, the app
+filter, the subset title rule, specificity, that position never decides, the twelve places, the pixel
+refusal, the scale round trip and the negative-origin second display.
 
 ### 3.14 A durable job queue — several tasks, one brain, in order
 

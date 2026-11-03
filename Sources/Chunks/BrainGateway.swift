@@ -46,6 +46,22 @@ enum BrainError: Error, CustomStringConvertible {
     /// stopped deliberately rather than making him wait out the rest of the list.
     case turnBudgetExceeded(used: Double, models: Int)
 
+    /// Whether the backup key is worth a second walk of the chain.
+    ///
+    /// Classified through `RetryPolicy`, the same table the model-switching rules use, so the two
+    /// cannot disagree about what a status code means. Anything that is not a budget is not retried:
+    /// a second key would answer the same 401, the same 400, the same dead socket, and the turn would
+    /// end twice as late with the same words on the card.
+    var worthBackupRetry: Bool {
+        switch self {
+        case .http(let status, let body):
+            return RetryPolicy.backupKeyHelps(RetryPolicy.classify(statusCode: status, body: body))
+        case .missingKey, .noCapableModel, .transport, .localModelWasSilent, .keychain,
+             .turnBudgetExceeded:
+            return false
+        }
+    }
+
     var description: String {
         switch self {
         case .missingKey:
@@ -145,11 +161,52 @@ final class BrainGateway {
     ///
     /// The `[0,0,0]` array in the return type is the original, deliberately unused; the
     /// caller binds it to `_`.
+    ///
+    /// **This is the wrapper that spends the backup key.** Measured 2026-11-03: a free-tier Gemini key
+    /// is capped at a few requests a minute *per model per key*, a chain walk burns several of them,
+    /// and the user got "Could not answer — Hit the free-tier rate limit… server said: Rate…" on an
+    /// ordinary question. That is a budget, not a fault, and a second key carries its own untouched
+    /// one — the same reasoning `RetryPolicy` already uses to switch *model* on a 429. Only a quota
+    /// refusal qualifies: a 400 or a dead network would be repeated by the second key, and the turn's
+    /// own wall-clock budget is never spent twice, because making him wait out the chain a second time
+    /// is exactly the minute-long turn these rules exist to end.
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
+        onTextChunk: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval) {
+        do {
+            return try await turn(images: images, systemPrompt: systemPrompt,
+                                  history: conversationHistory, userPrompt: userPrompt,
+                                  backupKey: false, onTextChunk: onTextChunk)
+        } catch {
+            guard (error as? BrainError)?.worthBackupRetry == true,
+                  let backup = KeychainStore.backupGeminiKey(),
+                  // The same key twice is the same budget twice, and the second walk would just
+                  // spend another thirty seconds proving it.
+                  backup != (try? KeychainStore.geminiKey()),
+                  // The turn budget is the user's wait, not the chain's; a retry would double it.
+                  Date().timeIntervalSince(backupRetryStarted) < Self.turnBudgetSeconds
+            else { throw error }
+            Log.write("turn: primary key refused for quota — asking the same chain with the backup key")
+            return try await turn(images: images, systemPrompt: systemPrompt,
+                                  history: conversationHistory, userPrompt: userPrompt,
+                                  backupKey: true, onTextChunk: onTextChunk)
+        }
+    }
+
+    /// When this gateway began answering, so a backup retry is bounded by the same promise the chain
+    /// already makes rather than starting a fresh minute.
+    private let backupRetryStarted = Date()
+
+    private func turn(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        history: [(userPlaceholder: String, assistantResponse: String)],
+        userPrompt: String,
+        backupKey: Bool,
         onTextChunk: @escaping @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval) {
 
@@ -161,14 +218,19 @@ final class BrainGateway {
         // to break a working provider while adding a second one is to refactor the first.
         if let local = try await localTurnIfNeeded(images: images,
                                                    systemPrompt: systemPrompt,
-                                                   history: conversationHistory,
+                                                   history: history,
                                                    userPrompt: userPrompt,
                                                    started: started,
                                                    onTextChunk: onTextChunk) {
             return local
         }
 
-        let key = try KeychainStore.geminiKey()
+        let key: String
+        if backupKey, let backup = KeychainStore.backupGeminiKey() {
+            key = backup
+        } else {
+            key = try KeychainStore.geminiKey()
+        }
         let registry = ProviderRegistry()
 
         // Multi-image turns (clicky sends one labelled capture per display) are always
@@ -291,7 +353,7 @@ final class BrainGateway {
                         // turn, which after the reorder is `gemini-3.1-flash-lite`.
                         text = try await hedged(key: key, lead: candidate, partner: partner,
                                                 systemPrompt: systemPrompt,
-                                                history: conversationHistory,
+                                                history: history,
                                                 userPrompt: userPrompt, images: images,
                                                 deadline: attemptDeadline,
                                                 asksForThinking: thinkingLevelAccepted,
@@ -303,7 +365,7 @@ final class BrainGateway {
                             key: key,
                             model: candidate.id,
                             systemPrompt: systemPrompt,
-                            history: conversationHistory,
+                            history: history,
                             userPrompt: userPrompt,
                             images: images,
                             deadline: attemptDeadline,

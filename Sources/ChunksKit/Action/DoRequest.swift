@@ -321,13 +321,25 @@ public enum DoRequest: Equatable, Sendable {
     /// The `App|title` body of a window verb, with the same length discipline `open_app` applies: a
     /// path-shaped name is how a prompt injection reaches something that is not an application, and an
     /// unbounded title would make the card's question longer than the card.
+    /// The longest window title the verbs will accept.
+    ///
+    /// 240, and the number comes from his browser rather than from a card. Measured 2026-11-03: a real
+    /// Chrome tab is titled *"Project configuration – Google Auth Platform – Docu-Engine – Google Cloud
+    /// console – you're sharing this tab with Gemini for the duration of this conversation - High memory
+    /// usage - 1.0 GB - Google Chrome"*, which is 190 characters. The first cap was 120, so the effect
+    /// was that a browser tab could not be closed, minimised or moved **at all** — the tag refused at
+    /// parse and he heard "no such window" about a window in front of him. A title's length is the app's
+    /// choice, not the model's invention, so the parse limit has to accommodate it; what the card does
+    /// with a long one is a separate, still-open wording question.
+    public static let maxWindowTitleCharacters = 240
+
     static func windowTarget(in argument: String) -> (app: String, title: String?)? {
         let parts = argument.components(separatedBy: "|")
         let app = parts[0].trimmingCharacters(in: .whitespaces)
         guard !app.isEmpty, !app.contains("/"), !app.hasPrefix("."), app.count <= 60 else { return nil }
         guard parts.count > 1 else { return (app, nil) }
         let title = parts.dropFirst().joined(separator: "|").trimmingCharacters(in: .whitespaces)
-        guard title.count <= 120 else { return nil }
+        guard title.count <= DoRequest.maxWindowTitleCharacters else { return nil }
         return (app, title.isEmpty ? nil : title)
     }
 
@@ -349,7 +361,7 @@ public enum DoRequest: Equatable, Sendable {
         guard let target = WindowPlacementPolicy.parseTarget(placeText) else { return nil }
         let title = parts.dropFirst().dropLast().joined(separator: "|")
             .trimmingCharacters(in: .whitespaces)
-        guard title.count <= 120 else { return nil }
+        guard title.count <= DoRequest.maxWindowTitleCharacters else { return nil }
         return (app, title.isEmpty ? nil : title, target)
     }
 

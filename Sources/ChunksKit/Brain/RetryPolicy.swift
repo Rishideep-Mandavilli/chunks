@@ -86,6 +86,26 @@ public enum RetryPolicy: Sendable {
     ///
     /// `secondsToFail` is how long the model took to produce this error. It decides whether a 503 is
     /// still the failure the retry rule was written for.
+    /// Whether a **second API key** could plausibly clear this failure.
+    ///
+    /// The free tier is capped a few requests a minute *per model per key*, which is why the chain
+    /// already switches model on a 429 — every other model has its own untouched budget. A second key
+    /// is the same fact one level up: its own budget, untouched. Measured 2026-11-03, the user got
+    /// "Hit the free-tier rate limit" on an ordinary question after one chain walk.
+    ///
+    /// Only a budget answers true. A wrong key (`.unauthorised`) is wrong on both keys; a malformed
+    /// request (`.badRequest`) is our bug and repeating it costs another thirty seconds; a dead
+    /// network (`.network`) has no key to blame. Trying a backup for those would turn one honest
+    /// failure into two.
+    public static func backupKeyHelps(_ failure: Failure) -> Bool {
+        switch failure {
+        case .serviceUnavailable, .rateLimited:
+            return true
+        case .unauthorised, .badRequest, .network, .unknown:
+            return false
+        }
+    }
+
     public static func decide(for failure: Failure,
                               attempt: Int,
                               maxAttemptsPerModel: Int = 3,

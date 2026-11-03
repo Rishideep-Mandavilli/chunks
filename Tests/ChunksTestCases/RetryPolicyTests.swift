@@ -255,5 +255,41 @@ public enum RetryPolicyTests {
                 NSError(domain: "com.example.other", code: 1)),
                   "an unrelated error must not be swallowed as a cancellation")
         }
+
+        test("a second key is spent only on a budget, never on a fault") {
+            // Measured 2026-11-03: a free-tier key is capped a few requests a minute per model per key,
+            // a chain walk burns several, and the user got "Could not answer — hit the free-tier rate
+            // limit" on an ordinary question. A second key has its own untouched budget, which is the
+            // same fact that makes the chain switch *model* on a 429.
+            expect(RetryPolicy.backupKeyHelps(.rateLimited(requestsPerMinute: 5)),
+                   "a per-minute cap is a per-key cap, so another key is a real answer")
+            expect(RetryPolicy.backupKeyHelps(.serviceUnavailable(highDemand: true)),
+                   "Google's own contention is charged per key too")
+            // And the four that must NOT retry, because a second key would repeat the same answer and
+            // the turn would end twice as late with the same words on the card.
+            expect(!RetryPolicy.backupKeyHelps(.unauthorised),
+                   "a wrong key is wrong on both keys")
+            expect(!RetryPolicy.backupKeyHelps(.badRequest(detail: "missing field")),
+                   "a malformed request is our bug, not a budget")
+            expect(!RetryPolicy.backupKeyHelps(.network(detail: "offline")),
+                   "no key helps a socket that will not open")
+            expect(!RetryPolicy.backupKeyHelps(.unknown(statusCode: 418, detail: "teapot")),
+                   "an unrecognised answer is not a licence to spend a second thirty seconds")
+        }
+
+        test("the status codes that mean a budget agree with the classifier") {
+            // The two rules are read from the same table on purpose: if `classify` stopped calling a
+            // 429 a rate limit, `backupKeyHelps` would quietly stop ever returning true and the
+            // fallback key would become dead code nobody noticed.
+            for code in [429, 503] {
+                expect(RetryPolicy.backupKeyHelps(RetryPolicy.classify(statusCode: code,
+                                                                       body: "quota")),
+                       "\(code) is a budget, so the backup key should be spent on it")
+            }
+            for code in [400, 401, 403, 404] {
+                expect(!RetryPolicy.backupKeyHelps(RetryPolicy.classify(statusCode: code)),
+                       "\(code) is a fault, and a second key repeats it")
+            }
+        }
     }
 }

@@ -53,8 +53,17 @@ public enum WindowActTests {
             expect(DoRequest.parse("close_window:|Inbox") == nil, "an empty app names no window")
             expect(DoRequest.parse("close_window:Safari|") == .closeWindow(app: "Safari", title: nil),
                    "an empty title is the no-title case, not a broken tag")
-            expect(DoRequest.parse("close_window:Safari|\(String(repeating: "x", count: 121))") == nil,
-                   "a title past the card's reach is refused at parse, not clipped in front of him")
+            // The cap moved from 120 to 240 on 2026-11-03 because the gate failed on his real browser:
+            // a Chrome tab is legitimately ~190 characters, and at 120 the answer to "close that tab"
+            // was *no such window* about a window in front of him. A title's length is the app's choice;
+            // what the card does with it is a separate question, and refusing the act was never the
+            // answer to a readability problem.
+            let atCap = String(repeating: "x", count: DoRequest.maxWindowTitleCharacters)
+            expect(DoRequest.parse("close_window:Safari|\(atCap)") != nil,
+                   "a title exactly at the cap parses")
+            expect(DoRequest.parse("close_window:Safari|\(atCap)x") == nil,
+                   "and past it the tag is text, not an act — an unbounded argument is how a model "
+                        + "parks a paragraph where a window name belongs")
             expect(DoRequest.parse("kill_app:Safari") == nil,
                    "there is no force-quit in this app, so there is no tag that promises one")
         }
@@ -457,6 +466,29 @@ public enum WindowActTests {
                                                in: [desk, window])
             expectEqual(resolution, .one(window),
                         "the desktop is not a second window to be ambiguous about — it is not a window")
+        }
+
+        test("a real browser tab's title is addressable, not refused at parse") {
+            // Measured on his Mac 2026-11-03. The first title cap was 120 characters and a Chrome tab
+            // arrived at 190, so "close that tab" answered *no such window* about a window in front of
+            // him. A title's length is the app's choice, not the model's invention — the gate check
+            // caught this by failing on his real browser, not by a fixture I would have written.
+            let chromeTitle = "Project configuration – Google Auth Platform – Docu-Engine "
+                + "– Google Cloud console – you're sharing this tab with Gemini for the duration of "
+                + "this conversation - High memory usage - 1.0 GB - Google Chrome"
+            expect(chromeTitle.count > 120,
+                   "the fixture has to be past the old cap or this case proves nothing: "
+                        + "\(chromeTitle.count) chars")
+            expect(chromeTitle.count <= DoRequest.maxWindowTitleCharacters,
+                   "and it has to be inside the new one")
+            expectEqual(DoRequest.parse("close_window:Google Chrome|\(chromeTitle)"),
+                        .closeWindow(app: "Google Chrome", title: chromeTitle),
+                        "a tab he can see must be a tab he can close")
+            expect(DoRequest.windowPlacement(in: "Google Chrome|\(chromeTitle)|left") != nil,
+                   "and the same window must be movable — the two verbs share the cap for a reason")
+            // The cap is still a cap: an unbounded argument is how a model parks a paragraph in a tag.
+            expect(DoRequest.windowTarget(in: "Safari|\(String(repeating: "x", count: 300))") == nil,
+                   "a 300-character blob is not a title either")
         }
     }
 }

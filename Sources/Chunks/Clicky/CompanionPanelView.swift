@@ -16,6 +16,8 @@ struct CompanionPanelView: View {
     @State private var keyInput: String = ""
     @State private var isEditingKey: Bool = false
     @State private var keyMessage: String?
+    @State private var backupInput: String = ""
+    @State private var backupMessage: String?
     @State private var removeHovering: UUID?
     /// Fact ids are strings, so the memory row cannot share the routine row's hover state.
     @State private var forgetHovering: String?
@@ -441,8 +443,72 @@ struct CompanionPanelView: View {
                     .disabled(keyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+
+            // A second key, and the reason it is here rather than a bigger number in a settings file:
+            // the free tier is capped a few requests a minute *per key*, so a turn that walks the whole
+            // model chain can spend them all and answer "Could not answer — hit the free-tier rate
+            // limit". Measured on his Mac 2026-11-03. A second key has its own untouched budget, and
+            // Chunks now spends it before giving up. Optional by design: with nothing stored here the
+            // app behaves exactly as it did.
+            if companionManager.hasApiKey {
+                HStack(spacing: 8) {
+                    Text(companionManager.hasBackupKey ? "Backup key stored" : "Backup key (optional)")
+                        .font(.system(size: 11))
+                        .foregroundColor(C.textTertiary)
+                    if companionManager.hasBackupKey {
+                        Button("Remove") {
+                            companionManager.clearBackupKey()
+                            backupMessage = "Backup key removed."
+                        }
+                        .font(.system(size: 11))
+                        .foregroundColor(C.textSecondary)
+                        .buttonStyle(.plain)
+                        .pointerCursor()
+                    }
+                    Spacer()
+                }
+                if !companionManager.hasBackupKey {
+                    HStack(spacing: 8) {
+                        SecureField("second AIza…  used only when the first is rate-limited",
+                                    text: $backupInput)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11))
+                            .foregroundColor(C.textPrimary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: DS.CornerRadius.small, style: .continuous)
+                                    .fill(C.sunken)
+                            )
+                            .onSubmit(saveBackupKey)
+                        Button("Save") { saveBackupKey() }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(C.textSecondary)
+                            .buttonStyle(.plain)
+                            .pointerCursor()
+                            .disabled(backupInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                if let backupMessage {
+                    Text(backupMessage)
+                        .font(.system(size: 10))
+                        .foregroundColor(C.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         .padding(.vertical, 6)
+    }
+
+    private func saveBackupKey() {
+        let trimmed = backupInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if companionManager.saveBackupKey(trimmed) {
+            backupInput = ""
+            backupMessage = "Stored. Chunks uses it only when the first key is refused for a quota."
+        } else {
+            backupMessage = "The Keychain refused the write. Rebuild with a signing identity and try again."
+        }
     }
 
     private func saveKey() {

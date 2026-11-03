@@ -786,6 +786,23 @@ final class CompanionManager: ObservableObject {
         return true
     }
 
+    /// Whether a second key is stored. Published, because the panel shows it and the panel must not
+    /// touch the Keychain on the main thread.
+    @Published private(set) var hasBackupKey = false
+
+    func saveBackupKey(_ key: String) -> Bool {
+        guard KeychainStore.setBackupGeminiKey(key) else { return false }
+        hasBackupKey = true
+        Log.write("api key: backup stored")
+        return true
+    }
+
+    func clearBackupKey() {
+        KeychainStore.clearBackupGeminiKey()
+        hasBackupKey = false
+        Log.write("api key: backup removed")
+    }
+
     /// Read the Keychain off the main thread and publish the answer — and log it.
     ///
     /// The log line has to come from the *answer*, not from the cache at launch time. The cache
@@ -795,7 +812,9 @@ final class CompanionManager: ObservableObject {
     func refreshApiKeyState() {
         KeychainStore.refreshInBackground { [weak self] in
             self?.hasApiKey = KeychainStore.isKeyConfigured
-            Log.write("api key: \(KeychainStore.isKeyConfigured ? "present" : "MISSING")")
+            self?.hasBackupKey = KeychainStore.hasBackupKey
+            Log.write("api key: \(KeychainStore.isKeyConfigured ? "present" : "MISSING")"
+                + " · backup: \(KeychainStore.hasBackupKey ? "present" : "none")")
         }
     }
 

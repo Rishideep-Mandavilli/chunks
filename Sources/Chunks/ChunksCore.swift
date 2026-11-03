@@ -269,15 +269,43 @@ final class ChunksSettings {
 enum KeychainStore {
     private static let service = "app.chunks.mac"
     private static let account = "gemini-api-key"
+    /// A second key, used only when the first is refused for a quota reason.
+    ///
+    /// Measured 2026-11-03: a free-tier Gemini key is capped at a few requests a minute **per model
+    /// per key**, and a turn that walks the chain spends several of them — so the honest failure the
+    /// user saw was a card reading "Hit the free-tier rate limit… server said: Rate…" on a question
+    /// about closing browser tabs. A second key is not a workaround for a bad design; it is the
+    /// provider's own unit of budget, and the chain already treats a *model*'s untouched budget as
+    /// the reason to switch. This does the same for a key.
+    private static let backupAccount = "gemini-api-key-backup"
 
     static func geminiKey() throws -> String {
         // An empty stored value is treated as absent: a Keychain item can outlive the app
         // that wrote it, and an empty key would otherwise become a 401 the user cannot
         // explain.
-        guard let key = try read(), !key.isEmpty else { throw ChunksError.missingKey }
+        guard let key = try read(account: account), !key.isEmpty else { throw ChunksError.missingKey }
         cacheKey.set(key)
         return key
     }
+
+    /// The backup key, or nil. It is optional by design, so this never throws: a machine with one
+    /// key must behave exactly as it did before this existed.
+    static func backupGeminiKey() -> String? {
+        guard let key = try? read(account: backupAccount), !key.isEmpty else {
+            cacheBackup.set(nil)
+            return nil
+        }
+        cacheBackup.set(key)
+        return key
+    }
+
+    /// Whether a backup key is configured, from the **cache** — the same rule as `isKeyConfigured`:
+    /// this is read while building the menu, on the main thread, and the Keychain must not be
+    /// touched there.
+    static var hasBackupKey: Bool { cacheBackup.isConfigured }
+
+    // The primary key's cache is declared below with the reason it exists; the backup shares it.
+    private static let cacheBackup = Cache()
 
     /// Whether a key is configured, from a **cached** value.
     ///
@@ -317,8 +345,9 @@ enum KeychainStore {
     /// and does not wait for it, so the menu is always instant.
     static func refreshInBackground(onChange: @escaping @MainActor () -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let key = try? read()
+            let key = try? read(account: account)
             cacheKey.set(key)
+            cacheBackup.set(try? read(account: backupAccount))
             Task { @MainActor in onChange() }
         }
     }
@@ -327,10 +356,32 @@ enum KeychainStore {
     static var isKeyConfigured: Bool { cacheKey.isConfigured }
 
     /// Blocking check, for the self-test and other places already off the main thread.
-    static var hasKey: Bool { (try? read()) != nil }
+    static var hasKey: Bool { (try? read(account: account)) != nil }
 
     @discardableResult
     static func setGeminiKey(_ key: String) -> Bool {
+        set(key: key, account: account, cache: cacheKey)
+    }
+
+    /// Store the backup key. Returns false on an empty string or a refused write, so the panel can
+    /// say whether it actually landed rather than assuming.
+    @discardableResult
+    static func setBackupGeminiKey(_ key: String) -> Bool {
+        set(key: key, account: backupAccount, cache: cacheBackup)
+    }
+
+    /// Remove the backup key, so a second one is a switch he can turn off and not a permanent fixture.
+    static func clearBackupGeminiKey() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: backupAccount,
+        ]
+        SecItemDelete(query as CFDictionary)
+        cacheBackup.set(nil)
+    }
+
+    private static func set(key: String, account: String, cache: Cache) -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
@@ -352,11 +403,11 @@ enum KeychainStore {
             result = status == errSecSuccess
         }
         // Publish immediately so the menu never has to ask the Keychain again.
-        if result { cacheKey.set(trimmed) }
+        if result { cache.set(trimmed) }
         return result
     }
 
-    private static func read() throws -> String? {
+    private static func read(account: String) throws -> String? {
         // Fail rather than prompt.
         //
         // Without this, a Keychain item created by another process — `security

@@ -520,6 +520,35 @@ else
   printf '  \033[31mFAIL\033[0m  the overlay activation contract changed — see the 2026-10-11 lockup\n'
   fail=$((fail + 1)); failures+=("overlay activation contract")
 fi
+# The caption is a second surface that sits over his work, and it has to be strictly *less* intrusive
+# than the overlay: the overlay needs clicks, the caption must need none. Four properties, each one a
+# way this could take something from the app he is in — focus, a click, the menu bar, or his screen
+# real estate after the voice has stopped.
+if grep -q 'ignoresMouseEvents = true' Sources/Chunks/HUD/CaptionPanelManager.swift \
+   && grep -q '_setPreventsActivation' Sources/Chunks/HUD/CaptionPanelManager.swift \
+   && grep -q 'canBecomeKey: Bool { false }' Sources/Chunks/HUD/CaptionPanelManager.swift \
+   && ! grep -q 'NSApp\.activate(' Sources/Chunks/HUD/CaptionPanelManager.swift; then
+  printf '  \033[32mPASS\033[0m  the caption takes nothing: no focus, no clicks, no activation\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  the caption contract changed — it must be read, not interacted with\n'
+  fail=$((fail + 1)); failures+=("caption contract")
+fi
+# The caption's own words: a cut that lands inside a word is a different sentence about an act on his
+# machine, and the render is the only place that is visible without a microphone.
+cap_out="$("$BIN" --render-caption /tmp/chunks-caption.png 2>&1)"; cap_status=$?
+cap_bytes=$(stat -f%z /tmp/chunks-caption.png 2>/dev/null || echo 0)
+if [[ $cap_status -eq 0 ]] && printf '%s' "$cap_out" | grep -q "wrote 3 caption rows" \
+   && [[ $cap_bytes -gt 60000 ]]; then
+  printf '  \033[32mPASS\033[0m  render: caption rows, cut at a word boundary  (%s KB)\n' \
+    "$((cap_bytes / 1024))"
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  render: the caption did not draw (%s bytes, exit %s)\n' \
+    "$cap_bytes" "$cap_status"
+  printf '        %s\n' "$(printf '%s' "$cap_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("caption render")
+fi
 if grep -q '"store": false' Sources/ChunksKit/Brain/GeminiTransport.swift \
    && grep -q '"store": false' Sources/Chunks/BrainGateway.swift; then
   printf '  \033[32mPASS\033[0m  the Gemini request still asks for no server-side storage\n'

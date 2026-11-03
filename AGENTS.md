@@ -151,6 +151,8 @@ finds a desktop icon. Two more read-only doors came out of the semantic work:
 .build/debug/chunks --probe-geometry 'Safari|Inbox|left'  # the rectangle a move would write, and nothing moved
 .build/debug/chunks --probe-reply --local   # ask the local model a plan question and audit its real words
 .build/debug/chunks --probe-read '~/Downloads/build.log|why did it fail'  # one path, end to end
+.build/debug/chunks --probe-voice-answer "yes"  # what a spoken sentence would do to the open card, answering nothing
+.build/debug/chunks --render-caption /tmp/caption.png   # the speech caption, drawn offscreen, three rows
 .build/debug/chunks --render-ui /tmp/notch-card.png   # every notch state drawn offscreen, to look at
 .build/debug/chunks --render-window /tmp/window.png   # the app window, full and empty, same way
 .build/debug/chunks --render-panel /tmp/panel.png      # the menu-bar panel, at its real 320x380
@@ -417,6 +419,35 @@ map almost 1:1 onto `#expect(...)`.
    prompt follows the same switch (`CompanionManager.actingRules(askBeforeActing:)`, spliced in
    per turn): on a machine where asking is off, "i'll ask you to allow it — tap Allow" is a promise
    of a question that never arrives, which is what the first Pluralsight turn said out loud.
+
+   **A spoken yes is the Allow button's own call, not a second path.** `VoiceAnswer` (ChunksKit, pure)
+   maps an utterance to `ConsentGate.Outcome`, and the shell hands that to the same `answerConfirm` the
+   two buttons use — so the policy gate, the re-read-before-pressing rule and the one-outstanding-question
+   invariant are untouched, and only the input device changed. The design rule is that **only an exact
+   phrase answers**: "yes and close the other tab" is a new request with an old card hanging off it, and
+   reading it as consent is the false yes, the one failure this feature could have shipped. It falls
+   through to a normal turn instead, where `ConsentGate`'s existing displacement rule denies the
+   outstanding act on its own terms. Voice only — a typed "ok" in the composer is a message to Chunks,
+   and a routine's prompt is nobody answering anything. And **"allow always" is unreachable by voice**:
+   it is a standing instruction about an entire application, and a mishearing must not be able to set it.
+   `--probe-voice-answer` walks 13 fixtures, and the rows that matter are the ones that must *not*
+   answer.
+
+   **The caption is Chunks' own words, and it takes nothing.** `CaptionPanelManager` draws
+   `CaptionLine.shaped(_:)` at the bottom of the display while the voice is speaking, because the notch
+   is 360 pt at the top of a screen you may not be looking at, and the part of a spoken sentence that
+   matters is usually the end. Four properties are asserted by the gate, not assumed: click-through
+   (`ignoresMouseEvents`), never activating (`_setPreventsActivation`, and no `NSApp.activate(` call —
+   the grep matches the call, not the prose that says it is absent, which is how the first version of
+   the check failed on a comment), `canBecomeKey` false, and hidden when the voice finishes. The caption
+   is cleared on `ttsClient.isPlaying`, not on `speakText` returning, because that function returns as
+   soon as playback *starts* — clearing there would drop the words two seconds into a five-second
+   sentence. `CaptionLine` cuts at a word boundary for the reason every truncation in this app does:
+   "I pressed the Send but…" is a different sentence about an act on his machine. `--render-caption`
+   draws three rows, because a caption nobody has looked at is a claim about layout with no evidence
+   behind it — and the first attempt at that render produced a **blank image with a plausible byte
+   count**, which is how this file knows an offscreen `NSHostingView` draws nothing without a window
+   attached to it.
 
    `AXTDriver.target(label:at:)` resolves the *pixel* first and falls back to a **name** search of
    the focused window's subtree, because a model that aims a few points off an icon still named the
@@ -1119,8 +1150,8 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Current state
 
-**The app runs. 801 of 801 tests green across 44 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 45 checks: 42–44 pass and 1–3 skip,
+**The app runs. 818 of 818 tests green across 46 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 48 checks: 42–44 pass and 4–6 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
@@ -1152,6 +1183,8 @@ Done and tested:
 | A launch in front of a plan | `Action/PlanAfterLaunch.swift` | Which tool may lead, which steps wait for a fresh capture, and the one sentence that resumes them. `DoRequest.invalidatesTheScreen` is the gate, and `--probe-reply` prints the decision |
 | Policy rules | `Action/PolicyGate.swift` | Secure fields / Keychain / password managers refused even with asking off; unknown metadata fails toward *asking* |
 | Consent state machine | `Action/ConsentGate.swift` | One outstanding question; double answers are inert; displacement counts as denial |
+| Answering the card by voice | `Action/VoiceAnswer.swift` | Exact phrases only, mapped to the same `Outcome` the buttons pass. "yes and close the other tab" is deliberately not an answer, and "allow always" is unreachable by voice |
+| The spoken caption | `HUD/CaptionLine.swift`, `Chunks/HUD/CaptionPanelManager.swift` | Chunks' own words at the bottom of the display while it speaks: click-through, never activating, no key window, cleared on `isPlaying` rather than on the call returning, and cut at a word boundary |
 | Accessibility press | `Action/AXTDriver.swift` | Window hit test (layer 0, desktop on request) → `AXUIElementCopyElementAtPosition` → walk to a pressable ancestor → `AXPress`/`AXPick`/`AXOpen` (icons are selected first); name search when the pixel misses, then Finder's desktop list when that misses, and an app that answers badly is believed only from a before/after snapshot of what is running and focused. Typing goes through `typeTarget`/`type`: editable-role hit test and name search, `AXManualAccessibility` for Chromium surfaces, focus read back and compared before the first character, unicode `CGEvent` keystrokes that never warp the pointer. Never moves the cursor |
 | Tool requests | `Action/DoRequest.swift` | `[DO:open_app:X]` / `[DO:open_url:host\|Chrome]` / `[DO:set_volume:N]` / `[DO:run_shortcut:X]` / `[DO:email:a@b]` / `[DO:routine_add:name\|cadence\|question]` / `[DO:routine_remove:name]` / `[DO:reveal:Memora]` / `[DO:run_command:caffeinate -di -t 3600]` / `[DO:focus_window:Safari\|Inbox]` / `[DO:minimize_window:…]` / `[DO:close_window:…]` / `[DO:quit_app:…]` / `[DO:list_windows:all]` / `[DO:open_file_with:Code|~/notes.md]` / `[DO:move_window:Safari\|Inbox\|left]`, parsed only into effects that fit one sentence — and a routine whose whole card sentence runs past `maxQuestionCharacters` is refused at parse, not clipped on the card |
 | What is open | `Action/OpenWindows.swift` | The read half: window list → one labelled block for the next turn, grouped by app, whole groups only under a 3 KB budget, with the count of what was left out |

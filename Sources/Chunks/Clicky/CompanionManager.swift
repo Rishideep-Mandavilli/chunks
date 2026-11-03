@@ -515,7 +515,7 @@ final class CompanionManager: ObservableObject {
                 ? "Reminder. \(reminder.text)."
                 : "Reminder, late — \(reminder.text). It \(late!)."
             Task { [weak self] in
-                try? await self?.ttsClient.speakText(spoken)
+                try? await self?.speakCaptioned(spoken)
             }
             // One per tick: two lines opened in the same second would speak over each other, and a
             // reminder that arrives beside a card is a card the user cannot finish reading.
@@ -3478,7 +3478,7 @@ final class CompanionManager: ObservableObject {
             startNewSession(starting: .asked)
             hud.showHint("New session — this one starts empty", for: 5)
             Log.write("session: asked for, in words: \"\(transcript)\"")
-            Task { try? await self.ttsClient.speakText(
+            Task { try? await self.speakCaptioned(
                 "New session. The earlier ones are still in the history window.") }
             return
         }
@@ -3841,7 +3841,7 @@ final class CompanionManager: ObservableObject {
                 }
                 if !saying.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await ttsClient.speakText(saying)
+                        try await speakCaptioned(saying)
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
                     } catch {
@@ -3945,8 +3945,43 @@ final class CompanionManager: ObservableObject {
     /// Speaks a hardcoded error message using macOS system TTS when API
     /// credits run out. Uses NSSpeechSynthesizer so it works even when
     /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I can't reach the model right now. Chunks will try again in a moment."
+    /// The bottom-of-screen caption of Chunks' own speech.
+    private let captions = CaptionPanelManager()
+
+    /// How long a caption may wait for the voice to finish before it is taken down anyway.
+    ///
+    /// A ceiling rather than none, because a synthesizer that never reports done would otherwise leave
+    /// a sentence hanging over his Dock for the rest of the session — and a caption that outlives the
+    /// words is a claim that the app is still talking.
+    static let captionCeilingSeconds = 40.0
+
+    /// Speak one thing with its words on screen, and keep them there until the voice has actually
+    /// finished.
+    ///
+    /// Throws whatever `speakText` throws, unchanged: the caller's error handling is the analytics and
+    /// the credits fallback, and swallowing it to add a caption would trade a visible feature for an
+    /// invisible one. The caption is taken down on the failure path too, because "it is saying this"
+    /// over a sentence that never started is the false status this app keeps having to relearn.
+    ///
+    /// `speakText` returns as soon as playback starts, so the wait is on `isPlaying` — the only honest
+    /// signal this client gives.
+    private func speakCaptioned(_ text: String) async throws {
+        captions.show(text)
+        do {
+            try await ttsClient.speakText(text)
+        } catch {
+            captions.hide()
+            throw error
+        }
+        var waited = 0.0
+        while ttsClient.isPlaying, waited < Self.captionCeilingSeconds {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            waited += 0.25
+        }
+        captions.hide()
+    }
+
+    private func speakCreditsErrorFallback() {        let utterance = "I can't reach the model right now. Chunks will try again in a moment."
         let synthesizer = NSSpeechSynthesizer()
         synthesizer.startSpeaking(utterance)
         voiceState = .responding

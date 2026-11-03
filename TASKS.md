@@ -1015,6 +1015,63 @@ count and the names rather than a paragraph about one document. And a listing th
 were left out, because a partial list described as a complete one is the failure this codebase has
 already been burned by twice.
 
+### 3.18 HeyClicky parity — what shipped, what is next, and what will not be copied
+
+He asked, on 2026-11-03: check what HeyClicky released, compare it, copy what can be copied, and make
+Chunks **more** than HeyClicky. Two findings first, because they change the shape of the task.
+
+**Nothing new is importable.** The installed app here is 1.0.53 (2026-10-02); their current Mac release is
+**1.1.2 (2026-10-30)**. The open-source repo's last code commit is April 2026, and its README says plainly
+that everything after it stays private — the releases repo holds signed DMGs and an appcast, no source. So
+the well the annotation overlay was drawn from is closed, and every item below is built here from the
+behaviour, not copied from the code.
+
+**Built on 2026-11-03, both green and gated:**
+- **Voice answers the card** (`VoiceAnswer`, 7 unit cases + a 13-fixture probe). An exact spoken phrase
+  maps to the same `ConsentGate.Outcome` the Allow and Not now buttons pass, so nothing about the policy
+  changed — only the input device. The interesting cases are the ones that must **not** answer: "yes and
+  close the other tab" is a new request with an old card hanging off it, and it falls through to a normal
+  turn, where the existing displacement rule denies the outstanding act on its own terms. "Allow always"
+  is unreachable by voice, because it is a standing instruction about an entire application and a
+  mishearing must not be able to set it.
+- **The spoken caption** (`CaptionLine`, `CaptionPanelManager`, 7 unit cases + `--render-caption`). Its
+  own words at the bottom of the display while it talks. Click-through, never activating, no key window,
+  and cleared on `isPlaying` rather than when `speakText` returns — that call returns as soon as playback
+  *starts*, so clearing on it would drop the words two seconds into a five-second sentence.
+
+**Next, in this order — his instruction, 2026-11-03:**
+1. **2D drawing on the screen.** Their feature is circles, points and sketches drawn *on the live screen
+   while you talk*, with the drawing being what the question is about. Chunks already has the hard half:
+   `AnnotationOverlay` takes the mouse on a dimmed full-screen surface, `RegionResolver` turns marks into
+   a crop, and `cropFrame` makes an aim inside a region land on the real control. What is missing is the
+   **ink as an object** — strokes that persist, a pointer/pin marker, an eraser, and a way to point at
+   something you just drew. **3D is not on this list**: it needs a mesh pipeline and nothing in Chunks'
+   design language asks for it, and he agreed. This is a session of its own.
+2. **Language breadth.** `--probe-stt` already enumerates `supportedLocales` and `installedLocales`, and
+   `SpeechVoices` ranks English female voices only. A picker plus a de-ranking fix, no new transport.
+   He speaks en-IN — worth checking whether any installed voice covers it before promising it.
+3. **Take back control mid-action.** Their rule is "move the mouse or speak and you are back". Chunks
+   already drops a waiting plan round when a new sentence arrives; what is missing is cancelling the
+   **in-flight** turn and the outstanding card on the same signal.
+4. **The Chrome extension.** The one real capability gap and the largest lift: an extension, a
+   native-messaging host, and a second policy surface for a browser Chunks currently reaches only through
+   Accessibility — which, measured, cannot see inside a page's controls at all. In scope (local, no proxy
+   of ours), but it is a Tier 2 decision before it is a build: what may be done to a signed-in browser is
+   a different question from what may be done to a window.
+5. **Self-updating.** Already Tier 4 (Sparkle 2). Blocked on Developer ID and notarisation, which need
+   his enrolled account, not code.
+
+**Will not be copied, and why:** named agents, agent rosters, handoff jobs and agents that remember — the
+multi-agent layer he scoped out on day one, and the thing that would make this a service rather than an
+app. Connectors and hosted speech models — a proxy is the one architecture that triggers Google's CASA
+assessment and puts the sellability argument at risk. Documents beside the chat — an artifact, on the ❌
+list. **Where Chunks is ahead, measured against the same list:** BYOK with no account, no billing and no
+quota emails; an offline tier they do not have; 818 tests and a 48-check gate they do not publish; memory
+with provenance and a secret sweeper, where their changelog says "remembers"; it never moves his pointer,
+where their drive does; and every claim about an act derived from the effect on screen rather than from a
+return code — which is the difference between the two features above and the three bugs his screenshots
+found last night.
+
 ## How to work with him
 
 - He verifies in his own terminal. Ship the harness, name the honest gap, and give him **numbered

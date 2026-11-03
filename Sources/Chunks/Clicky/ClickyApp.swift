@@ -127,6 +127,18 @@ struct leanring_buddyApp: App {
                 }
             }
         }
+        if UIRenderProbe.isCaptionRequested {
+            // The caption is a surface nobody has looked at until it is drawn: width, height above the
+            // Dock, and what a cut line does to two rows are visual claims, not assertions.
+            let path = UIRenderProbe.requestedCaptionPath()
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { UIRenderProbe.runCaption(to: path) }
+            } else {
+                DispatchQueue.main.sync {
+                    MainActor.assumeIsolated { UIRenderProbe.runCaption(to: path) }
+                }
+            }
+        }
         if UIRenderProbe.isSetupRequested {
             let path = UIRenderProbe.requestedSetupPath()
             if Thread.isMainThread {

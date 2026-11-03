@@ -3086,3 +3086,50 @@ alternative for the offline tier, with one licence question to clear on the Styl
 skipped** (no Shortcuts window open), nonce `GATE-G3-12495`, after `make-app.sh` + `install.sh` nonce
 `GATE-GEO-3218`. The geometry check runs against whatever window is really on his screen, filtered so the
 desktop is not picked, and skips honestly when there is nothing to place.
+
+## 2026-11-03 (night) — voice answers, captions, and the HeyClicky comparison that changed shape
+
+He asked for four things: fix the rate-limit dead-end, check HeyClicky's new release and copy what can be
+copied, make Chunks more than HeyClicky, and work through the leftovers. Two features shipped and the
+third turned out to be a constraint, not a task.
+
+**Voice answers the card.** `VoiceAnswer` is pure and returns the same `ConsentGate.Outcome` the two
+buttons pass, so the gate, the re-read-before-pressing rule and the one-question invariant are untouched —
+only the input device changed. The rule that makes it safe is that **only an exact phrase answers**:
+"yes and close the other tab" is a new request with an old card hanging off it, and reading that as
+consent is the false yes. It falls through to a turn, where the existing displacement rule denies on its
+own terms. "Allow always" is unreachable by voice. Seven unit cases, thirteen probe fixtures, and the
+rows that matter are the ones asserting *no*.
+
+**The caption.** `CaptionPanelManager` draws Chunks' own words at the bottom of the display while the
+voice is up — click-through, `_setPreventsActivation`, `canBecomeKey` false, no `NSApp.activate(`. Two
+things the gate caught that I would not have found by reading my own code: the contract grep matched the
+*prose* in my comment ("NSApp.activate is not called anywhere") and failed a file that did not call it,
+so the check now matches the call, not the sentence; and the caption must be cleared on `isPlaying`, not
+when `speakText` returns, because that function returns as soon as playback *starts*.
+
+**And the render was blank.** The first `--render-caption` wrote a 99 KB PNG that passed a byte-size
+assertion and contained **nothing** — an offscreen `NSHostingView` does not draw SwiftUI without a window
+attached. I only know because I opened the file, which is the whole reason this repo has a render probe.
+Fixed with the recipe the notch renderer already uses (window that is never ordered front, then
+`bitmapImageRepForCachingDisplay` + `cacheDisplay`), and the same image now shows three real rows with
+the word-boundary cut visible.
+
+**HeyClicky: nothing new is importable.** Their current Mac release is 1.1.2 (2026-10-30) against the
+1.0.53 installed here. The open-source repo's last code commit is April 2026 and its README says the rest
+stays private; the releases repo is DMGs and an appcast. So the well the annotation overlay came from is
+closed, and every parity item is built from the behaviour rather than copied. I verified the repo state
+with `gh api` rather than trusting the subagent's summary, because a claim that a 98k-star repo exists
+turns out to be true and a claim about its licence weights turns out to be load-bearing — both needed
+checking, and the second one is why VoiceStudio is not usable by us at all.
+
+**What he ruled out, so it is not re-litigated:** named agents, handoff jobs, agents that remember,
+connectors, hosted speech models, documents beside the chat, and 3D drawing. **What is next, in his
+order:** 2D drawing on the live screen (its own session — the overlay and the crop are already there, the
+missing part is ink as an object), then language breadth, then take-back-control mid-action, then the
+Chrome extension decision, then self-updating behind his Apple account. All written as TASKS.md 3.18.
+
+**Gate, measured:** 818/818 across 46 suites. `./scripts/verify.sh` exit 0 — **44 checks passed, 4
+skipped**, nonce `GATE-CAP2-19598`, after `make-app.sh` + `install.sh` nonce `GATE-CAP-11668`. Two of the
+skips are the key's rate limit and the Chrome page sweep; the other two are no Shortcuts window and no
+reachable window to place, all named.

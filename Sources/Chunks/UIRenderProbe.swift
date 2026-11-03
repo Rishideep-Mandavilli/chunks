@@ -38,6 +38,77 @@ enum UIRenderProbe {
         flagPath(after: "--render-setup", fallback: ".impeccable/review/setup.png")
     }
 
+    static var isCaptionRequested: Bool { CommandLine.arguments.contains("--render-caption") }
+
+    static func requestedCaptionPath() -> String {
+        flagPath(after: "--render-caption", fallback: ".impeccable/review/caption.png")
+    }
+
+    /// `--render-caption <path.png>` — the speech caption, drawn the way the panel draws it.
+    ///
+    /// A caption is a surface nobody has looked at until it is rendered: its width, its distance above
+    /// the Dock, and what a long answer does to two lines are all things a screenshot settles and a
+    /// passing test does not. Both shapes are drawn — a normal line and one that has been cut at a word
+    /// boundary — because the cut is the case that can go wrong silently.
+    @MainActor
+    static func runCaption(to path: String) -> Never {
+        setvbuf(stdout, nil, _IONBF, 0)
+        let lines = [
+            "Pressed Send.",
+            CaptionLine.shaped("I opened the invoice, read the total, and found it is later than the "
+                                + "date on the purchase order you showed me earlier in this "
+                                + "conversation, so you may want to check that before you reply") ?? "…",
+            CaptionLine.shaped(String(repeating: "word ", count: 80)) ?? "…",
+        ]
+        let width: CGFloat = 720
+        let rowHeight: CGFloat = 96
+        let canvas = NSImage(size: NSSize(width: width + 40,
+                                          height: rowHeight * CGFloat(lines.count) + 24))
+        canvas.lockFocus()
+        NSColor(calibratedWhite: 0.16, alpha: 1).set()
+        NSRect(x: 0, y: 0, width: width + 40,
+               height: rowHeight * CGFloat(lines.count) + 24).fill()
+        for (index, line) in lines.enumerated() {
+            let model = CaptionModel()
+            model.text = line
+            let host = NSHostingView(rootView: CaptionView(model: model))
+            host.frame = NSRect(x: 20, y: 12 + CGFloat(lines.count - 1 - index) * rowHeight,
+                                width: width, height: rowHeight - 12)
+            // SwiftUI draws nothing into a bare offscreen hosting view — the first attempt produced a
+            // blank image and a plausible byte count, which is exactly how a render check lies. The
+            // working recipe, copied from the notch renderer: attach a window that is never ordered
+            // front, then cache the display into a bitmap rep and draw that.
+            let rect = host.frame
+            host.frame = NSRect(x: 0, y: 0, width: rect.width, height: rect.height)
+            let window = NSWindow(contentRect: host.frame, styleMask: .borderless,
+                                  backing: .buffered, defer: false)
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { continue }
+            host.cacheDisplay(in: host.bounds, to: rep)
+            rep.draw(in: NSRect(x: 20, y: 12 + CGFloat(lines.count - 1 - index) * rowHeight,
+                                width: rect.width, height: rect.height))
+        }
+        canvas.unlockFocus()
+        guard let tiff = canvas.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            print("render-caption: could not draw the caption")
+            exit(1)
+        }
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        do {
+            try png.write(to: url)
+            print("render-caption: wrote \(lines.count) caption rows to \(url.path)")
+        } catch {
+            print("render-caption: could not write \(url.path): \(error.localizedDescription)")
+            exit(1)
+        }
+        exit(0)
+    }
+
     private static func flagPath(after flag: String, fallback: String) -> String {
         guard let index = CommandLine.arguments.firstIndex(of: flag),
               index + 1 < CommandLine.arguments.count else { return fallback }

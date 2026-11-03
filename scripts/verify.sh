@@ -169,6 +169,11 @@ else
 fi
 check "fields: what an app publishes to the typist"  "$BIN" --probe-fields Finder
 
+# Answering the card by voice. The fixture table is the check, and the interesting rows are the ones
+# that must NOT answer: "yes and close the other tab" is a new request with an old card hanging off it,
+# and reading it as consent is the false yes this feature's whole design exists to avoid.
+check "voice answers the card: yes, no, and a sentence that is neither" "$BIN" --probe-voice-answer
+
 # Opening a file in a named app: five answers, and the gate asserts all five stay distinguishable.
 # This verb puts a document on screen inside another application, so "that file holds credentials" is a
 # security rule while "there is no file called X" is his own typo — and a card that says the second
@@ -223,8 +228,14 @@ check "windows: what Chunks can see, and what each verb would ask" "$BIN" --prob
 # The desktop is enumerated as a window and is not one, so it is filtered before the pick: taking the
 # first line blindly meant this check skipped whenever the desktop happened to be the only thing the
 # frontmost-app enumeration published.
+#
+# And a window Chunks cannot reach is filtered too, because a move genuinely refuses it — that is the
+# correct answer, not a failure. The first version of this check picked the first line of the listing,
+# landed on an app on another Space, and reported the product as broken for behaving as designed. A
+# check that fails when the code is right is worse than no check: it teaches whoever reads it next to
+# distrust the gate.
 first_window="$("$BIN" --probe-windows 2>&1 | grep -E '^  [A-Za-z]' | grep '"' \
-  | grep -v '"desktop"' | head -1)"
+  | grep -v '"desktop"' | grep -v 'out of reach' | head -1)"
 # The app name is padded with spaces and may itself contain spaces ("Google Chrome"), so it is cut by
 # the position of the first quote rather than by whitespace.
 geom_app="$(printf '%s' "$first_window" \

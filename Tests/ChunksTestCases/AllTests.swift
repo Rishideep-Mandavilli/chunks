@@ -48,5 +48,6 @@ public func runAllChunksTests() -> Bool {
     WindowActTests.register()
     OpenFilePolicyTests.register()
     WindowPlacementPolicyTests.register()
+    VoiceAnswerTests.register()
     return TestRunner.run()
 }

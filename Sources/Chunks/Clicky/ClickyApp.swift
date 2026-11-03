@@ -45,6 +45,9 @@ struct leanring_buddyApp: App {
         if let body = AXProbe.requestedOpen() {
             AXProbe.runOpen(body)
         }
+        if VoiceAnswerProbe.isRequested {
+            VoiceAnswerProbe.run()
+        }
         if AXProbe.isVoiceProbeRequested {
             AXProbe.runVoiceProbe()
         }

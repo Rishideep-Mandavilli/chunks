@@ -3410,6 +3410,22 @@ final class CompanionManager: ObservableObject {
     func ask(text: String, source: ConversationTurn.Source = .voice) {
         let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
+        // A spoken yes or no, while a card is open, is an **answer** rather than a question. It goes
+        // through `answerConfirm` — the exact call the Allow and Not now buttons make — so the policy
+        // gate, the re-read-before-pressing rule and the one-outstanding-question invariant are
+        // untouched by this feature; only the input device changed.
+        //
+        // Voice only. A typed "ok" in the window's composer is a message to Chunks, and a routine's
+        // prompt is not a person answering anything. And anything that is not an exact phrase from
+        // `VoiceAnswer` falls through and starts a turn as it always did — where `ConsentGate` treats
+        // the displaced question as a denial, so the ambiguous case still fails toward doing nothing.
+        if source == .voice, hud.confirmQuestion != nil,
+           let outcome = VoiceAnswer.outcome(for: question) {
+            let asked = hud.confirmQuestion ?? ""
+            Log.write("card: answered by voice (\(question.prefix(40))) — \(asked)")
+            hud.answerConfirm(outcome)
+            return
+        }
         lastTranscript = question
         sendTranscriptToBrainWithScreenshot(transcript: question, source: source)
     }

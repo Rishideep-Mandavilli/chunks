@@ -114,9 +114,20 @@ final class LocalTTSClient {
         }
     }
 
+    /// Silence the voice now.
+    ///
+    /// Every caller is already on the main actor, so this is normally a direct call — but it is written
+    /// to be safe from any thread, because `MainActor.assumeIsolated` here would be the same
+    /// undefined-behaviour assertion that crashed the app on 2026-11-03 when it is wrong. Off the main
+    /// thread the stop is queued rather than waited on: a cancellation that lands a frame later is
+    /// imperceptible, and a synchronous hop onto a main thread that is busy streaming a reply is a
+    /// stall in the exact moment the user asked for silence.
     func stopPlayback() {
-        MainActor.assumeIsolated {
+        if Thread.isMainThread {
             synthesizer.stopSpeaking(at: .immediate)
+        } else {
+            let voice = synthesizer
+            DispatchQueue.main.async { voice.stopSpeaking(at: .immediate) }
         }
     }
 }

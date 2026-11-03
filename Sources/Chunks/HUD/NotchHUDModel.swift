@@ -578,7 +578,10 @@ final class NotchHUDModel: ObservableObject {
         elapsed = 0
         tick?.invalidate()
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshClock() }
+            // Hopped, never asserted: `MainActor.assumeIsolated` in a timer block is what crashed the
+            // app on 2026-11-03, and a clock tick is the least important work on the machine — it can
+            // afford the hop. An assertion here is undefined behaviour, not a trap.
+            Task { @MainActor in self?.refreshClock() }
         }
         // Added to the common mode: the run loop is busy streaming a reply, and a clock that only
         // ticks when the loop is idle is a clock that stops during the wait it is measuring.

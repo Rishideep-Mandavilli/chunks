@@ -1055,9 +1055,29 @@ behaviour, not copied from the code.
    **in-flight** turn and the outstanding card on the same signal.
 4. **The Chrome extension.** The one real capability gap and the largest lift: an extension, a
    native-messaging host, and a second policy surface for a browser Chunks currently reaches only through
-   Accessibility — which, measured, cannot see inside a page's controls at all. In scope (local, no proxy
-   of ours), but it is a Tier 2 decision before it is a build: what may be done to a signed-in browser is
-   a different question from what may be done to a window.
+   Accessibility — which, measured, cannot see inside a page's controls at all.
+   **He answered the question on 2026-11-03:** Chunks should be able to do in his signed-in browser what
+   HeyClicky and Qoder do — run the task while he watches it happen on his own screen, at whatever
+   length and complexity, and everything a person could do in that tab. So the decision is made and the
+   remaining work is engineering: (a) the extension + native-messaging host, (b) a DOM-level target
+   channel that reaches the controls Accessibility does not publish, (c) a policy surface for a
+   *signed-in* browser, which is the part that must not be improvised — the existing rules already
+   refuse secure fields, Keychain and password managers, and "send / pay / delete" is always asked;
+   those have to survive translation into DOM terms rather than be replaced by a new, weaker gate, and
+   (d) a long-task surface, because a job that runs for minutes while he watches is the same problem as
+   3.14's queue and should be the same mechanism, not a second one.
+   This is the largest item in the file. It is not a session's work and it should not be started before
+   3.18 items 1–3 are done.
+
+**A/B, measured 2026-11-03 (nonce `AB-30261-1793724568`)** — the same five production-prompt turns, both
+brains, one minute apart on his machine: the **cloud chain served 6 turns in 83 s and gave nothing at
+all on 2** (64 s and 70 s dead ends across four attempts each), while the **offline tier answered the
+plan question in 1.9 s with no malformed tag and nothing swallowed by the parser**. That is not an
+argument that a 2B model is better; it is an argument that **a brain that answers is worth more than a
+brain that is better and is not there**. It is the measured case for the fallback he asked for, and the
+reason `scripts/ab-test.sh` exists: the cloud side's numbers move by an order of magnitude within an
+hour on a free key, so any claim about which tier to use has to be re-measured rather than remembered.
+
 5. **Self-updating.** Already Tier 4 (Sparkle 2). Blocked on Developer ID and notarisation, which need
    his enrolled account, not code.
 

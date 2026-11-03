@@ -557,6 +557,27 @@ else
   printf '  \033[31mFAIL\033[0m  store:false has gone missing from the request builder\n'
   fail=$((fail + 1)); failures+=("store:false")
 fi
+# The crash contract. Measured 2026-11-03: `MainActor.assumeIsolated` inside a `Timer` block is a
+# SIGSEGV one frame below it — the app quit twice in two minutes on a routine tick, mid-turn, having
+# promised the user it would act. The assertion is undefined behaviour when the caller is on the main
+# *thread* but not inside the main actor's executor, which is exactly what a run-loop timer is. Every
+# callback this app does not own must hop with `Task { @MainActor in … }` instead. Probe files are
+# exempt: they run before any run loop exists and exit without returning.
+if awk '
+  /^[[:space:]]*(\/\/|\*)/ { next }   # comments describe the rule; they are not instances of it
+  /Timer\(timeInterval|addObserver\(forName|scheduledTimer\(/ { watching = 4 }
+  watching > 0 && /MainActor\.assumeIsolated/ {
+    print FILENAME ":" FNR ": " $0; bad++
+  }
+  watching > 0 { watching-- }
+  END { exit (bad ? 1 : 0) }
+' $(find Sources/Chunks Sources/ChunksKit -name '*.swift' ! -name '*Probe*') 2>/dev/null; then
+  printf '  \033[32mPASS\033[0m  no timer or observer asserts the main actor — they hop it\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  a callback asserts MainActor isolation; that is the 22:02 crash\n'
+  fail=$((fail + 1)); failures+=("main-actor assertion in a callback")
+fi
 # A probe may decide what *it* asks; it may not decide what his next turn asks. Measured 2026-11-02:
 # `--probe-local` answered "which brain is on this Mac?" by writing the app's real settings, so one
 # gate run left his stored brain on Ollama and `--probe-protocol` then graded the production prompt

@@ -150,11 +150,11 @@ final class CompanionManager: ObservableObject {
         sleepObservers = [
             center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil,
                                queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.sleepStartedAt = Date() }
+                Task { @MainActor in self?.sleepStartedAt = Date() }
             },
             center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
                                queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.macWokeUp() }
+                Task { @MainActor in self?.macWokeUp() }
             },
         ]
     }
@@ -559,7 +559,14 @@ final class CompanionManager: ObservableObject {
         routineClock = Date()
         routineTimer?.invalidate()
         let timer = Timer(timeInterval: Self.routineTickSeconds, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
+            // Hopped, not asserted. `MainActor.assumeIsolated` here crashed the app twice in two
+            // minutes on 2026-11-03 — a SIGSEGV inside `SerialExecutor._isSameExecutor`, one frame
+            // below this closure — because it *assumes* the main actor's executor is current and is
+            // undefined behaviour when it is not. A timer block runs on the main thread without being
+            // inside the main actor's task, and the thread is not the executor. `Task { @MainActor in }`
+            // checks nothing and hops always, which is the only safe form in a callback this class
+            // does not control.
+            Task { @MainActor in
                 self?.fireDueRoutines(now: Date())
                 self?.fireDueReminders(now: Date())
             }

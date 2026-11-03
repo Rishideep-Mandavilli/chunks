@@ -3133,3 +3133,50 @@ Chrome extension decision, then self-updating behind his Apple account. All writ
 skipped**, nonce `GATE-CAP2-19598`, after `make-app.sh` + `install.sh` nonce `GATE-CAP-11668`. Two of the
 skips are the key's rate limit and the Chrome page sweep; the other two are no Shortcuts window and no
 reachable window to place, all named.
+
+## 2026-11-03 (22:00) — the app quit mid-turn, and the gate had nothing to say about it
+
+He said: *"minimise this window and keep it in the left half"*, Chunks promised it would, ran 30 seconds,
+and **the application exited without doing anything**. Two `.ips` files in
+`~/Library/Logs/DiagnosticReports`, 22:01 and 22:02, one minute apart.
+
+The crash report's faulting thread was the answer on its own: `__NSFireTimer` →
+`closure #1 in CompanionManager.startRoutineScheduler()` → `MainActor.assumeIsolated` →
+`SerialExecutor._isSameExecutor` → SIGSEGV at a garbage address. `assumeIsolated` **asserts** the main
+actor's executor is current and is undefined behaviour when it is not — and a run-loop timer block runs
+on the main *thread* without being inside the main actor's *executor*. The routine scheduler ticks every
+60 s in `.common` mode, which is why it looked like the turn hung for half a minute and then the app was
+gone: the turn was fine, the tick killed the process under it.
+
+Fixed as a class, not as a line: the scheduler, the sleep/wake observers, the notch's half-second clock,
+the first-run poller, `LocalTTSClient.stopPlayback`, and the annotation overlay's probe entry all hop
+with `Task { @MainActor in … }` now. `verify.sh` has a new check that greps timer and observer bodies for
+the assertion and fails the build.
+
+**Two mistakes I made while fixing my own, both worth keeping.** The first version of that new check
+matched the *comment* I had just written explaining the rule — the same prose-vs-code error as the
+caption contract an hour earlier, so the awk now skips comment lines. And `WindowDriver.settles`, which
+I wrote this evening to verify a window actually moved, used `Thread.sleep` on the main actor: the fix
+for "believe the effect, not the return code" was itself freezing the notch for up to 0.6 s. It is a
+`Task.sleep` now.
+
+**Why the smoke test is a separate script.** `verify.sh` runs 48 checks and finishes; every one of them
+finished before 60 seconds had passed, so not one of them could have seen this. `scripts/smoke.sh`
+launches the installed bundle, **waits 75 s so the scheduler ticks while the app is running**, walks all
+the read-only probes against that same live process checking after each that the app is still alive,
+re-checks that two read-only probes left his preferences byte-identical, and finally asks whether macOS
+wrote a crash report. First run: 18 passed, 0 failed, no new crash. `--quick` skips the wait and says out
+loud that it therefore cannot catch a tick crash.
+
+**A/B, measured twice (nonce `AB-30261-1793724568`).** Same five production-prompt turns, both brains,
+one minute apart: the cloud chain served 6 turns in 83 s and **gave nothing at all on 2** (64 s and 70 s
+across four attempts each), while the offline tier answered in **1.9 s with no malformed tags and
+nothing swallowed**. The first version of `ab-test.sh` reported "6 tag families lost" because it grepped
+for the word "lost" and counted the log echo — a metric measuring a thing that was not there, which is
+the failure mode this repo keeps hitting. It counts the probe's own `served by` / `SKIPPED` lines now.
+
+**His browser decision, recorded:** Chunks should do in his signed-in Chrome what HeyClicky and Qoder do
+— run it while he watches, any length, any complexity. The question is answered; what is left is
+engineering, and the part that must not be improvised is the policy surface for a signed-in browser,
+where the existing refusals (secure fields, Keychain, password managers, always-ask on send/pay/delete)
+have to survive translation into DOM terms rather than be replaced by a weaker gate.

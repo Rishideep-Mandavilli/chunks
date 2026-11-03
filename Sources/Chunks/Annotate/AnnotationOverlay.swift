@@ -717,7 +717,10 @@ enum AnnotationSafetyProbe {
             MainActor.assumeIsolated { run() }
         }
         DispatchQueue.main.async {
-            MainActor.assumeIsolated { run() }
+            // Hopped through the main actor rather than asserting into it. Being on the main thread is
+            // not being on the main actor's executor, and `assumeIsolated` is undefined behaviour when
+            // the assumption is wrong — the crash of 2026-11-03 was that assertion in a timer block.
+            Task { @MainActor in run() }
         }
         while true { Thread.sleep(forTimeInterval: 3600) }
     }

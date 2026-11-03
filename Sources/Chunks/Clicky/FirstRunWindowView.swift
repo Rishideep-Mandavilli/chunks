@@ -98,7 +98,7 @@ final class FirstRunModel: ObservableObject {
         guard manager != nil else { return }
         stopPolling()
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
+            Task { @MainActor in self?.refresh() }
         }
         RunLoop.main.add(timer, forMode: .common)
         poll = timer

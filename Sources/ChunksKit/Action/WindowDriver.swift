@@ -305,7 +305,11 @@ public enum WindowDriver {
     ///
     /// Size first, then position: an app that clamps a position against its current size would otherwise
     /// refuse the new position for a window it has not resized yet. Nothing here moves the cursor.
-    public static func place(_ candidate: WindowAct.Candidate, to rect: CGRect) -> Bool {
+    ///
+    /// `async`, and the wait is a `Task.sleep` rather than a `Thread.sleep`: this runs on the main
+    /// actor, and blocking it for half a second to watch a window animate would freeze the notch during
+    /// the act the user is watching for. The same reason the reveal polls without sleeping.
+    public static func place(_ candidate: WindowAct.Candidate, to rect: CGRect) async -> Bool {
         guard let window = element(for: candidate) else { return false }
         var size = rect.size
         var origin = rect.origin
@@ -315,11 +319,11 @@ public enum WindowDriver {
         let moved = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString,
                                                  positionValue)
         guard sized == .success, moved == .success else { return false }
-        return settles(at: rect, window: window)
+        return await settles(at: rect, window: window)
     }
 
     /// Poll the window's own frame until it matches, or the short ceiling runs out.
-    static func settles(at rect: CGRect, window: AXUIElement) -> Bool {
+    static func settles(at rect: CGRect, window: AXUIElement) async -> Bool {
         let deadline = Date().addingTimeInterval(placementSettleSeconds)
         while true {
             let now = frame(of: window)
@@ -328,7 +332,7 @@ public enum WindowDriver {
                abs(now.minX - rect.minX) <= placementTolerance,
                abs(now.minY - rect.minY) <= placementTolerance { return true }
             if Date() >= deadline { return false }
-            Thread.sleep(forTimeInterval: 0.05)
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
     }
 

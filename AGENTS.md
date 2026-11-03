@@ -182,6 +182,18 @@ map almost 1:1 onto `#expect(...)`.
 
 ## Invariants — do not break these
 
+**A callback this app does not own must hop to the main actor, never assert it.** Measured 2026-11-03:
+`MainActor.assumeIsolated` inside a `Timer` block wrote two crash reports in two minutes — a SIGSEGV one
+frame below the closure, in `SerialExecutor._isSameExecutor` — and the user watched the app quit mid-turn
+after promising it would act. The assertion is *undefined behaviour* when it is wrong, not a trap with a
+message, and a run-loop timer is exactly the case where it is wrong: the block runs on the main thread
+without being inside the main actor's executor. So every `Timer`, `RunLoop` and notification-observer body
+uses `Task { @MainActor in … }`. `verify.sh` greps for the pattern and fails the build, skipping comments
+because the first version of that check matched the prose describing the rule rather than the rule.
+The same reasoning covers `Thread.sleep` on the main actor: waiting for a window to land is a
+`Task.sleep`, never a blocking one, because the notch freezes for the length of the wait the user is
+watching.
+
 1. **All coordinates are `LogicalPoint`.** Screenshots are device pixels (2x); AX reports
    logical points; `NSPanel` frames are logical. Conversion happens exactly once, inside
    `CoordinateSpace` or `ScreenCapture`. Feeding an AX `frame` into a pixel-based call

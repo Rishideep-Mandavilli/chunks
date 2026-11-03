@@ -139,6 +139,14 @@ struct leanring_buddyApp: App {
                 }
             }
         }
+        if InkProbe.isRequested {
+            // The ink is a display-sized window, so the question it has to answer is the one the
+            // overlay got wrong once: does it let go, and does it take anything with it.
+            InkProbe.start()
+        }
+        if InkRenderProbe.isRequested {
+            InkRenderProbe.start()
+        }
         if UIRenderProbe.isSetupRequested {
             let path = UIRenderProbe.requestedSetupPath()
             if Thread.isMainThread {

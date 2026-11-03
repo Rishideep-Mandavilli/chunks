@@ -1047,6 +1047,20 @@ behaviour, not copied from the code.
    **ink as an object** — strokes that persist, a pointer/pin marker, an eraser, and a way to point at
    something you just drew. **3D is not on this list**: it needs a mesh pipeline and nothing in Chunks'
    design language asks for it, and he agreed. This is a session of its own.
+   **Built on 2026-11-03, in its own session, green and gated.** The ink is an object now:
+   `AnnotationShape.pin` (one click, one point) and `AnnotationSession.erase(at:)` / `shape(at:)`
+   (topmost-first, by bounding box) make the marks addressable; the overlay's tool row is six — pen,
+   circle, box, arrow, pin, eraser, the eraser rubbing on drag and on release; and `InkLayerManager`
+   leaves the same shapes on the live display after the surface closes, click-through and never key,
+   cleared by the turn's end, the card's dismissal or its own 120 s cap. The pin's dot, ring and eraser
+   reach are three pure numbers in `AnnotationShape` shared by the overlay, the ink and the burn-in,
+   with a test asserting the reach is wider than the mark. The prompt is told the marks by kind, carried
+   on the capture so it cannot outlive the picture. `--probe-ink` (18 checks, in the gate) proves the
+   inertness off the live panel and proves the marks are on the display *and* out of every capture by
+   flipping `sharingType` and capturing either side of it — 6528 ink pixels allowed, 0 with none;
+   `--render-ink` draws one of every mark to look at. **Unseen, and his to judge:** the ink on his own
+   screen during a real turn — whether marks that outlive the gesture read as help or as clutter, and
+   whether they should fade rather than vanish.
 2. **Language breadth.** `--probe-stt` already enumerates `supportedLocales` and `installedLocales`, and
    `SpeechVoices` ranks English female voices only. A picker plus a de-ranking fix, no new transport.
    He speaks en-IN — worth checking whether any installed voice covers it before promising it.

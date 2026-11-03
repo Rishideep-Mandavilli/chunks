@@ -245,7 +245,33 @@ if [[ -z "$geom_app" || -z "$geom_title" || "$geom_title" == "desktop" ]]; then
   printf '  \033[33mSKIP\033[0m  geometry: no real window on screen to place (the desktop is not one)\n'
   skip=$((skip + 1))
 else
-  geom_out="$("$BIN" --probe-geometry "$geom_app|$geom_title|left" 2>&1)"
+  # Accessibility publishes an app's windows intermittently — measured 2026-11-03, six of eight running
+  # apps answered an empty window list at once — so a window the listing called reachable can refuse the
+  # move a second later, correctly. Walking the next few candidates keeps the check about the arithmetic
+  # rather than about which app happened to be quiet; a SKIP when every one refuses is the honest answer.
+  geom_out=""
+  # A while-read loop, not a for-in: app names contain spaces ("Google Chrome"), and word splitting
+  # would hand the probe half an app name and call the refusal a failure.
+  while IFS= read -r candidate; do
+    [[ -z "$candidate" ]] && continue
+    try_out="$("$BIN" --probe-geometry "$candidate|left" 2>&1)"
+    if printf '%s' "$try_out" | grep -q "would write"; then
+      geom_out="$try_out"
+      geom_app="${candidate%%|*}"
+      geom_title="${candidate##*|}"
+      break
+    fi
+  done < <("$BIN" --probe-windows 2>&1 | grep -E '^  [A-Za-z]' | grep '"' \
+      | grep -v '"desktop"' | grep -v 'out of reach' | head -6 \
+      | sed -E 's/^  //; s/  +/ /g' | awk '{i=index($0,"\""); app=substr($0,1,i-2); sub(/[ ]+$/,"",app);
+                                          title=$0; sub(/^[^"]*"/,"",title); sub(/".*/,"",title);
+                                          print app "|" title}')
+  if [[ -z "$geom_out" ]]; then
+    printf '  \033[33mSKIP\033[0m  geometry: every listed window refused the move — Accessibility was publishing nothing reachable at that moment\n'
+    skip=$((skip + 1))
+  fi
+fi
+if [[ -n "${geom_out:-}" ]]; then
   pixel_out="$("$BIN" --probe-geometry "$geom_app|$geom_title|400,220" 2>&1)"; pixel_status=$?
   # `display=3` is inside the grammar's cap and outside this Mac's one screen, so it reaches the runtime
   # answer. `display=9` is past the cap and is refused at parse — two different doors, and a check that
@@ -480,6 +506,15 @@ file_check "the notch card, all states"    "$RENDER_DIR/card.png"   120000
 file_check "the window, full and empty"    "$RENDER_DIR/window.png" 80000
 file_check "the menu-bar panel"            "$RENDER_DIR/panel.png"  40000
 file_check "the first-run flow, all three steps" "$RENDER_DIR/setup.png" 60000
+echo
+
+echo "the ink that stays on screen while a turn runs"
+# Shows his marks on the display for a few seconds and never takes a click: click-through, no key
+# window, no activation, and it clears itself. The probe flips the window's sharing type and captures
+# either side of it, because "the capture shows no ink" is also what an invisible layer would produce.
+check "ink: inert, invisible to captures, and it lets go" "$BIN" --probe-ink
+"$BIN" --render-ink "$RENDER_DIR/ink.png" >/dev/null 2>&1
+file_check "the ink render, one of every mark" "$RENDER_DIR/ink.png" 20000
 echo
 
 echo "the safety contract, asserted not assumed"

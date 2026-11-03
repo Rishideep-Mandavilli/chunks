@@ -56,6 +56,15 @@ public struct LogicalRect: Hashable, Sendable {
     public var midX: Double { origin.x + size.width / 2 }
     public var midY: Double { origin.y + size.height / 2 }
     public var isEmpty: Bool { size.width <= 0 || size.height <= 0 }
+
+    /// Whether a point is inside, edges included.
+    ///
+    /// Inclusive because the question it answers is "did he touch this mark", and a hit exactly on a
+    /// mark's own edge is a hit — an exclusive test would make the eraser feel broken at the boundary
+    /// of every shape he drew.
+    public func contains(_ point: LogicalPoint) -> Bool {
+        point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY
+    }
 }
 
 // MARK: - The coordinate authority

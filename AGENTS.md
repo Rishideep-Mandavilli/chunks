@@ -152,7 +152,9 @@ finds a desktop icon. Two more read-only doors came out of the semantic work:
 .build/debug/chunks --probe-reply --local   # ask the local model a plan question and audit its real words
 .build/debug/chunks --probe-read '~/Downloads/build.log|why did it fail'  # one path, end to end
 .build/debug/chunks --probe-voice-answer "yes"  # what a spoken sentence would do to the open card, answering nothing
+.build/debug/chunks --probe-ink        # the ink that stays on screen: inert, invisible to captures, lets go
 .build/debug/chunks --render-caption /tmp/caption.png   # the speech caption, drawn offscreen, three rows
+.build/debug/chunks --render-ink /tmp/ink.png   # one of every drawn mark, offscreen, to look at
 .build/debug/chunks --render-ui /tmp/notch-card.png   # every notch state drawn offscreen, to look at
 .build/debug/chunks --render-window /tmp/window.png   # the app window, full and empty, same way
 .build/debug/chunks --render-panel /tmp/panel.png      # the menu-bar panel, at its real 320x380
@@ -1162,8 +1164,8 @@ watching.
 
 ## Current state
 
-**The app runs. 818 of 818 tests green across 46 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 48 checks: 42–44 pass and 4–6 skip,
+**The app runs. 825 of 825 tests green across 46 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 50 checks: 44–46 pass and 4–6 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
@@ -1188,6 +1190,7 @@ Done and tested:
 | Retry + rate limit | `Brain/RetryPolicy.swift` | Backoff with jitter, token bucket |
 | Request/SSE | `Brain/GeminiTransport.swift` | Pure builders; `store:false` enforced by test |
 | Region resolution | `Annotate/RegionResolver.swift` | Marks → padded, clamped crop rect |
+| The ink that stays on screen | `Chunks/Annotate/InkLayer.swift` | Click-through, never key, no dim; cleared by the turn's end or its own cap; `sharingType = .none` keeps it out of every capture, measured by flipping the flag |
 | Card sizing | `AnswerPanelLayout.swift` | One measurement for card height, mirrored by the view |
 | Notch anchor | `NotchGeometry.swift` | Cutout from the auxiliary strips; menu-bar fallback; the only place that flips top-left ↔ AppKit for the HUD |
 | Image → screen mapping | `Capture/ScreenshotGeometry.swift` | The sanctioned route from the model's 0–1000 aim grid to AppKit and AX point spaces; scale-independent by construction, and it keeps the mapped point inside the display |
@@ -1439,6 +1442,50 @@ Read it before picking anything up from this list.
   orientation (the crop came back mirrored — render it with `NSImageView`), and
   `NSGraphicsContext(bitmapImageRep:)` returns **nil** for a PNG-decoded rep, so a burn-in must draw
   into a rep it created itself. It needs no consent either way, because it moves and presses nothing.
+  **The marks stay on the screen while the answer is being written.** The overlay closes the instant
+  he presses Return and the turn takes seconds, so "the button you circled" would otherwise be a
+  sentence about a mark that has already gone. `InkLayerManager`
+  (`Sources/Chunks/Annotate/InkLayer.swift`) puts the same shapes back on the display — click-through,
+  never key or main, `_setPreventsActivation`, no dim, `.floating` under the card — and clears them when
+  the card about them goes: dismissed, replaced by a hint, or taken by a new question, with a 120 s cap
+  behind all of it. The marks stay while he reads the answer, because they are the referent of the card
+  and so live exactly as long as it does; a confirm card asking about the thing he circled keeps them
+  too. One Combine sink on the card's phase decides this rather than a dozen hand-placed clears, and it
+  carries a turn token, because a turn *starts* twice from the ink's point of view — once for the
+  question the marks belong to, an emission that lands moments after the ink goes up and must not take
+  it down, and once for the next question, which must.
+  It is the overlay's opposite on purpose: a display-sized window that *takes* the mouse is the
+  2026-10-11 lockup, and one that cannot take a click cannot hold him, which is why this surface needs
+  no exits and no watchdog. It goes up *after* the opening capture, because the picture the model
+  reads is that crop with the same marks burned in and a live layer over the screen at capture time
+  would be the ink twice. **And it is in no picture of its own**: `sharingType = .none`, measured
+  2026-11-03 by flipping the flag and capturing either side of it — 6528 ink pixels in the display
+  composite with sharing allowed, 0 with it none, while the window server's on-screen list carried the
+  window in both states. So the list answers "is it on the screen" and a capture answers "is it in a
+  picture", and the two must not be swapped; the first version of that check failed in both directions
+  on the same evening by reading the list in the same runloop turn as the order-front. The whole-screen
+  live capture excludes every window this app owns anyway, so the flag is the belt to that route's
+  braces. The fallback selector path has no ink and says so in the log: `screencapture -i` returns
+  pixels and no rectangle, so marks drawn on a frozen crop cannot be placed on the live screen, and a
+  guessed position would circle something he never circled.
+  **The tools are six and the eraser is one of them.** Pen, circle, box, arrow, a **pin** (one click,
+  one point — "this exact thing" rather than "this area") and an **eraser** that rubs topmost-first.
+  The pin's three radii live in `AnnotationShape` as pure numbers — the 5 pt dot he sees, the pale ring
+  around it, and the 24 pt reach the eraser and the crop both use — because the burn-in, the overlay
+  and the ink layer all draw the same mark, and three copies of one number is three chances for "the
+  thing I pinned" to mean a dot on his screen and a ring in the crop. The reach is deliberately much
+  wider than the dot: an eraser that only removed a pin when he hit five points of solid red exactly is
+  a tool he has to aim with the thing he is aiming at, and a test asserts the gap. The prompt is told
+  the marks by kind (`AnnotationSession.descriptionForModel` — "1 region circled, 1 region pinned"),
+  carried on the capture itself so it cannot outlive the picture it describes, and a pin is explained
+  as a point, not an area.
+  **Verify without drawing:** `--probe-ink` shows the layer on the real display, asserts the four
+  inertness properties off the live panel, flips the sharing type and captures either side of it,
+  proves a clear and the time cap both take it down, and refuses a display that is not there;
+  `--render-ink` draws one of every mark offscreen to look at. Both are in the gate. What has not been
+  watched is the ink on his own screen during a real turn: whether marks that outlive the gesture read
+  as help or as clutter, and whether they should fade rather than vanish when the answer lands, are
+  his to judge.
 - **The Notebook tier is built** (TASKS.md 3.3, 2026-11-02): `<NOTE>` writes an uncapped
   `notebook.md` beside `memory.md` through `SecretSweeper`, `[NOTES:…]` searches it on demand and the
   labelled block rides into the next turn, and the panel has a "Show notebook" row. What has not been

@@ -699,6 +699,19 @@ final class CompanionManager: ObservableObject {
     /// how a second press knows what to close.
     private var activeOverlay: AnnotationOverlayWindow?
 
+    /// His marks, left on the display while the turn about them runs.
+    ///
+    /// The overlay closes the instant he presses Return, so without this the answer would arrive
+    /// about a circle that has already gone. It receives no clicks and cannot become key — see
+    /// `InkLayerManager`, which carries the reason each of those is load-bearing.
+    private let inkLayer = InkLayerManager()
+    private var inkCancellable: AnyCancellable?
+    /// The turn the ink on screen was drawn for. See `bindInkLifetime`.
+    private var inkTurnSequence = 0
+    /// Every question increments this, so "the start of a turn" can be told from "the start of *this*
+    /// turn" — the distinction the ink's lifetime rests on.
+    private var turnSequence = 0
+
     /// The markup panel the user is drawing on, if there is one.
     private var activeMarkup: CropMarkupWindow?
 
@@ -843,6 +856,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        bindInkLifetime()
         // The recogniser is expensive to wake and cheap to keep; the microphone is the opposite,
         // and is a thing the user can hear themselves into. Warm one at launch, open the other on
         // the press.
@@ -1154,6 +1168,42 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    /// The ink's lifetime is the card's, and it is watched rather than remembered.
+    ///
+    /// One sink over the card's published phase, because "the card went away" happens in a dozen
+    /// places — a click-away, a new session, a hint replacing the answer — and clearing the ink by
+    /// hand at each of them is how a stale circle survives over a desktop it no longer describes. The
+    /// marks stay while he reads the answer about them (`.result`) and while a confirm card asks about
+    /// the thing he circled (`.waitingForYou` lives inside `.result`), and go when the card goes.
+    ///
+    /// `.listening` and `.thinking` are the two phases a turn *starts* in, and a turn starts twice from
+    /// the ink's point of view: once for the question the marks belong to — an emission that arrives
+    /// moments after the ink goes up and must not take it down — and once for the next question, which
+    /// must. `turnSequence` tells them apart: the ink remembers the turn it was drawn for, and a
+    /// start-phase from any other turn is a new card about something else.
+    private func bindInkLifetime() {
+        inkCancellable = hud.$phase
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] phase in
+                guard let self, self.inkLayer.isShowing else { return }
+                let cardGone: Bool
+                let why: String
+                switch phase {
+                case .result, .failed:
+                    cardGone = false
+                    why = ""
+                case .idle, .status:
+                    cardGone = true
+                    why = "the card about it went away"
+                case .listening, .thinking:
+                    cardGone = self.turnSequence != self.inkTurnSequence
+                    why = "a new question started"
+                }
+                guard cardGone else { return }
+                self.inkLayer.clear(reason: why)
+            }
+    }
+
     private func bindShortcutTransitions() {
         circleCancellable = globalPushToTalkShortcutMonitor
             .circleTogglePublisher
@@ -1448,14 +1498,14 @@ final class CompanionManager: ObservableObject {
     /// promise a question the user will never see — which is exactly what happened on the first
     /// Pluralsight turn.
     private func companionPromptWithMemory(recalling question: String? = nil,
-                                           showingARegion: Bool = false) -> String {
+                                           marks: String? = nil) -> String {
         memoryStore.load()
         let known = memoryStore.injectedBlock()
         var prompt = Self.companionVoiceResponseSystemPrompt
             + "\n\n" + Self.actingRules(askBeforeActing: askBeforeActing)
             + "\n\nwhat i know about this user (from earlier turns):\n"
             + (known.isEmpty ? "(nothing yet)" : known)
-        if showingARegion {
+        if marks != nil {
             // The picture is a crop, so the grid is over the crop. Said out loud because the
             // alternative is a model that refuses to aim at all — or aims at the whole screen it
             // cannot see. Chunks carries the crop's rectangle, so an aim here is as good as one on
@@ -1465,6 +1515,14 @@ final class CompanionManager: ObservableObject {
                 + "place on his display, so [POINT] and [ACT] work here exactly as they do on a "
                 + "full screenshot — aim at what he drew, and do not aim at anything outside the "
                 + "picture."
+            if let marks, !marks.isEmpty {
+                // What kind of marks, because a pin and a circle ask for different answers: a circle
+                // is an area to explain, a pin is one point to name. Without this, "the thing i
+                // pinned" is a sentence the model has to guess the shape of.
+                prompt += "\n\nhis marks, counted from the gestures themselves: \(marks). a pin is a "
+                    + "single point, not an area — when he says \"the thing i pinned\", the dot in "
+                    + "the picture is the thing, and an aim for it goes at the dot."
+            }
         }
         if let question {
             prompt += conversationRecallBlock(for: question) ?? ""
@@ -3222,6 +3280,10 @@ final class CompanionManager: ObservableObject {
             return
         }
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        // Old ink goes before the surface comes up, not after: the overlay dims the screen, and
+        // marks from a previous turn under that dim would look like part of the drawing he is about
+        // to do.
+        inkLayer.clear(reason: "a new drawing started")
 
         let overlay = AnnotationOverlayWindow(display: display) { [weak self] shapes, spoken in
             guard let self else { return }
@@ -3321,12 +3383,21 @@ final class CompanionManager: ObservableObject {
                 screenshotWidthInPixels: image.width,
                 screenshotHeightInPixels: image.height,
                 cropFrame: ScreenshotGeometry.appKitRect(fromTopLeftGlobal: shot.globalRect,
-                                                         primaryScreenHeight: primaryHeight))
+                                                         primaryScreenHeight: primaryHeight),
+                markDescription: AnnotationSession(shapes: shapes).descriptionForModel)
             // His words if he spoke any; the standing question if he only drew. Both are real
             // gestures — the surface must not need a keyboard to be useful.
             ask(text: spoken.isEmpty
                 ? "What is the part I circled, and what is it for?"
                 : spoken)
+            // The ink goes up after the capture and after the turn has started. The picture the model
+            // reads is this crop with the same marks burned into it, so a live layer over the screen
+            // at capture time would be the ink twice; and showing it before `ask` would put it up
+            // under the start-of-turn phase it has to survive. It remembers which turn it belongs to,
+            // so the next question takes it down and this turn's answer does not.
+            if inkLayer.show(shapes, on: display) {
+                inkTurnSequence = turnSequence
+            }
         } catch {
             let detail = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             Log.write("annotate: capture failed — \(detail)")
@@ -3403,6 +3474,10 @@ final class CompanionManager: ObservableObject {
             // Unknown, and unknowable: `screencapture -i` returns pixels and no rectangle. Pixel
             // aims on such a turn are refused downstream rather than guessed at.
             cropFrame: nil)
+        // No ink on this path, and that is not an oversight: with no rectangle for the crop, marks he
+        // drew on the frozen picture cannot be placed on the live screen, and a guessed position
+        // would leave a circle over something he never circled.
+        Log.write("annotate: selector path — no ink layer, the crop's place on screen is unknown")
         Log.write("annotate: region selected — \(image.pixelsWide)x\(image.pixelsHigh)px, asking")
         ask(text: "What is the part I selected, and what is it for?")
     }
@@ -3433,6 +3508,10 @@ final class CompanionManager: ObservableObject {
             hud.answerConfirm(outcome)
             return
         }
+        // A question rather than an answer to the open card: the ink's lifetime keys off this, and a
+        // continuation round deliberately does not come through here, because it is the same turn
+        // about the same marks.
+        turnSequence += 1
         lastTranscript = question
         sendTranscriptToBrainWithScreenshot(transcript: question, source: source)
     }
@@ -3583,7 +3662,7 @@ final class CompanionManager: ObservableObject {
                 _ = try await claudeAPI.analyzeImageStreaming(
                     images: requestImages,
                     systemPrompt: companionPromptWithMemory(recalling: transcript,
-                                                            showingARegion: regionCapture != nil),
+                                                            marks: regionCapture?.markDescription),
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { delta in

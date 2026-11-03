@@ -3180,3 +3180,53 @@ the failure mode this repo keeps hitting. It counts the probe's own `served by` 
 engineering, and the part that must not be improvised is the policy surface for a signed-in browser,
 where the existing refusals (secure fields, Keychain, password managers, always-ask on send/pay/delete)
 have to survive translation into DOM terms rather than be replaced by a weaker gate.
+
+## 2026-11-03 (late) — the 2D drawing session: the ink stays on the screen
+
+**What was missing was not the drawing, it was the handoff.** The overlay closes the instant he presses
+Return and the turn takes seconds, so the answer arrived about a circle that had already gone.
+`InkLayerManager` puts the same shapes back on the display while the turn runs. It is the overlay's
+opposite in every property that matters — click-through, never key or main, `_setPreventsActivation`,
+no dim, no exits and no watchdog — because a display-sized window that *takes* the mouse is the
+2026-10-11 lockup and one that cannot take a click cannot hold him. It goes up after the opening
+capture (the picture the model reads is that crop with the same marks burned in; a live layer at
+capture time would be the ink twice) and comes down when the card about it goes — dismissed, replaced
+by a hint, or taken by a new question — with a 120 s cap behind all of it. The marks stay while he reads
+the answer, because they are the referent of the card and so live exactly as long as it does. One sink
+on the card's phase decides this, carrying a turn token: a turn *starts* twice from the ink's point of
+view, once for the question the marks belong to — an emission that lands moments after the ink goes up
+and must not take it down — and once for the next question, which must.
+
+**The tools are six.** Pen, circle, box, arrow, a pin (one click, one point — "this exact thing") and an
+eraser that rubs topmost-first on drag and on release. The pin's three radii — the 5 pt dot he sees, the
+pale ring, the 24 pt reach the eraser and the crop use — are pure numbers in `AnnotationShape`, shared
+by the overlay, the ink layer and the burn-in, because three copies of one number is three chances for
+"the thing I pinned" to mean a dot on his screen and a ring in the crop. A test asserts the reach is
+wider than the mark: an eraser that only removed a pin when he hit five points of solid red exactly is a
+tool he has to aim with the thing he is aiming at. The prompt is told the marks by kind, carried on the
+capture itself so the description cannot outlive the picture it describes.
+
+**The measurement that took three wrong instruments.** The ink must be visible to him and in no picture.
+`sharingType = .none` buys that, and the probe proves it by flipping the flag and capturing either side:
+6528 ink pixels in the display composite with sharing allowed, 0 with it none — so the marks really are
+composited on the display, and the flag was the only thing hiding them from pictures. Two instruments
+lied on the way. A loose colour matcher counted 3784 pixels of his wallpaper as ink before any mark
+existed, which made "does the capture see the ink" a comparison of two noisy numbers; the ink is
+(255, 61, 82), so the box is tight now and the baseline is 0. And the window-server list failed the same
+assertion in both directions on the same evening: read in the same runloop turn as the order-front it
+reports a window that is about to be, and read later it carries sharing-none windows fine — the list
+answers "is it on the screen" and a capture answers "is it in a picture", and the first version of the
+check swapped them. The fallback selector path has no ink and says so in the log: `screencapture -i`
+hands back pixels and no rectangle, so marks drawn on a frozen crop cannot be placed on the live
+screen, and a guessed position would circle something he never circled.
+
+**A crash class found a second member.** The first probe run died with "NSWindow should only be
+instantiated on the main thread": in a shell-launched process the main actor is a pool thread until
+`NSApplication` runs, so `Task { @MainActor }` built the panel off-thread. The fix is to run the
+application in the probe — the arrangement the live app has — and the same latent crash was sitting in
+`--annotate-safety`, the overlay's only automated proof that it lets go, which is why that probe had
+never been run. Both now start `NSApplication.shared.run()` on the main thread.
+
+**Green:** 825/825 tests; the gate is 50 checks with `--probe-ink` (18 assertions) and `--render-ink` in
+it; smoke 18/18 with no new crash report. Unseen, and his to judge: the ink on his own screen during a
+real turn — help or clutter, and whether it should fade rather than vanish.

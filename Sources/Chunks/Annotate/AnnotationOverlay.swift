@@ -179,15 +179,11 @@ final class AnnotationOverlayWindow: NSObject, NSWindowDelegate {
     ///
     /// `DisplayInfo.frame` is `CGDisplayBounds` — top-left origin. The two differ by the *origin*,
     /// never the size, so on the display parked at (0,0) mixing them is invisible and on any other
-    /// it puts the overlay on the wrong screen. Invariant 1's rule, applied to this window. Matched
-    /// by the display ID behind `NSScreen.deviceDescription` because array order is not identity.
+    /// it puts the overlay on the wrong screen. Invariant 1's rule, applied to this window; the
+    /// lookup itself is `DisplayScreens`, shared with the ink layer so the two surfaces cannot
+    /// disagree about which screen a display is.
     private func appKitFrame() -> NSRect? {
-        for screen in NSScreen.screens {
-            let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
-                            as? NSNumber)?.uint32Value
-            if number == display.displayID { return screen.frame }
-        }
-        return nil
+        DisplayScreens.matching(display)?.frame
     }
 
     /// Where a click would land, according to AppKit, and which on-screen windows cover that
@@ -406,6 +402,10 @@ final class AnnotationCanvas: NSView {
         case ellipse = "Circle"
         case rect = "Box"
         case arrow = "Arrow"
+        /// One click, one point. The mark that says "this exact thing" rather than "this area".
+        case pin = "Pin"
+        /// Rub at a mark and it goes. Topmost first, because that is the one he can see on top.
+        case eraser = "Eraser"
 
         var symbol: String {
             switch self {
@@ -413,8 +413,17 @@ final class AnnotationCanvas: NSView {
             case .ellipse: return "circle"
             case .rect: return "rectangle"
             case .arrow: return "arrow.up.right"
+            case .pin: return "mappin.circle.fill"
+            case .eraser: return "eraser"
             }
         }
+
+        /// Whether a drag draws this tool, or a single click finishes it.
+        ///
+        /// A pin and an eraser are click tools: dragging a pin would be a stroke he did not ask for,
+        /// and an eraser that only worked on click would make rubbing out a pile of ink a chore of
+        /// single taps. The eraser is the exception that also acts while dragged.
+        var isClickOnly: Bool { self == .pin }
     }
 
     private enum DragPhase { case drawing, choosingTool }
@@ -473,6 +482,14 @@ final class AnnotationCanvas: NSView {
             activePoints.append(point)
         case .ellipse, .rect, .arrow:
             break  // Derived from dragStart to the current point at draw time.
+        case .pin:
+            break  // A pin is placed on release; dragging one would be a stroke he did not ask for.
+        case .eraser:
+            // Rubbing is a drag, so the eraser acts on every move, not only on release. A click-only
+            // eraser would make clearing a pile of ink a chore of single taps.
+            if session.erase(at: point) {
+                Log.write("annotate: erased a mark — \(session.shapes.count) left")
+            }
         }
         needsDisplay = true
     }
@@ -500,6 +517,16 @@ final class AnnotationCanvas: NSView {
         case .arrow:
             let distance = hypot(point.x - start.x, point.y - start.y)
             shape = distance > 6 ? .arrow(from: start, to: point) : nil
+        case .pin:
+            // Placed where he let go, not where he pressed: a pin dragged across the screen while he
+            // was aiming is still a pin at the place he stopped, which is the place he meant.
+            shape = .pin(point)
+        case .eraser:
+            // The release is the last chance to catch a tap that never dragged.
+            if session.erase(at: point) {
+                Log.write("annotate: erased a mark — \(session.shapes.count) left")
+            }
+            shape = nil
         }
 
         if let shape {
@@ -522,24 +549,12 @@ final class AnnotationCanvas: NSView {
         (dimsScreen ? Self.screenTint : NSColor.clear).setFill()
         bounds.fill()
 
-        let colour = AnnotationShape.overlayStrokeColor
-        NSColor(cgColor: colour)?.setStroke()
-        NSColor(cgColor: colour)?.setFill()
-        let line = NSBezierPath()
-        line.lineWidth = AnnotationShape.strokeWidth
-        line.lineCapStyle = .round
-        line.lineJoinStyle = .round
-
         // The in-progress shape is drawn last so a mark being dragged is always on top.
         var drawable = session.shapes
         if let pending = inProgressShape() { drawable.append(pending) }
 
         for shape in drawable {
-            guard let path = Self.bezier(for: shape) else { continue }
-            path.lineWidth = line.lineWidth
-            path.lineCapStyle = line.lineCapStyle
-            path.lineJoinStyle = line.lineJoinStyle
-            path.stroke()
+            Self.draw(shape)
         }
     }
 
@@ -557,6 +572,47 @@ final class AnnotationCanvas: NSView {
         case .ellipse:
             return .ellipse(center: LogicalPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2),
                             radiusX: abs(end.x - start.x) / 2, radiusY: abs(end.y - start.y) / 2)
+        case .pin:
+            // Shown under the cursor while he is deciding where to put it, so a pin is never a
+            // surprise on release.
+            return .pin(end)
+        case .eraser:
+            // Nothing in progress: the eraser changes the session directly as it moves.
+            return nil
+        }
+    }
+
+    /// One mark, drawn.
+    ///
+    /// The single entry point for every surface that shows his ink — this canvas, the crop markup and
+    /// the layer that keeps the marks on screen while the turn runs — because three copies of "how a
+    /// mark looks" is three chances for what he sees and what the model is shown to drift apart. The
+    /// pin is the case that proves the point: it is *filled*, and a stroked ring here against a solid
+    /// disc in the burn-in would make "the thing I pinned" two different marks in two pictures.
+    static func draw(_ shape: AnnotationShape) {
+        let ink = NSColor(cgColor: AnnotationShape.overlayStrokeColor)
+        switch shape {
+        case .pin(let point):
+            let dot = AnnotationShape.pinDotRadius
+            ink?.setFill()
+            NSBezierPath(ovalIn: NSRect(x: point.x - dot, y: point.y - dot,
+                                        width: dot * 2, height: dot * 2)).fill()
+            // A pale ring, the same one the burn-in paints: a solid red dot on a dark wallpaper is
+            // legible, and on a red one it is not.
+            let ring = AnnotationShape.pinDotRadius + AnnotationShape.pinRingGap
+            let halo = NSBezierPath(ovalIn: NSRect(x: point.x - ring, y: point.y - ring,
+                                                   width: ring * 2, height: ring * 2))
+            halo.lineWidth = AnnotationShape.pinRingWidth
+            NSColor.white.setStroke()
+            halo.stroke()
+
+        default:
+            guard let path = path(for: shape) else { return }
+            path.lineWidth = AnnotationShape.strokeWidth
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            ink?.setStroke()
+            path.stroke()
         }
     }
 
@@ -566,7 +622,9 @@ final class AnnotationCanvas: NSView {
     /// The view is flipped, so its y axis already matches `LogicalPoint`. Drawing a shape
     /// here and compositing the same shape into a screenshot share this convention, which
     /// is why the user sees the circle where they drew it rather than mirrored vertically.
-    static func bezier(for shape: AnnotationShape) -> NSBezierPath? {
+    ///
+    /// A pin has no path — it is filled, so `draw(_:)` paints it.
+    static func path(for shape: AnnotationShape) -> NSBezierPath? {
         let path = NSBezierPath()
         switch shape {
         case .stroke(let points):
@@ -589,6 +647,8 @@ final class AnnotationCanvas: NSView {
             path.line(to: CGPoint(x: to.x - head * cos(angle + .pi / 7),
                                   y: to.y - head * sin(angle + .pi / 7)))
             path.close()
+        case .pin:
+            return nil
         }
         return path
     }
@@ -664,7 +724,7 @@ final class AnnotationCanvas: NSView {
 enum AnnotationSafetyProbe {
     static var isRequested: Bool { CommandLine.arguments.contains("--annotate-safety") }
 
-    static func run() -> Never {
+    static func run() {
         setvbuf(stdout, nil, _IONBF, 0)
         let idle = requestedIdle()
         guard let display = CaptureEngine.mainDisplay() else {
@@ -704,24 +764,30 @@ enum AnnotationSafetyProbe {
             Log.flush()
             exit(1)
         }
-        dispatchMain()
+        // No `dispatchMain()` here: `start()` runs the application, and a second drain of the main
+        // queue from inside the first would park the thread before the application ever started.
     }
 
-    /// Start the probe on the main thread and never return.
+    /// Start on the main thread and never return.
     ///
-    /// `run()` builds an `NSWindow`, so it has to be on main; `App.init` has no such guarantee, and
-    /// when it landed on a background thread the overlay silently failed to enter the window
-    /// server's on-screen list — which the probe then reported as the overlay being unclickable.
+    /// `run()` builds an `NSWindow`, so it has to be on the main *thread* — and in a shell-launched
+    /// process the main actor is a pool thread until `NSApplication` runs, which is why the hop here
+    /// is a dispatch onto the main queue plus the application's own run loop rather than a
+    /// `Task { @MainActor }`: that task built the panel on a pool thread and AppKit refused it with
+    /// "NSWindow should only be instantiated on the main thread". `App.init` has no guarantee it runs
+    /// on main, hence the guard.
     static func start() -> Never {
-        if Thread.isMainThread {
-            MainActor.assumeIsolated { run() }
+        guard Thread.isMainThread else {
+            print("annotate-safety: not on the main thread at start — refusing to guess where AppKit is")
+            Log.flush()
+            exit(1)
         }
         DispatchQueue.main.async {
-            // Hopped through the main actor rather than asserting into it. Being on the main thread is
-            // not being on the main actor's executor, and `assumeIsolated` is undefined behaviour when
-            // the assumption is wrong — the crash of 2026-11-03 was that assertion in a timer block.
             Task { @MainActor in run() }
         }
+        NSApplication.shared.run()
+        // Unreachable: `run` never returns while the probe is alive, and the loop is what makes this
+        // function's `Never` honest if it ever did.
         while true { Thread.sleep(forTimeInterval: 3600) }
     }
 

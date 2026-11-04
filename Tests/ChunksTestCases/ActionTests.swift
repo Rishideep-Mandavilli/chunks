@@ -1155,6 +1155,39 @@ public enum ActionTests {
                    "saying the number on a failure reads as though it was applied: \(volumeFailure)")
         }
 
+        test("an open that did not come forward says so, and an unknown does not") {
+            // The card promised him a window he would end up looking at. Measured 2026-11-05: a
+            // YouTube search opened behind his editor and the card said `Opened …` with no hint that
+            // nothing had moved, which is the difference between a bug he can see and one he can't.
+            expectEqual(ToolLayer.outcomeLine(for: .openApp(name: "Notes"), succeeded: true,
+                                              cameForward: true),
+                        "Opened Notes.")
+            let behind = ToolLayer.outcomeLine(for: .openApp(name: "Notes"), succeeded: true,
+                                               cameForward: false)
+            expect(behind.contains("Opened Notes."),
+                   "it did open, and a line that hides that sends him to look for a broken app: \(behind)")
+            expect(behind.contains("behind"),
+                   "and it must say the screen did not move: \(behind)")
+            // `nil` means nobody could tell — a scheme with no resolvable handler, a volume write.
+            // Saying "stayed behind" there would be inventing a failure, which is the other half of
+            // the same lie.
+            expectEqual(ToolLayer.outcomeLine(for: .openApp(name: "Notes"), succeeded: true,
+                                              cameForward: nil),
+                        "Opened Notes.")
+            expectEqual(ToolLayer.outcomeLine(for: .setVolume(percent: 40), succeeded: true,
+                                              cameForward: false),
+                        "Volume set to 40%.",
+                        "a volume has no window to come forward, so the clause must not attach")
+            // The verbs whose handler is resolvable are measured, so their lines must carry it too —
+            // a measured `false` that is thrown away is a check that quietly stopped meaning anything.
+            expect(ToolLayer.outcomeLine(for: .email(to: "a@b.com"), succeeded: true,
+                                         cameForward: false).contains("behind"),
+                   "the mail line discards the measurement it was given")
+            expect(ToolLayer.outcomeLine(for: .runShortcut(name: "Morning"), succeeded: true,
+                                         cameForward: false).contains("behind"),
+                   "the shortcut line discards the measurement it was given")
+        }
+
         // MARK: ToolRunner — the halves that need no disk and no launch
 
         test("the app name matches the bundle ignoring case and the .app suffix") {

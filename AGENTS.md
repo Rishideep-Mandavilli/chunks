@@ -107,6 +107,7 @@ by its code signature, so the signature is a product requirement, not packaging 
 **Verifying a screen point without pressing anything:**
 
 ```bash
+.build/debug/chunks --probe-crash       # dies on purpose, to prove a fault names the event it died on
 .build/debug/chunks --probe-ax 855,553                  # global top-left logical points
 .build/debug/chunks --probe-ax 1287,86 --named "free claude code"   # + what the name fallback finds
 ```
@@ -193,6 +194,25 @@ because the first version of that check matched the prose describing the rule ra
 The same reasoning covers `Thread.sleep` on the main actor: waiting for a window to land is a
 `Task.sleep`, never a blocking one, because the notch freezes for the length of the wait the user is
 watching.
+
+**A crash handler may not allocate, format, dispatch, or flush.** `CrashBreadcrumb` installs handlers
+for SIGSEGV/SIGBUS/SIGILL/SIGABRT/SIGTRAP that name the last mouse event and the window it landed on
+before re-raising, because four reports on 2026-11-04 answered no questions — a fault does not flush
+the log, so the file ended before the crash. The first version of the handler built its sentence with
+string interpolation, opened the log through `URL` and `ISO8601DateFormatter`, and called
+`Log.flush()`, which is `queue.sync {}`. Every one of those allocates, and this app's fault class is a
+bad-pointer dereference inside Swift Concurrency — the kind of crash that often happens while the
+thread holds the malloc zone lock. A handler that mallocs there does not crash: **it hangs**, with the
+notch frozen, the microphone and the keyboard tap still held, and the next launch standing down on the
+single-instance guard. So the words are `strdup`ed at install, the log's descriptor is opened at
+install, and the handler's only calls are `strlen` and `write`. (`snprintf` would be the third and
+Swift does not expose variadic C functions, which is why the sentence is written in pieces.) Install it
+at the top of `applicationDidFinishLaunching`, not only in `CompanionManager.start()`: the surfaces are
+built before `start()` runs, and an ad-hoc rebuild's crashes land in exactly that window. And
+`--probe-crash` runs against `.build/debug/chunks`, never the installed bundle — a check that
+deliberately segfaults the app in `/Applications` files a production report every run and takes his
+session down with it, and a stale bundle that does not know the flag launches the full app inside a
+`$( )` capture, which hangs the gate. That is why the check is bounded to 30 seconds.
 
 1. **All coordinates are `LogicalPoint`.** Screenshots are device pixels (2x); AX reports
    logical points; `NSPanel` frames are logical. Conversion happens exactly once, inside
@@ -364,6 +384,17 @@ watching.
    after a failed first hop, and that model *was the hedge's partner* — it had already refused, in
    parallel, and re-asking it spent another 15.5s on a turn that took 51.4s to answer a question
    worth 9. `BrainGateway` now keeps the set of models this turn has heard from and skips forward.
+   **A hedge failure carries the model that produced it, and the hedge never re-dispatches one.**
+   `RaceResult.failed` names its author and the thrown wrapper (`HedgedFailure`) carries it to the
+   retry decision, because the hedge asks two models at once and the loop is standing on the lead:
+   measured 2026-11-05, a partner's 429 produced `turn: gemini-3.6-flash failed — rate limited`, two
+   lines in one turn disagreeing about which model refused, and twelve `skipping … — the hedge
+   already asked it` lines with zero recorded refusals for the model they skipped. Marking the
+   partner merely for being *dispatched* was the other half: the attempt loop re-enters the hedge on a
+   fast-503 retry and put a second request at the same per-minute bucket each time, so the partner is
+   now marked when it answers or refuses and stands down if this turn already asked it. An
+   unattributed refusal is not worth caching, and a skip nobody can trace reads as a dropped healthy
+   fallback.
 
 7. **A listen-only keyboard tap needs Input Monitoring, not just Accessibility.**
    `CGEvent.tapCreate` for key events is gated by `kTCCServiceListenEvent`. With Accessibility
@@ -1087,6 +1118,21 @@ watching.
     chosen deliberately, because a false refusal is one he can overrule by looking, and a false success
     is one he cannot.
 
+    **An open is believed from the screen, not from LaunchServices.** `configuration.activates = true`
+    is a request, not a result, and macOS suppresses it for an app that is not already front — which
+    is every menu-bar app, including this one. Measured 2026-11-05: `[DO:open_url:youtube]` opened the
+    search, the card said `Opened www.youtube.com/results?…`, and his screen never moved. So the open
+    verbs go through `ToolRunner.runForOutcome`, which resolves the handler's bundle id, polls 0.8 s
+    for it to be frontmost, and on a miss calls `activate(options:)` once and polls 1.5 s more; the
+    outcome line then carries the truth, and a `false` says *"— it stayed behind what you have open"*
+    rather than pretending. Two rules keep it from becoming a new problem: if the front app at the
+    decision point is neither the handler nor the app that held the screen **before** the open, he
+    switched on his own and Chunks does not fight him for it; and `cameForward == nil` — no resolvable
+    handler, a volume write — is reported as a plain success, because an unknown is not a refusal. The
+    measurement is still app-level, not window-level: a tab that lands in a background window of an
+    already-front browser reads as came forward. That is the reveal's `revealLanded` rule applied one
+    level up, and the level is not yet closed.
+
     **`[DO:open_file_with:TextEdit|notes.md]` shares that policy, and now shares its home.** It is the
     file route rather than the explorer UI — the same app opens the same document whether its window is
     on this Space or closed, and nothing moves his cursor — but it **puts a document's contents on
@@ -1162,8 +1208,8 @@ watching.
 
 ## Current state
 
-**The app runs. 818 of 818 tests green across 46 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 48 checks: 42–44 pass and 4–6 skip,
+**The app runs. 819 of 819 tests green across 46 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 49 checks: 43–45 pass and 4–6 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red

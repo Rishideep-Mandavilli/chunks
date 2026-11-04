@@ -803,22 +803,31 @@ public enum ToolLayer {
     }
 
     /// One line confirming what happened, after the shell ran it.
+    ///
+    /// `cameForward` is the second half of the promise for the verbs that bring something up: "Open
+    /// YouTube" agreed to a browser he would end up looking at, and an app that opened behind the
+    /// window he was in is a result he cannot see. `nil` means nobody could tell — which is said as
+    /// the plain success line, never as a failure, because an unknown is not a refusal.
     public static func outcomeLine(for request: DoRequest, succeeded: Bool,
-                                   commandStillRunning: Bool = false) -> String {
+                                   commandStillRunning: Bool = false,
+                                   cameForward: Bool? = nil) -> String {
+        func forward(_ text: String) -> String {
+            cameForward == false ? text + " — it stayed behind what you have open." : text
+        }
         switch request {
         case .openApp(let name):
-            return succeeded ? "Opened \(name)." : "Could not open \(name)."
+            return succeeded ? forward("Opened \(name).") : "Could not open \(name)."
         case .setVolume(let percent):
             return succeeded ? "Volume set to \(percent)%." : "The volume refused to change."
         case .openURL(let url, let browser):
             let target = browser ?? "your browser"
-            return succeeded ? "Opened \(DoRequest.displayURL(url)) in \(target)."
+            return succeeded ? forward("Opened \(DoRequest.displayURL(url)) in \(target).")
                              : "Nothing opened \(DoRequest.displayURL(url))."
         case .runShortcut(let name):
-            return succeeded ? "Ran the shortcut \"\(name)\"."
+            return succeeded ? forward("Ran the shortcut \"\(name)\".")
                              : "Shortcuts did not take the run request for \"\(name)\"."
         case .email(let address):
-            return succeeded ? "Opened a new message to \(address)."
+            return succeeded ? forward("Opened a new message to \(address).")
                              : "Nothing opened a new message."
         case .addRoutine(let title, let cadence, _):
             return succeeded ? "Added \"\(title)\", \(cadence.inSentence)."
@@ -875,7 +884,7 @@ public enum ToolLayer {
             // Names the file, not the whole path: he read the path on the card, and what he needs back
             // is whether it opened.
             let name = (path as NSString).lastPathComponent
-            return succeeded ? "Opened \(name) in \(app)."
+            return succeeded ? forward("Opened \(name) in \(app).")
                              : "\(app) did not open \(name)."
         case .moveWindow(let app, let title, let target):
             // Says *where*, because with asking off this line is the only record that anything happened,

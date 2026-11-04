@@ -826,6 +826,11 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        // First, before anything that can fault. Four crash reports on 2026-11-04 answered no
+        // questions because a fault does not flush the log, so the last thing in the file was the
+        // last thing that went right. This writes one async-signal-safe line naming the last mouse
+        // event and the window it landed on, then re-raises so macOS still files its report.
+        CrashBreadcrumb.install()
         refreshAllPermissions()
         // A process start is a conversation start. This is the boundary that covers a relaunch, a
         // reboot and a login all at once, because from the app's point of view they are the same
@@ -2861,8 +2866,14 @@ final class CompanionManager: ObservableObject {
             }
         default:
             Task {
-                let succeeded = await ToolRunner.run(request)
-                report(ToolLayer.outcomeLine(for: request, succeeded: succeeded), succeeded)
+                // Through `runForOutcome`, not `run`: for the verbs that bring something up, "it
+                // opened" and "it is the window he is now looking at" are different claims, and the
+                // card has been promising the second while measuring the first.
+                let outcome = await ToolRunner.runForOutcome(request)
+                Log.write("tool: \(outcome.opened ? "ran" : "refused") — "
+                          + "came forward \(outcome.cameForward.map(String.init) ?? "unknown")")
+                report(ToolLayer.outcomeLine(for: request, succeeded: outcome.opened,
+                                             cameForward: outcome.cameForward), outcome.opened)
             }
         }
     }

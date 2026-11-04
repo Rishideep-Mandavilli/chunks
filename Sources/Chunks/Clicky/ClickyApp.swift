@@ -33,6 +33,9 @@ struct leanring_buddyApp: App {
         if CommandLine.arguments.contains("--self-test") {
             SelfTest.run()
         }
+        if CrashProbe.isRequested {
+            CrashProbe.start()
+        }
         if let point = AXProbe.requestedPoint() {
             AXProbe.run(at: point)
         }
@@ -233,6 +236,11 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before the surfaces are built. `CompanionManager.start()` arms the breadcrumb too, but
+        // `start()` runs after the notch panel, the app window and the first-run sheet have been
+        // constructed — and an ad-hoc rebuild's crashes land in exactly that launch window, which is
+        // how a report can arrive with no breadcrumb in it. `install()` is idempotent.
+        CrashBreadcrumb.install()
         // The first thing installed, before anything that could raise.
         //
         // An Objective-C exception thrown on the main thread inside a Swift Concurrency frame does not

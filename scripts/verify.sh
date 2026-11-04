@@ -19,6 +19,8 @@ if [[ ! -x "$APP" || "$APP" != *.app/Contents/MacOS/* ]]; then
   exit 1
 fi
 BIN="$APP"
+# The crash probe deliberately faults, so it runs against the debug binary rather than $BIN.
+DEV_BIN=".build/debug/chunks"
 export CHUNKS_DEV=1
 RENDER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chunks-verify.XXXXXX")" || exit 1
 printf 'render artifacts: %s\n' "$RENDER_DIR"
@@ -593,6 +595,39 @@ if ! grep -qE 'UserDefaults\.standard\.(set|removeObject)' Sources/Chunks/*Probe
 else
   printf '  \033[31mFAIL\033[0m  a probe writes UserDefaults again — running it would switch his app\n'
   fail=$((fail + 1)); failures+=("probe must not persist settings")
+fi
+# A crash that says nothing is a crash that teaches nothing. Four reports in eighteen hours all
+# faulted inside SwiftUI's event dispatch and none of them named the surface or the event, because a
+# fault does not flush the log — so the app installs a signal handler that writes one line first, and
+# this check requires both halves: that the process dies on the signal it means to die on, and that
+# the sentence arrives before it does. Exit 139 is SIGSEGV; anything else means the probe stopped
+# faulting and the check would otherwise pass on silence.
+# Run it against the debug binary, not the installed bundle: this probe exists to die, and dying in
+# `/Applications` files a production crash report on every gate run and takes his running app down
+# with it. The 30-second bound is load-bearing: a binary that does not know the flag launches the
+# full app inside this capture and the gate never returns — a hang this repo has already caused once.
+"$DEV_BIN" --probe-crash > "$RENDER_DIR/crash.txt" 2>&1 &
+crash_pid=$!
+crash_wait=0
+while kill -0 "$crash_pid" 2>/dev/null && [[ $crash_wait -lt 30 ]]; do
+  sleep 1; crash_wait=$((crash_wait + 1))
+done
+if kill -0 "$crash_pid" 2>/dev/null; then
+  kill -9 "$crash_pid" 2>/dev/null
+  crash_status=99
+  printf '        the crash probe did not exit within %ss — killed\n' "$crash_wait"
+else
+  wait "$crash_pid"; crash_status=$?
+fi
+crash_out="$(cat "$RENDER_DIR/crash.txt")"
+if [[ $crash_status -eq 139 ]] && printf '%s' "$crash_out" | grep -q "chunks faulted on SIGSEGV"; then
+  printf '  \033[32mPASS\033[0m  a fault names the last mouse event and the surface it landed on\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  the crash breadcrumb did not speak (exit %s, wanted 139 + the sentence)\n' \
+    "$crash_status"
+  printf '        %s\n' "$(printf '%s' "$crash_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("crash breadcrumb")
 fi
 echo
 

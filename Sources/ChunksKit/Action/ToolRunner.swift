@@ -56,6 +56,117 @@ public enum ToolRunner {
         return await WindowDriver.place(candidate, to: rect)
     }
 
+    /// Run an approved effect and report what the screen did, not what the call answered.
+    ///
+    /// `run` answers "did LaunchServices take the request", which is not the question the card
+    /// promised: measured 2026-11-05, `[DO:open_url:youtube]` opened the search, reported
+    /// `Opened www.youtube.com/results?…`, and left his screen exactly where it was — the browser
+    /// came up behind the window he was in. The reveal learned this lesson already: an effect is
+    /// believed from the window on screen. This is that rule applied to the verbs that bring
+    /// something forward.
+    ///
+    /// `@MainActor` for the same reason `run` is: this launches GUI applications and asks AppKit who
+    /// is frontmost.
+    @MainActor
+    public static func runForOutcome(_ request: DoRequest) async -> OpenOutcome {
+        // Who had the screen before the effect. This is what makes the second attempt safe: if the
+        // front app at the decision point is neither the handler nor this one, he switched of his own
+        // accord, and raising the browser over what he deliberately moved to is a worse bug than the
+        // one being fixed.
+        let baseline = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let opened = await run(request)
+        guard opened else { return OpenOutcome(opened: false, cameForward: nil) }
+        guard let handler = await handlerBundleID(for: request) else {
+            // No handler to ask. An unknown bundle id is not a refusal, and saying so is the
+            // difference between this check informing him and lying to him.
+            return OpenOutcome(opened: true, cameForward: nil)
+        }
+        let forward = await ensureFrontmost(handler, unlessHeSwitchedTo: baseline)
+        return OpenOutcome(opened: true, cameForward: forward)
+    }
+
+    /// Whether the app that owns what was just opened is frontmost, asking it once directly if not.
+    ///
+    /// `activates = true` is a request, not a result. This polls briefly, and on the first miss makes
+    /// the one move that is unambiguously within what he approved — raising the app he named — before
+    /// reporting. Nothing here moves the pointer, which is the invariant the press path is built on.
+    ///
+    /// The polls are short on purpose: this sits on the path that produces the card's outcome line,
+    /// and a launch-led plan step waits on it before it resumes.
+    @MainActor
+    private static func ensureFrontmost(_ bundleID: String,
+                                        unlessHeSwitchedTo baseline: String?) async -> Bool {
+        if await isFrontmost(bundleID, within: 0.8) { return true }
+        let now = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        guard now == nil || now == baseline else {
+            // Something else holds the screen that did not hold it before the open. That is his doing,
+            // and it wins: the effect he asked for is running, just not raised.
+            return false
+        }
+        guard let app = NSWorkspace.shared.runningApplications
+            .first(where: { $0.bundleIdentifier == bundleID }) else { return false }
+        app.activate(options: [.activateAllWindows])
+        return await isFrontmost(bundleID, within: 1.5)
+    }
+
+    @MainActor
+    private static func isFrontmost(_ bundleID: String, within seconds: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID { return true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID
+    }
+
+    /// Which application owns the effect this request asked for, when that is knowable.
+    @MainActor
+    private static func handlerBundleID(for request: DoRequest) async -> String? {
+        switch request {
+        case .openApp(let name):
+            guard let path = resolveApplicationPath(name: name,
+                                                    candidates: installedApplications()) else { return nil }
+            return Bundle(path: path)?.bundleIdentifier
+        case .openURL(let url, let browser):
+            if let browser,
+               let path = resolveApplicationPath(name: browser, candidates: installedApplications()) {
+                return Bundle(path: path)?.bundleIdentifier
+            }
+            guard let target = URL(string: url) else { return nil }
+            return await defaultHandlerBundleID(for: target)
+        case .openFileWith(let app, _):
+            guard let path = resolveApplicationPath(name: app,
+                                                    candidates: installedApplications()) else { return nil }
+            return Bundle(path: path)?.bundleIdentifier
+        case .runShortcut(let name):
+            guard let url = DoRequest.shortcutURL(name: name) else { return nil }
+            return await defaultHandlerBundleID(for: url)
+        case .email(let address):
+            guard let url = DoRequest.mailtoURL(address: address) else { return nil }
+            return await defaultHandlerBundleID(for: url)
+        default:
+            return nil
+        }
+    }
+
+    @MainActor
+    private static func defaultHandlerBundleID(for url: URL) async -> String? {
+        guard let appURL = try? await NSWorkspace.shared.urlForApplication(toOpen: url) else { return nil }
+        return Bundle(path: appURL.path)?.bundleIdentifier
+    }
+
+    /// The effect of an open, as the screen reports it.
+    public struct OpenOutcome: Sendable {
+        public let opened: Bool
+        /// `nil` when there was no handler to ask — unknown, which is not the same claim as false.
+        public let cameForward: Bool?
+
+        public init(opened: Bool, cameForward: Bool?) {
+            self.opened = opened
+            self.cameForward = cameForward
+        }
+    }
+
     /// `@MainActor` because this launches GUI applications, and the shell that calls it already
     /// lives on the main actor.
     @MainActor

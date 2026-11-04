@@ -358,6 +358,7 @@ final class BrainGateway {
                                                 deadline: attemptDeadline,
                                                 asksForThinking: thinkingLevelAccepted,
                                                 markAsked: { asked.insert($0) },
+                        isAsked: { asked.contains($0) },
                                                 onTextChunk: onTextChunk)
                     } else {
                         asked.insert(candidate.id)
@@ -397,21 +398,32 @@ final class BrainGateway {
                     }
                     lastError = error
                     let waited = Date().timeIntervalSince(attemptStarted)
-                    let kind = classify(error)
+                    // The hedge asks two models at once, so the error arriving here may belong to
+                    // neither of the ones this loop is nominally standing on. Unwrap it once: the
+                    // decision is taken on the underlying failure, and every line that names a model
+                    // names the one that actually refused — measured 2026-11-05, where a partner's
+                    // 429 produced a line saying the lead had been rate limited, and the two lines in
+                    // the same turn contradicted each other.
+                    let refused: (model: String, error: Error)
+                    if let hedged = error as? HedgedFailure {
+                        refused = (hedged.model, hedged.underlying)
+                    } else {
+                        refused = (candidate.id, error)
+                    }
+                    let kind = classify(refused.error)
                     if case .badRequest(let detail) = kind,
                        RetryPolicy.rejectsThinkingLevel(detail), thinkingLevelAccepted {
                         thinkingLevelAccepted = false
-                        // Remembered only on a hop with one request behind its errors. The first hop
-                        // is hedged — two models asked at once, sharing one `asksForThinking`, and
-                        // `RaceResult.failed` does not carry which one refused. Marking the lead for
-                        // the partner's 400 would cost the lead the thinking diet forever, and the
-                        // diet is measured to halve a served turn (21–24s against 42–49s), so an
-                        // unattributable refusal is not worth caching.
-                        if index != 0 { thinkingRejected.insert(candidate.id) }
+                        // Remembered on a hop with one request behind its errors. The first hop is
+                        // hedged — two models asked at once — and each refusal is now attributed to
+                        // its own model inside `hedged`, which caches the diet for the one that
+                        // actually rejected it. What is left here is the lead's own retry, where the
+                        // field is dropped and the same model is asked again within the turn.
+                        if index != 0 { thinkingRejected.insert(refused.model) }
                         // Said out loud, because a turn that succeeds on the second attempt looks like
                         // a slow turn in the log and a model that cannot be told to think less looks
                         // like a contended one.
-                        Log.write("turn: \(candidate.id) rejects thinking_level (\(detail.prefix(90))) "
+                        Log.write("turn: \(refused.model) rejects thinking_level (\(detail.prefix(90))) "
                             + "— asking it again without the field")
                     }
                     let decision = RetryPolicy.decide(for: kind, attempt: attempt,
@@ -427,8 +439,11 @@ final class BrainGateway {
                     case .fail:
                         action = "failing the turn"
                     }
-                    Log.write("turn: \(candidate.id) failed after "
-                        + "\(String(format: "%.1f", waited))s — \(kind.logName); \(action)")
+                    Log.write("turn: \(refused.model) failed after "
+                        + "\(String(format: "%.1f", waited))s — \(kind.logName); \(action)"
+                        + (refused.model == candidate.id ? ""
+                           : " (the hedge\'s partner refused; this decision is being applied to "
+                             + "\(candidate.id)\'s hop)"))
                     switch decision {
                     case .retrySameModel(let after):
                         try? await Task.sleep(nanoseconds: UInt64(after * 1_000_000_000))
@@ -688,9 +703,19 @@ final class BrainGateway {
         }
     }
 
+    /// A hedge failure with the model that produced it attached, so the retry decision and the log
+    /// line that reports it can agree about who refused.
+    struct HedgedFailure: Error, Sendable {
+        let underlying: Error
+        let model: String
+    }
+
     private enum RaceResult: Sendable {
         case served(String, model: String)
-        case failed(Error)
+        /// The model is named because the turn's next decision depends on which one refused: the
+        /// hedge asks two at once, and a failure with no name on it cannot be cached, logged or
+        /// skipped honestly.
+        case failed(Error, model: String)
         /// The hedge stood down because the lead model started talking first.
         case abstained
     }
@@ -708,6 +733,11 @@ final class BrainGateway {
                         deadline: Date,
                         asksForThinking: Bool,
                         markAsked: @escaping (String) -> Void,
+                        /// Whether this turn has already put a request to a model. The attempt loop
+                        /// re-enters the hedge on a fast-503 retry, and re-dispatching the partner
+                        /// each time spends that model's per-minute budget on copies of one question
+                        /// — measured 2026-11-05 as three requests against one bucket in a turn.
+                        isAsked: @escaping (String) -> Bool,
                         onTextChunk: @escaping @MainActor @Sendable (String) -> Void) async throws -> String {
         let claim = StreamClaim()
         let started = Date()
@@ -727,7 +757,7 @@ final class BrainGateway {
                                             onTextChunk: gated(model: model.id))
                 return .served(text, model: model.id)
             } catch {
-                return .failed(error)
+                return .failed(error, model: model.id)
             }
         }
 
@@ -739,6 +769,10 @@ final class BrainGateway {
                 // it stands down and costs nothing.
                 try? await Task.sleep(nanoseconds: UInt64(Self.hedgeAfterSeconds * 1_000_000_000))
                 if Task.isCancelled || claim.isClaimed { return .abstained }
+                if isAsked(partner.id) {
+                    Log.write("turn: \(partner.id) was already asked this turn — not hedged again")
+                    return .abstained
+                }
                 // The partner has its own per-minute budget, and a hedge that walks into its cap
                 // is worse than waiting: it spends the request and returns a 429. Standing down
                 // keeps the lead's retry path exactly as the policy describes it.
@@ -748,7 +782,6 @@ final class BrainGateway {
                     return .abstained
                 }
                 self.limiter(for: partner.id).consume()
-                markAsked(partner.id)
                 Log.write("turn: nothing from \(lead.id) after "
                     + "\(String(format: "%.1f", Self.hedgeAfterSeconds))s — asking \(partner.id) "
                     + "alongside it")
@@ -756,6 +789,7 @@ final class BrainGateway {
             }
 
             var failure: Error?
+            var firstFailure: (model: String, error: Error)?
             while !group.isEmpty {
                 let result = try await group.next()
                 switch result {
@@ -766,16 +800,37 @@ final class BrainGateway {
                             + "\(String(format: "%.1f", Date().timeIntervalSince(started)))s")
                     }
                     return text
-                case .failed(let error):
+                case .failed(let error, let model):
                     // Held, not thrown: the other request may still be about to answer, and the
                     // loser's error is not the user's problem if the winner arrives.
                     if failure == nil { failure = error }
+                    if firstFailure == nil { firstFailure = (model, error) }
+                    // Named, in the log and in the turn's memory. Measured 2026-11-05: twelve lines
+                    // said `skipping gemini-3.1-flash-lite — the hedge already asked it` while the
+                    // log held zero refusals for that model, because this branch knew the error and
+                    // not its author. A skip nobody can trace reads as a dropped healthy fallback,
+                    // and a thinking-level 400 that is never attributed is paid again next turn.
+                    markAsked(model)
+                    let kind = classify(error)
+                    Log.write("turn: \(model) refused in the hedge after "
+                        + "\(String(format: "%.1f", Date().timeIntervalSince(started)))s — "
+                        + kind.logName)
+                    if case .badRequest(let detail) = kind, RetryPolicy.rejectsThinkingLevel(detail) {
+                        thinkingRejected.insert(model)
+                    }
                 case .abstained, .none:
                     break
                 }
             }
             group.cancelAll()
-            throw failure ?? BrainError.transport("hedged stream ended without a reply")
+            // Wrapped with its author. The caller classifies and decides on the underlying error,
+            // but its log line has to name the model that actually refused — measured 2026-11-05,
+            // where a partner's 429 produced a line saying the *lead* had been rate limited, and the
+            // two lines in the same turn contradicted each other.
+            if let first = firstFailure {
+                throw HedgedFailure(underlying: first.error, model: first.model)
+            }
+            throw BrainError.transport("hedged stream ended without a reply")
         }
     }
 

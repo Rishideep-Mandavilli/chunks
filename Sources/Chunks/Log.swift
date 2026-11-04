@@ -77,6 +77,31 @@ enum Log {
         NSLog("%@", line)
     }
 
+    /// Appends one line synchronously, for a process that is about to die.
+    ///
+    /// `write` is asynchronous on purpose, and a thread that has just faulted may never let that queue
+    /// drain — which is why four crash reports on 2026-11-04 named neither the surface nor the event
+    /// that triggered them. This path opens the file with `O_APPEND` and writes in place of the queue.
+    /// Allocating inside a signal handler is technically unsafe, and the alternative is losing the one
+    /// sentence that makes the next report answerable, so the trade is made deliberately rather than
+    /// by accident.
+    static func appendEmergency(_ message: String) {
+        let line = formatted(message) + "\n"
+        let descriptor = open(fileURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        guard descriptor >= 0 else { return }
+        defer { close(descriptor) }
+        line.withCString { pointer in
+            var remaining = strlen(pointer)
+            var cursor = pointer
+            while remaining > 0 {
+                let written = Darwin.write(descriptor, cursor, remaining)
+                if written <= 0 { break }
+                cursor += Int(written)
+                remaining -= written
+            }
+        }
+    }
+
     /// Blocks until every queued line has reached the file.
     ///
     /// `write` is deliberately off the calling path, so a process that exits immediately after

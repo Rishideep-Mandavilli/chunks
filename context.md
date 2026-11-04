@@ -3270,3 +3270,50 @@ layer into the pure one and tested there — including the case that a full path
 give the same answer.
 
 Green: 827/827, gate 51 passed / 2 environment skips, smoke 18/18.
+
+## 2026-11-04 (evening) — my fix was not the fix, and the app now says what it was doing when it died
+
+He reported it again, with a screenshot and a recording: the answer appeared on the card, **nothing was
+spoken**, it kept loading for another minute, and then Chunks closed itself. Two more crash reports,
+19:45 and 19:48 — and the installed binary has been the off-main build since 01:20, so I checked that
+before anything else. **The hop did not stop it.** I said it would; it did not.
+
+What the two new stacks say:
+
+- The top five frames are the same as the timer crashes: `swift_getObjectType` ←
+  `swift_task_isMainExecutorImpl` ← `MainActor.assumeIsolated`.
+- The caller is not ours. Twice it is `NSHostingView.mouseEntered` → `HoverEventDispatcher`; once it is
+  `NSHostingView.mouseDown` → `UpdateGroup.dispatchActions` → `_ButtonGesture.internalBody`. So it is
+  **SwiftUI's event machinery in general**, not the hover feature — deleting the 28 `.onHover` sites
+  would not have closed it, which is why I did not do that first.
+- The bottom is `-[NSApplication run]` in every one: the main thread, the normal event loop, no blocked
+  wait on the stack.
+
+Three attempts to reproduce it in isolation, all honest negatives. A minimal SwiftUI card with two
+buttons, in a plain window, survives a dispatched `leftMouseDown`. So does the **real** `NotchHUDView`
+with a confirm row (`--probe-hover`). So does the same delivery from inside a `Task { @MainActor }`,
+and a card that binds `.onHover` on its own. What I could not do is deliver a *real* mouse event to the
+app's own non-activating panel while another app is frontmost — that needs his pointer, and posting
+events there would move it.
+
+So the missing thing was evidence, not another guess. A fault does not flush: four crash reports named
+no surface, no event, and no last log line, because the process died before the buffer went out.
+`CrashBreadcrumb` now installs handlers for SIGSEGV/SIGBUS/SIGILL/SIGABRT **and SIGTRAP** — the first
+version missed SIGTRAP, and the very first deliberate fault turned into a Swift `Fatal error:` instead
+of the SIGSEGV I was looking for — that write one async-signal-safe line naming the last mouse event
+and the surface it landed on, flush the log, then re-raise so macOS still files its report.
+`--probe-crash` dies on purpose and the gate requires exit 139 *plus* the sentence:
+
+```
+chunks faulted on SIGSEGV — last mouse event: leftMouseDown on another window at uptime 2833s
+```
+
+The next time it closes itself, the log will say what it was doing.
+
+**The silence got the same treatment.** `speakCaptioned` drew the caption, called the speaker, and
+reported nothing — so "it is not speaking" and "it is speaking and I cannot hear it" were the same
+record, and the two `try?` call sites swallowed any error. Every sentence now logs its length, its
+seconds and whether it was refused.
+
+Green: 827/827, gate 51 passed / 4 environment skips (the two new canaries and the main-thread measure
+are in it), smoke 18/18.

@@ -139,6 +139,15 @@ struct leanring_buddyApp: App {
                 }
             }
         }
+        if CrashProbe.isRequested {
+            // The instrument that tells us what the next crash was doing. This process is meant to die.
+            CrashProbe.start()
+        }
+        if HoverProbe.isRequested {
+            // The crash of 2026-11-04 is inside SwiftUI, so the only way to watch the path is to walk
+            // it deliberately, in a process whose death is the answer.
+            HoverProbe.start()
+        }
         if MainThreadProbe.isRequested {
             // The thread, not the code: this is the only way to see the state a SwiftUI callback
             // crashes in, since the crashing call site belongs to SwiftUI.

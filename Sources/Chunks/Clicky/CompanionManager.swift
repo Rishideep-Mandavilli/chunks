@@ -839,6 +839,10 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        // First, before anything that can fault: four crash reports today and not one of them says
+        // which surface or which event. A fault does not flush, so the evidence was being lost with
+        // the process.
+        CrashBreadcrumb.install()
         refreshAllPermissions()
         // A process start is a conversation start. This is the boundary that covers a relaunch, a
         // reboot and a login all at once, because from the app's point of view they are the same
@@ -4089,12 +4093,22 @@ final class CompanionManager: ObservableObject {
     ///
     /// `speakText` returns as soon as playback starts, so the wait is on `isPlaying` — the only honest
     /// signal this client gives.
+    /// Say the words, and say afterwards whether they were said.
+    ///
+    /// The caption is drawn before the voice starts, so a silent speaker and a working one look the
+    /// same on screen — and on 2026-11-04 the answer appeared on the card with no speech at all and
+    /// nothing in the log about it. Every call now records its own outcome, because the rule this
+    /// project already applies to an act applies to a sentence: something he cannot hear and cannot
+    /// find in the record is indistinguishable from something that never happened.
     private func speakCaptioned(_ text: String) async throws {
         captions.show(text)
+        let started = Date()
         do {
             try await ttsClient.speakText(text)
         } catch {
             captions.hide()
+            Log.write("voice: refused after \(String(format: "%.1f", Date().timeIntervalSince(started)))s "
+                + "(\(text.count) chars) — \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
             throw error
         }
         var waited = 0.0
@@ -4103,6 +4117,10 @@ final class CompanionManager: ObservableObject {
             waited += 0.25
         }
         captions.hide()
+        Log.write("voice: spoke \(text.count) chars in "
+            + "\(String(format: "%.1f", Date().timeIntervalSince(started)))s"
+            + (waited >= Self.captionCeilingSeconds ? " — stopped waiting at the ceiling, "
+                + "the voice may still be playing" : ""))
     }
 
     private func speakCreditsErrorFallback() {        let utterance = "I can't reach the model right now. Chunks will try again in a moment."

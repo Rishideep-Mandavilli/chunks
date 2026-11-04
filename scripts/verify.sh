@@ -543,6 +543,21 @@ else
 fi
 check "main thread: a blocked loop is measurable, and the act path does not block it" \
   "$BIN" --probe-mainthread
+check "hover: a click dispatched into the real card does not fault the process" \
+  "$BIN" --probe-hover
+# A crash that says nothing is a crash that teaches nothing. Four reports in eighteen hours all faulted
+# inside SwiftUI's event dispatch and none of them named the surface or the event, because a fault does
+# not flush the log — so the app now installs a signal handler that writes one line first, and this
+# check dies on purpose to prove the line arrives. Exit 139 is the pass condition.
+crash_out="$("$BIN" --probe-crash 2>&1)"; crash_status=$?
+if [[ $crash_status -eq 139 ]] && printf '%s' "$crash_out" | grep -q "faulted on SIGSEGV — last mouse event: leftMouseDown"; then
+  printf '  \033[32mPASS\033[0m  a fault names the last mouse event and the surface it landed on\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  a crash still leaves no trace (exit %d)\n' "$crash_status"
+  printf '        %s\n' "$(printf '%s' "$crash_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("crash breadcrumb")
+fi
 check "bundle: universal, matching deployment target, hardened with exact entitlements" \
   python3 - "$BIN" "$PWD/scripts/Chunks.entitlements" <<'PY'
 import json, pathlib, plistlib, re, subprocess, sys

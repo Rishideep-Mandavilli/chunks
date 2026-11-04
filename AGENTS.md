@@ -154,6 +154,8 @@ finds a desktop icon. Two more read-only doors came out of the semantic work:
 .build/debug/chunks --probe-voice-answer "yes"  # what a spoken sentence would do to the open card, answering nothing
 .build/debug/chunks --probe-ink        # the ink that stays on screen: inert, invisible to captures, lets go
 .build/debug/chunks --probe-mainthread # does a wait in the act path stall the main run loop
+.build/debug/chunks --probe-hover      # a click dispatched into the real card — does the process survive
+.build/debug/chunks --probe-crash      # dies on purpose, to prove a fault names the last mouse event
 .build/debug/chunks --render-caption /tmp/caption.png   # the speech caption, drawn offscreen, three rows
 .build/debug/chunks --render-ink /tmp/ink.png   # one of every drawn mark, offscreen, to look at
 .build/debug/chunks --render-ui /tmp/notch-card.png   # every notch state drawn offscreen, to look at
@@ -197,20 +199,30 @@ The same reasoning covers `Thread.sleep` on the main actor: waiting for a window
 `Task.sleep`, never a blocking one, because the notch freezes for the length of the wait the user is
 watching.
 
-**And nothing that blocks may run on the main thread at all, because the next callback inherits the
-state.** A third report came 16 seconds after an answer on 2026-11-04, with the same
-`swift_getObjectType` fault and *no `assumeIsolated` of ours anywhere on the stack*: the caller was
-SwiftUI — `NSHostingView.mouseEntered` → `HoverEventDispatcher` → its own `assumeIsolated`. The
-crashing assertion is not ours, so it cannot be grepped away; what is ours is the thread it ran on,
-which the act path had just blocked. `AXTDriver` waits by design (a 150 ms retry on a lazy Chromium
-surface, a settle before a read-back, a pause between keystroke chunks), so every Accessibility call
-the shell makes now goes through `CompanionManager.driver(…)`, one `Task.detached` awaited exactly
-where the call used to be made — the chain keeps its order, nothing runs beside the policy gate, and
-the driver touches nothing main-thread-only (Accessibility messaging and `CGEventPost` are thread-safe;
-the only AppKit is a `NSWorkspace.runningApplications` read). `--probe-mainthread` measures the
-mechanism — a 150 ms wait costs the main run loop 135 ms of timer lateness inline and 1 ms detached —
-and `verify.sh` greps for any `AXTDriver.` call in the shell outside a hop, because a probe cannot
-catch a call site that has not been written yet.
+**And nothing that blocks may run on the main thread at all.** `AXTDriver` waits by design (a 150 ms
+retry on a lazy Chromium surface, a settle before a read-back, a pause between keystroke chunks), so
+every Accessibility call the shell makes goes through `CompanionManager.driver(…)`, one `Task.detached`
+awaited exactly where the call used to be made — the chain keeps its order, nothing runs beside the
+policy gate, and the driver touches nothing main-thread-only (Accessibility messaging and `CGEventPost`
+are thread-safe; the only AppKit is a `NSWorkspace.runningApplications` read). `--probe-mainthread`
+measures the mechanism — a 150 ms wait costs the main run loop 135 ms of timer lateness inline and
+1 ms detached — and `verify.sh` greps for any `AXTDriver.` call in the shell outside a hop, because a
+probe cannot catch a call site that has not been written yet.
+
+**That hop is hygiene, and it is not the fix.** Two more crashes came on a build that already had it
+(2026-11-04, 19:45 and 19:48), with the same top five frames as the timer crashes —
+`swift_getObjectType` ← `swift_task_isMainExecutorImpl` ← `MainActor.assumeIsolated` — but entered from
+SwiftUI's own event machinery: twice `NSHostingView.mouseEntered` → `HoverEventDispatcher`, once
+`NSHostingView.mouseDown` → `UpdateGroup.dispatchActions` → `_ButtonGesture`. The assertion is not
+ours, so no grep removes it, and it is not the hover feature either, since a plain button gesture
+reaches the same call. A synthetic click dispatched into the real card in a fresh process does *not*
+fault (`--probe-hover`, now in the gate), so the trigger needs something the probe does not reproduce —
+a real event, in the app's own panel, after the app's own history. What was missing was evidence: a
+fault does not flush, so four reports answered no questions. `CrashBreadcrumb` now installs handlers
+for SIGSEGV/SIGBUS/SIGILL/SIGABRT/**SIGTRAP** (a Swift runtime trap raises the last of these, and the
+first version of the probe missed it) that write one async-signal-safe line naming the last mouse event
+and the surface it landed on, then re-raise so macOS still files its report. `--probe-crash` dies on
+purpose to prove the line arrives, and the gate requires exit 139 plus the sentence.
 
 1. **All coordinates are `LogicalPoint`.** Screenshots are device pixels (2x); AX reports
    logical points; `NSPanel` frames are logical. Conversion happens exactly once, inside
@@ -1192,7 +1204,7 @@ catch a call site that has not been written yet.
 ## Current state
 
 **The app runs. 827 of 827 tests green across 46 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 53 checks: 48–51 pass and 2–5 skip,
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 55 checks: 48–51 pass and 4–7 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red

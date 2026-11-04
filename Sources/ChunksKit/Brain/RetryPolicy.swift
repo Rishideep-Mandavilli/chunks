@@ -237,7 +237,10 @@ public enum RetryPolicy: Sendable {
         case .serviceUnavailable:
             return "The model is busy right now. Chunks tried the other available models and they were busy too."
         case .rateLimited:
-            return "Hit the free-tier rate limit (a few requests a minute). Try again in a moment."
+            // The fact, not the instruction. A failed card now carries an "Ask again" control, and a
+            // sentence that also says "try again" is the same recovery stated twice in two shapes —
+            // the sentence keeps what the button cannot say, which is how long he has to wait.
+            return "Hit the free-tier rate limit — this key allows a few requests a minute."
         case .unauthorised:
             return "The Gemini API key was rejected. Check it in Settings."
         case .badRequest(let detail):

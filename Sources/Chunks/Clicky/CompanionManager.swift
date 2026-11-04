@@ -26,6 +26,8 @@ enum CompanionVoiceState {
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var lastTranscript: String?
+    /// The last turn asked for, as the pair of words and the way they arrived.
+    private var lastAsk: (text: String, source: ConversationTurn.Source)?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
@@ -2045,8 +2047,7 @@ final class CompanionManager: ObservableObject {
                                             question: Self.pressQuestion(
                                                 elementLabel: "the \(named) at "
                                                     + "(\(Int(axPoint.x)),\(Int(axPoint.y)))",
-                                                appName: appName(of: element),
-                                                position: position),
+                                                appName: appName(of: element)),
                                             logPrefix: "act", position: position)
         }
         let element = target.info
@@ -2086,8 +2087,7 @@ final class CompanionManager: ObservableObject {
         return await offerPolicyAndCard(act, element: element, axPoint: axPoint,
                                         question: Self.pressQuestion(
                                             elementLabel: element.elementLabel,
-                                            appName: appName(of: element),
-                                            position: position),
+                                            appName: appName(of: element)),
                                         logPrefix: "act", position: position)
     }
 
@@ -2133,7 +2133,6 @@ final class CompanionManager: ObservableObject {
                 var question = ActionRequest.scrollQuestion(elementLabel: named.name,
                                                             direction: intent.direction,
                                                             pages: intent.pages)
-                if let position { question += " (step \(position.index) of \(position.of))" }
                 return await offerPolicyAndCard(act, element: element, axPoint: nil,
                                                 question: question, logPrefix: "scroll",
                                                 position: position)
@@ -2168,8 +2167,7 @@ final class CompanionManager: ObservableObject {
             return await offerPolicyAndCard(act, element: element, axPoint: nil,
                                             question: Self.pressQuestion(
                                                 elementLabel: element.elementLabel,
-                                                appName: appName(of: element),
-                                                position: position),
+                                                appName: appName(of: element)),
                                             logPrefix: "act", position: position)
         }
     }
@@ -2196,8 +2194,7 @@ final class CompanionManager: ObservableObject {
         return await offerPolicyAndCard(request, element: element, axPoint: nil,
                                         question: Self.pressQuestion(
                                             elementLabel: description,
-                                            appName: appName(of: element),
-                                            position: position),
+                                            appName: appName(of: element)),
                                         logPrefix: "act", position: position,
                                         // A press aimed at words the application never published as a
                                         // name is an inference about a picture, and `PolicyGate` asks
@@ -2265,7 +2262,6 @@ final class CompanionManager: ObservableObject {
                 + "\(AXTDriver.fieldLabel(for: element)) in \(appName(of: element))? "
                 + "Starting: \"\(head)…\""
         }
-        if let position { question += " (step \(position.index) of \(position.of))" }
         return question
     }
 
@@ -2327,7 +2323,7 @@ final class CompanionManager: ObservableObject {
         hud.onConfirmAnswer = { [weak self] outcome in
             self?.answerAct(outcome)
         }
-        hud.askConfirm(question)
+        hud.askConfirm(question, step: position?.index, of: position?.of)
         // The aim goes in the line, because "which route resolved this press" is the first
         // question anyone asks when a press lands somewhere unexpected: a pixel path prints the
         // point it mapped to, a named path prints `by name` and has no point to print.
@@ -2337,15 +2333,14 @@ final class CompanionManager: ObservableObject {
         return .asked
     }
 
-    /// The card's question for a press, with the plan's position when there is a plan.
+    /// The card's question for a press.
     ///
-    /// "Step 2 of 4" is on the card because a plan is approved one step at a time, and a user who
-    /// tapped Allow twice needs to know the card is going to ask again.
-    static func pressQuestion(elementLabel: String, appName: String,
-                              position: (index: Int, of: Int)?) -> String {
-        let base = "Press \(elementLabel) in \(appName)?"
-        guard let position else { return base }
-        return "\(base) (step \(position.index) of \(position.of))"
+    /// It says only what is about to happen. Which step of a plan it is used to be spliced into this
+    /// sentence — `Press Send in Mail? (step 2 of 4)` — while the timeline beside it said the same
+    /// fact as bare `2/4` digits; now the ordinal travels as data to `askConfirm(step:of:)` and is
+    /// drawn once, labelled, above the question.
+    static func pressQuestion(elementLabel: String, appName: String) -> String {
+        "Press \(elementLabel) in \(appName)?"
     }
 
     /// Run a reply's act tags in order — one spoken request, several acts.
@@ -2695,7 +2690,6 @@ final class CompanionManager: ObservableObject {
 
         var question = ActionRequest.scrollQuestion(elementLabel: act.label,
                                                     direction: direction, pages: pages)
-        if let position { question += " (step \(position.index) of \(position.of))" }
         return await offerPolicyAndCard(act, element: element, axPoint: axPoint,
                                         question: question, logPrefix: "scroll", position: position)
     }
@@ -3558,6 +3552,21 @@ final class CompanionManager: ObservableObject {
         sendTranscriptToBrainWithScreenshot(transcript: question, source: source)
     }
 
+    /// A turn that died, with the one way back into it.
+    ///
+    /// `hud.fail` names the problem; this adds the recovery, because naming the problem and not the
+    /// recovery is the half of an error message this surface already gets right for a missing field
+    /// and got wrong for a dead turn. Only a turn he started himself gets the control — a scheduled
+    /// prompt is nobody waiting for an answer, and "Ask again" on a card for something that fired at
+    /// 07:00 would run it now.
+    private func failTurn(_ message: String) {
+        hud.fail(message)
+        guard let ask = lastAsk, ask.source != .routine else { return }
+        hud.onRetry = { [weak self] in
+            self?.ask(text: ask.text, source: ask.source)
+        }
+    }
+
     /// Runs one turn: capture the screens, ask the model, stream the answer onto the notch
     /// HUD, point the cursor at whatever the reply names, and read the completion line aloud.
     ///
@@ -3567,6 +3576,11 @@ final class CompanionManager: ObservableObject {
     /// cannot be half-handled by one consumer and missed by another.
     private func sendTranscriptToBrainWithScreenshot(transcript: String,
                                                      source: ConversationTurn.Source) {
+        // The pair, kept from the one funnel every turn passes through, is what "Ask again" re-asks.
+        // Not `lastTranscript` alone: that is written by the two callers before they reach here, and a
+        // re-ask needs the way the words arrived too, because a scheduled prompt is nobody waiting for
+        // an answer and gets no button.
+        lastAsk = (transcript, source)
         // A request from the user restarts the plan budget; a continuation of the plan already
         // running spends it. Recognised by the flag rather than by the words, so a user who says
         // "continue" still gets a fresh four rounds.
@@ -3726,7 +3740,7 @@ final class CompanionManager: ObservableObject {
                 } else {
                     // A 200 response that parses to nothing is a real outcome, and an empty
                     // card would look like the HUD broke rather than like the model stalled.
-                    hud.fail("The model replied without saying anything.")
+                    failTurn("The model replied without saying anything.")
                 }
 
                 // Memory is applied once the reply is complete, never mid-stream: a partially
@@ -4001,7 +4015,7 @@ final class CompanionManager: ObservableObject {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 Log.write("turn failed: \(Log.userMessage(for: error))")
-                hud.fail(Log.userMessage(for: error))
+                failTurn(Log.userMessage(for: error))
                 speakCreditsErrorFallback()
             }
 
@@ -4139,7 +4153,15 @@ final class CompanionManager: ObservableObject {
                 + "the voice may still be playing" : ""))
     }
 
-    private func speakCreditsErrorFallback() {        let utterance = "I can't reach the model right now. Chunks will try again in a moment."
+    /// The one sentence said when a turn died, spoken because a card nobody is looking at is silent.
+    ///
+    /// It names the control rather than promising automatic retry. The old line said "Chunks will try
+    /// again in a moment", which was false by construction: this is called from the catch at the end
+    /// of the chain, after every retry every model offered has already been spent — and a sentence
+    /// that promises a retry nobody performs is why he asked, on 2026-11-04, why the app was "not even
+    /// speaking a word" when he tried again.
+    private func speakCreditsErrorFallback() {
+        let utterance = "I can't reach the model right now. Ask me again when you want it retried."
         let synthesizer = NSSpeechSynthesizer()
         synthesizer.startSpeaking(utterance)
         voiceState = .responding

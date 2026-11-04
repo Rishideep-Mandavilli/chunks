@@ -1222,7 +1222,7 @@ something that never happened.
 
 ## Current state
 
-**The app runs. 827 of 827 tests green across 46 suites (the count is the `.register()` calls in
+**The app runs. 830 of 830 tests green across 46 suites (the count is the `.register()` calls in
 `Tests/ChunksTestCases/AllTests.swift`), and the full gate is 55 checks: 48–51 pass and 4–7 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
@@ -1310,14 +1310,34 @@ written, and reported as a footnote on that same card. The pill above the card c
 voices: the recognizer's live partial transcript while ⌃⌥ is held, then a one-line hint
 (`.status` phase) when nothing is in flight. First run is the cursor welcome plus that notch
 hint — clicky's hosted HLS intro video, its background music and its email gate were all
-deleted, so nothing in the app fetches or plays a remote asset. A `[ACT:…]` or a `[DO:…]` adds
-one more row to that card: the question naming the control the hit test actually found, or the
-one sentence of the tool's effect ("Open Notes?", "Set the volume to 40%?"), with **Allow** /
-**Not now** buttons half the card's width and the line of what happened replacing it after an
-answer. Both kinds go through the same single `ConsentGate`, so the card can never be mid-asking
-two things at once. With the panel's **"Ask before acting" switch off** — the default — neither
-kind is asked: the press or the tool runs straight away and only the line of what happened lands on
-the card, spoken, because there is no question to answer.
+deleted, so nothing in the app fetches or plays a remote asset. A `[ACT:…]` or a `[DO:…]` asks on
+that same card, and **asking reorders it**: the question — a `sunken` well holding the labelled step
+("Step 6 of 6") and the control the hit test actually found, or the one sentence of the tool's effect
+("Open Notes?", "Set the volume to 40%?"), with **Allow** / **Not now** half the card's width each —
+moves to directly under the stage row, and the plan record and the chips fold away. One order for a
+turn that is telling, one for a turn that is asking, because the second has exactly one job and it
+was the sixth thing he reached: measured on the render, an asking card with its chips and four
+outcome lines on it sat at 405 of the 420 pt ceiling, so one more line of answer prose and Allow was
+unclickable. Which step it is travels as data, never spliced into the sentence —
+`Press Send in WhatsApp? (step 5 of 5)` stated the plan's position twice in two shapes, one of them a
+parenthetical inside the question he is answering. **A chip that names the act being asked about is
+the same duplicate**: "press send" beside "Press Send in WhatsApp?" is a second tap with no answer
+behind it. The line of what happened replaces the block after an answer. Both kinds go through the
+same single `ConsentGate`, so the card can never be mid-asking two things at once. With the panel's
+**"Ask before acting" switch off** — the default — neither kind is asked: the press or the tool runs
+straight away and only the line of what happened lands on the card, spoken, because there is no
+question to answer.
+
+**A turn that died gets one way back, and it is the card's only control.** `failTurn` names the
+problem in `hud.fail`'s message and hands the HUD a re-ask of the same pair the turn started from
+(`lastAsk`, recorded at the single funnel every turn passes through, so a spoken question and a
+typed one recover identically). A scheduled prompt gets no button: nothing fired at 07:00 is nobody
+waiting for an answer, and "Ask again" on that card would run it now. The row is charged in
+`AnswerPanelLayout.measure` under `hasRetry` and gated by `NotchHUDModel.canRetry` — a control the
+window was not sized for is a control he cannot tap, and a handler left over from an earlier turn
+would re-ask a question he has already replaced, so `beginThinking` drops it. The spoken fallback
+used to say "Chunks will try again in a moment", which was false by construction: it is called from
+the catch *after* every retry every model offered has been spent.
 
 **The window is where an answer is re-read; the notch is where a turn happens.** ⌃A opens a real
 window (`CompanionWindowView`) that activates the app — the one surface allowed to, because it is the

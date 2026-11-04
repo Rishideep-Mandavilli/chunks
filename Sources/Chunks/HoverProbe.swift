@@ -144,6 +144,16 @@ enum HoverProbe {
             window = plain
         }
         window.setFrameOrigin(NSPoint(x: 200, y: 200))
+        // Parked below every display before it is ever ordered front. The window is still laid out,
+        // still hit-testable and still receives the events dispatched to its window number — the
+        // probe answers the same question — but it is never composited onto the desktop he is working
+        // on, which is the property a gate must not cost him.
+        guard ProbeWindow.parkOffscreen(window, size: size) else {
+            print("SKIP: the probe could not place its card off every display, so it will not show one")
+            Log.flush()
+            exit(3)
+        }
+        ProbeWindow.reportParked(window)
         window.orderFrontRegardless()
         host.layoutSubtreeIfNeeded()
 

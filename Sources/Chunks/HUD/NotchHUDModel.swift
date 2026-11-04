@@ -172,12 +172,40 @@ final class NotchHUDModel: ObservableObject {
     /// not two windows competing for focus.
     @Published private(set) var confirmQuestion: String?
 
+    /// Which step of a plan the question is, when the act is part of one.
+    ///
+    /// Carried as data, not spliced into the sentence. The question used to read `Press Send in
+    /// WhatsApp? (step 5 of 5)` while the timeline beside it said the same fact as bare `5/5` digits
+    /// and the fold line said a third thing; one fact gets one place and one shape, and the sentence
+    /// the user is answering stops carrying a parenthetical.
+    @Published private(set) var confirmStep: Int?
+    @Published private(set) var confirmStepTotal: Int?
+
     /// Where the user's answer goes.
     ///
     /// Set by `CompanionManager`, which owns the consent gate and the driver. The model shows
     /// a question and never decides what answering it means — same reason it does not own the
     /// memory file.
     var onConfirmAnswer: ((ConsentGate.Outcome) -> Void)?
+
+    /// Where "Ask again" goes, on a card that failed.
+    ///
+    /// Also the manager's, not the model's: the HUD does not know what a turn is, only that one
+    /// ended without an answer.
+    var onRetry: (() -> Void)?
+
+    /// Whether the card is showing a failure, which is the one state that offers a retry.
+    var isFailed: Bool {
+        if case .failed = phase { return true }
+        return false
+    }
+
+    /// Whether a failed card actually has its way back on it.
+    ///
+    /// Both halves are required. The row is only real if somebody owns the re-ask — the HUD does not
+    /// know what a turn is — and a handler left over from an earlier turn would offer a way back into
+    /// a question he is no longer looking at.
+    var canRetry: Bool { isFailed && onRetry != nil }
 
     private var confirmation: AnswerPanelLayout.CardConfirmation {
         // Only a live question takes the block's height now. What happened after the answer is a
@@ -221,15 +249,35 @@ final class NotchHUDModel: ObservableObject {
         }
     }
 
+    /// Whether the card is waiting on him right now.
+    ///
+    /// This is the one state that reorders the card: a turn that is asking has exactly one thing for
+    /// him to do, and the record of what already ran must not sit above it.
+    var isAsking: Bool { confirmQuestion != nil }
+
     /// The act lines the card draws, newest last, with the older ones folded away.
+    ///
+    /// While the card is asking, every step that ran folds into the one line: the ask moves directly
+    /// under the stage row, so the tap is the second thing he sees rather than the sixth. Nothing is
+    /// lost — the fold line counts them, and the full record is in the window's transcript.
     var visibleActLines: [ActLine] {
-        Array(actLines.suffix(AnswerPanelLayout.maxVisibleTimelineRows))
+        if isAsking { return [] }
+        return Array(actLines.suffix(AnswerPanelLayout.maxVisibleTimelineRows))
     }
 
     /// How many steps ran that the card is not showing.
     var foldedActCount: Int {
         max(0, actLines.count - visibleActLines.count)
     }
+
+    /// The chips the card offers: none while it is asking.
+    ///
+    /// The same rule as the act rows, for the same reason and with the same evidence — a reply that
+    /// ends "say the word and it goes" and then draws a chip labelled "press send" beside a question
+    /// reading "Press Send in WhatsApp?" states one fact in two shapes, and the weaker shape is a
+    /// second tap that does what the first one does. The suggestions come back with the answer.
+    var visiblePointCount: Int { isAsking ? 0 : points.count }
+    var visibleActionCount: Int { isAsking ? 0 : actions.count }
 
     /// The elapsed readout. One decimal while a turn is in flight, so a 1.4-second answer does not
     /// spend most of its life reading "1s"; a whole number once it has settled, because the precise
@@ -240,6 +288,13 @@ final class NotchHUDModel: ObservableObject {
             : String(format: "%.0fs", elapsed)
     }
 
+    /// Whether this turn has spent the budget the model chain is built to stop at.
+    ///
+    /// The number is the only place this can be said: a card that reads "61s" in the same grey as "4s"
+    /// asks the user to know the ceiling by heart, and a turn past it is not slow — it is the promise
+    /// failing, which is the thing the dot is supposed to be colouring.
+    var overBudget: Bool { elapsed > BrainGateway.turnBudgetSeconds }
+
     /// Height of everything below the cutout zone.
     ///
     /// Delegated to `AnswerPanelLayout` for the card, deliberately: this type must not own a
@@ -249,10 +304,11 @@ final class NotchHUDModel: ObservableObject {
         let measured = AnswerPanelLayout.measure(
             speech: speech,
             detail: detail,
-            pointCount: points.count,
-            actionCount: actions.count,
+            pointCount: visiblePointCount,
+            actionCount: visibleActionCount,
             hasNote: memoryNote != nil,
             hasDraft: draft != nil,
+            hasRetry: canRetry,
             confirmation: confirmation,
             question: spokenQuestion,
             timelineTexts: visibleActLines.map { $0.text },
@@ -350,6 +406,9 @@ final class NotchHUDModel: ObservableObject {
         // sound nobody is capturing, which is the fake-progress failure in a new costume.
         let whatTheySaid = caption
         clearContent()
+        // The way back is only a way back into *that* turn. Left standing, a handler from a question
+        // he has already replaced would re-ask the old one under a new failure.
+        onRetry = nil
         headline = whatTheySaid
         spokenQuestion = whatTheySaid
         stage = .askingModel
@@ -528,10 +587,23 @@ final class NotchHUDModel: ObservableObject {
     ///
     /// The wording names the control the *hit test* found, not the one the model described, so
     /// the user is approving what is about to be pressed.
-    func askConfirm(_ question: String) {
+    func askConfirm(_ question: String, step: Int? = nil, of total: Int? = nil) {
         confirmQuestion = question
+        confirmStep = step
+        confirmStepTotal = total
         stage = .waitingForYou
         phase = .result
+    }
+
+    /// Take the question and its step off the card together.
+    ///
+    /// Three routes clear it — an answer, an outcome line replacing it, and a dismissal that counts
+    /// as a denial — and a step number left standing after the question is gone would put "Step 5 of
+    /// 5" above the next turn's unrelated answer.
+    private func clearConfirm() {
+        confirmQuestion = nil
+        confirmStep = nil
+        confirmStepTotal = nil
     }
 
     /// Route the user's answer to whoever owns the act.
@@ -542,7 +614,7 @@ final class NotchHUDModel: ObservableObject {
     /// which is what makes a double tap on Allow press one control rather than two.
     func answerConfirm(_ outcome: ConsentGate.Outcome) {
         guard confirmQuestion != nil else { return }
-        confirmQuestion = nil
+        clearConfirm()
         onConfirmAnswer?(outcome)
     }
 
@@ -553,7 +625,7 @@ final class NotchHUDModel: ObservableObject {
     /// one-step one. The card is capped, so the view folds anything past
     /// `AnswerPanelLayout.maxVisibleTimelineRows` into "+N earlier".
     func reportConfirm(_ line: String) {
-        confirmQuestion = nil
+        clearConfirm()
         let bounded = AnswerPanelLayout.boundedDetail(line,
                                                       budget: AnswerPanelLayout.noteCharacterBudget)
         guard !bounded.isEmpty else { return }
@@ -618,7 +690,7 @@ final class NotchHUDModel: ObservableObject {
         // answered by the *next* card that happens to ask — dismissing a request is a denial,
         // not a pause.
         if confirmQuestion != nil {
-            confirmQuestion = nil
+            clearConfirm()
             onConfirmAnswer?(.denied)
         }
         headline = ""

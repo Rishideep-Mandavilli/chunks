@@ -545,6 +545,36 @@ check "main thread: a blocked loop is measurable, and the act path does not bloc
   "$BIN" --probe-mainthread
 check "hover: a click dispatched into the real card does not fault the process" \
   "$BIN" --probe-hover
+# A probe must never draw on the desktop he is working on. Two of them did — the hover probe's fake
+# notch card and the crash probe's helper window both ordered front inside the screen, so every gate
+# run put a Chunks card with an Allow button in the middle of his display and he reasonably read it as
+# the app losing its place. The runtime line is required below, and this is the static half: any probe
+# file that orders a window front must park it off every display first, because a check that only
+# watches the two known cases misses the next one.
+probe_offenders=""
+for pf in Sources/Chunks/*Probe*.swift Sources/Chunks/CrashBreadcrumb.swift; do
+  [[ -f "$pf" ]] || continue
+  if grep -qE 'orderFrontRegardless\(\)|orderFront\(nil\)|makeKeyAndOrderFront' "$pf" \
+     && ! grep -q 'ProbeWindow.parkOffscreen' "$pf"; then
+    probe_offenders="$probe_offenders $pf"
+  fi
+done
+if [[ -z "$probe_offenders" ]]; then
+  printf '  \033[32mPASS\033[0m  no probe orders a window it has not parked off every display\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  a probe will draw on his desktop (missing parkOffscreen in):%s\n' "$probe_offenders"
+  fail=$((fail + 1)); failures+=("probe windows offscreen")
+fi
+hover_out="$("$BIN" --probe-hover 2>&1)"
+if printf '%s' "$hover_out" | grep -q "off every display"; then
+  printf '  \033[32mPASS\033[0m  the hover probe parked its card outside every display before showing it\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  the hover probe could not say where its window was parked\n'
+  printf '        %s\n' "$(printf '%s' "$hover_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
+  fail=$((fail + 1)); failures+=("probe window position")
+fi
 # A crash that says nothing is a crash that teaches nothing. Four reports in eighteen hours all faulted
 # inside SwiftUI's event dispatch and none of them named the surface or the event, because a fault does
 # not flush the log — so the app now installs a signal handler that writes one line first, and this

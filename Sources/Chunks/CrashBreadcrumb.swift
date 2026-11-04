@@ -183,7 +183,11 @@ enum CrashProbe {
                              styleMask: [.borderless, .nonactivatingPanel],
                              backing: .buffered, defer: false)
         window.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 120))
-        window.orderFrontRegardless()
+        // Off every display, like every other probe window: this one runs in the gate, and a helper
+        // window appearing on his desktop is not a diagnostic, it is a false alarm.
+        if ProbeWindow.parkOffscreen(window, size: NSSize(width: 200, height: 120)) {
+            window.orderFrontRegardless()
+        }
 
         let stamp = ProcessInfo.processInfo.systemUptime
         guard let down = NSEvent.mouseEvent(with: .leftMouseDown,

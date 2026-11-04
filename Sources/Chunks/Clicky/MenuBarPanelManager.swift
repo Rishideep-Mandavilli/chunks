@@ -187,6 +187,8 @@ final class MenuBarPanelManager: NSObject {
             backing: .buffered,
             defer: false
         )
+        // Named for the crash breadcrumb — see the note in `NotchPanelManager`.
+        menuBarPanel.identifier = NSUserInterfaceItemIdentifier("menu-bar-panel")
 
         menuBarPanel.isFloatingPanel = true
         menuBarPanel.level = .floating

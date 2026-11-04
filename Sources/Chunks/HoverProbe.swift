@@ -2,27 +2,31 @@ import AppKit
 import ChunksKit
 import SwiftUI
 
-/// `Chunks --probe-hover` — does a click over the card survive?
+/// `Chunks --probe-hover` — can a click over the card be dispatched without the process dying?
 ///
-/// Four crash reports in eighteen hours share the same five frames at the top: `swift_getObjectType`
+/// Four crash reports on 2026-11-04 share the same five frames at the top: `swift_getObjectType`
 /// ← `swift_task_isMainExecutorImpl` ← `MainActor.assumeIsolated` ← a SwiftUI event binding. The
-/// bottom differs, and that difference is the finding: two came in through `NSHostingView.mouseEntered`
-/// → `HoverEventDispatcher`, one through `NSHostingView.mouseDown` → `UpdateGroup.dispatchActions` →
+/// bottom differs, and that difference is the finding: twice `NSHostingView.mouseEntered` →
+/// `HoverEventDispatcher`, once `NSHostingView.mouseDown` → `UpdateGroup.dispatchActions` →
 /// `_ButtonGesture`. So it is **not** the hover feature — it is SwiftUI's event machinery as such, and
-/// deleting `.onHover` would not close it. What all three have in common is AppKit delivering a mouse
-/// event to one of this app's SwiftUI surfaces while the assertion about the main actor faults.
+/// deleting `.onHover` would not close it.
 ///
-/// The probe therefore does the ordinary thing that kills it: build the surface in a real window and
-/// hand AppKit a left-button-down over the middle of it through `NSApp.sendEvent`, which is the route
-/// the crash report shows (`_handleLeftMouseDownEvent:` → `sendEvent:` → `NSHostingView`).
+/// **This probe does not reproduce that fault, and says so.** A synthetic click dispatched through
+/// `NSApp.sendEvent` into the real card, the real caption panel and the real ink layer all return
+/// normally; a synthetic *enter* delivered straight to the hosting view hangs the process in every
+/// combination, including a card made of two plain buttons, which is the probe's own call going where
+/// AppKit does not intend rather than the app doing anything. It stays in the gate as a canary for the
+/// one thing it can honestly prove — that building and clicking these surfaces is safe in a process
+/// that runs them correctly — and the crash itself is left to the breadcrumb, which records what the
+/// real app was doing the moment it faults.
 ///
-/// `--probe-hover --minimal` builds a card of nothing but a text and two buttons, in the same build and
-/// the same window. That fork decides where the fault lives: if the minimal surface survives and the
-/// real one faults, the trigger is inside our view tree; if both fault, it is the build or the runtime,
-/// and no view change will help.
+/// The threading here is load-bearing and was wrong twice: a `Task { @MainActor }` started before
+/// `NSApplication.run` is on a pool thread, and AppKit windows built there crash with a message that
+/// looks exactly like the bug under investigation. The work therefore begins in
+/// `applicationDidFinishLaunching`, which AppKit guarantees on the main thread inside the run loop.
 ///
-/// A crash here is the bug reproduced: 139 means the path is open, 0 means it is closed. The event goes
-/// to Chunks' own window inside this process — the pointer does not move and no other app is touched.
+/// Nothing is pressed on his machine: the event goes to Chunks' own window inside this process, the
+/// pointer does not move, and no other app is touched.
 @MainActor
 enum HoverProbe {
 
@@ -34,18 +38,52 @@ enum HoverProbe {
     /// Host the surface in the panel class the real card uses, rather than a plain window.
     private static var panelSurfaceRequested: Bool { CommandLine.arguments.contains("--panel") }
 
+    /// Put the caption panel on screen first. It is the one SwiftUI surface added this week, it is
+    /// click-through, and it is up while the voice is speaking — which is exactly when the crashes
+    /// happen. If the card alone survives and the card *with* the caption faults, the new surface is
+    /// what opened the path.
+    private static var captionRequested: Bool { CommandLine.arguments.contains("--with-caption") }
+
+    /// Put a full-screen click-through ink layer over everything before the delivery.
+    ///
+    /// This is the fork the timeline asks for: the SwiftUI-event crash signature appears for the first
+    /// time at 00:53 on 2026-11-04, forty-five minutes after the ink layer shipped, and the ink layer
+    /// is the only display-sized surface this app has ever put above his desktop. A click-through
+    /// window should not change who receives a hover — that is the claim — and this is the instrument
+    /// that tests it instead of arguing about it.
+    private static var inkRequested: Bool { CommandLine.arguments.contains("--with-ink") }
+
+    /// Runs the probe from `applicationDidFinishLaunching`, which AppKit guarantees on the main
+    /// thread *inside* the run loop.
+    ///
+    /// The first three versions of this probe enqueued `Task { @MainActor in run() }` and then started
+    /// the application. That race is the whole lesson of the 00:53 crash report and of the ink probe's
+    /// "NSWindow should only be instantiated on the main thread": in a shell-launched process the main
+    /// actor is a pool thread until `NSApplication` runs, so the task body — and every AppKit call in
+    /// it — could run on the wrong thread. A probe that measures the main thread must not itself be
+    /// off it, or its answer describes the probe. Anything this file reports is only evidence because
+    /// the work now starts from the delegate callback.
+    private static let delegateHolder = HoverProbeDelegate()
+
     static func start() -> Never {
+        setvbuf(stdout, nil, _IONBF, 0)
         guard Thread.isMainThread else {
             print("probe-hover: not on the main thread at start — refusing to guess where AppKit is")
             exit(1)
         }
-        // The arrangement `--probe-ink` needs too: in a shell-launched process the main actor is not
-        // the main thread until the application runs, and this probe is about a main-thread callback.
-        DispatchQueue.main.async {
-            Task { @MainActor in run() }
-        }
-        NSApplication.shared.run()
+        let app = NSApplication.shared
+        app.delegate = delegateHolder
+        app.setActivationPolicy(.accessory)
+        app.run()
+        // Unreachable: the delegate exits the process.
         while true { Thread.sleep(forTimeInterval: 3600) }
+    }
+
+    /// The only job is to be the thing AppKit calls on the main thread once the loop is turning.
+    private final class HoverProbeDelegate: NSObject, NSApplicationDelegate {
+        func applicationDidFinishLaunching(_ notification: Notification) {
+            MainActor.assumeIsolated { run() }
+        }
     }
 
     private static func run() {
@@ -112,8 +150,41 @@ enum HoverProbe {
         print("  surface: \(panelSurfaceRequested ? "non-activating panel, app not active" : "plain window")")
         print("  tracking areas in the view tree: \(trackingAreas(in: host))")
 
-        let centre = NSPoint(x: size.width / 2, y: size.height / 2)
+        let captions: CaptionPanelManager?
+        if captionRequested {
+            // The real manager, the real panel, the real sentence — click-through and never key, up
+            // while the voice speaks.
+            let shown = CaptionPanelManager()
+            shown.show("The send button is at the bottom right of the chat.")
+            captions = shown
+            print("  caption panel up: \(shown.isShowing) — now delivering the hover")
+        } else {
+            captions = nil
+        }
+
+        let ink: InkLayerManager?
+        if inkRequested, let display = CaptureEngine.mainDisplay() {
+            // A real mark on the real display, the same surface a circled turn leaves up.
+            let layer = InkLayerManager()
+            let local = display.space.localRect(fromGlobal: display.frame)
+            layer.show([.rect(LogicalRect(x: local.minX + 200, y: local.minY + 200,
+                                          width: 300, height: 200))],
+                       on: display, limitSeconds: 30)
+            ink = layer
+            print("  ink layer up over the display: \(layer.isShowing)")
+        } else {
+            ink = nil
+        }
+
+        // A tracking-area *enter* is what the crash reports pass through, but delivering one by hand
+        // does not reproduce them: `host.mouseEntered(with:)` with a synthetic event HANGS the process
+        // every time, in every surface combination, including a card with two plain buttons in it. A
+        // probe that hangs is not evidence about the app — it is the probe's own call going somewhere
+        // AppKit never intends. So this canary dispatches only what it can dispatch honestly, a click
+        // through the application, and says plainly that it does NOT reproduce the fault.
         let stamp = ProcessInfo.processInfo.systemUptime
+
+        let centre = NSPoint(x: size.width / 2, y: size.height / 2)
         guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: centre,
                                             modifierFlags: [], timestamp: stamp,
                                             windowNumber: window.windowNumber, context: nil,
@@ -130,6 +201,8 @@ enum HoverProbe {
         print("  sending leftMouseDown/up through NSApp at (\(Int(centre.x)), \(Int(centre.y)))…")
         NSApp.sendEvent(down)
         NSApp.sendEvent(up)
+        captions?.hide()
+        ink?.clear(reason: "the probe finished")
         print("  PASS  the click was dispatched and the process is still here — \(surface) is safe")
         Log.write("probe-hover: survived a dispatched click over \(surface)")
         Log.flush()

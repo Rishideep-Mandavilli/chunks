@@ -211,13 +211,26 @@ public enum AnswerPanelTests {
         }
 
         test("an unterminated tag at the end of the stream is still shown") {
+            // The property this case was written for is *nothing is swallowed*, and it still holds —
+            // but where the words go changed. Released as text, an unfinished `<SAY>` put markup on the
+            // card and left `speech` empty, and a turn with an empty sentence is not spoken at all: on
+            // 2026-11-04 at 15:00 that was "it was loading for a while and not even speaking a word".
+            // So the words of an unclosed SAY are now speech, the markup is not shown, and the turn
+            // records that the reply was cut. A malformed `[ACT:]` still fails open as raw text — that
+            // one is a broken request the user has to see, and this is not a licence to hide those.
             let streamer = AnswerStreamer()
             streamer.push("The answer is 42.")
             streamer.push("<SAY>never finished")
             let result = streamer.finish()
-            expectEqual(result.detail, "The answer is 42.<SAY>never finished",
-                        "both the answer and the unfinished supported tag must survive")
-            expectEqual(result.speech, "", "an unfinished SAY block must remain text")
+            expect(result.detail.contains("The answer is 42."),
+                   "the answer that arrived before the tag must survive: \(result.detail)")
+            expect(result.speech.contains("never finished"),
+                   "and the unfinished sentence must survive as the words they are, not vanish: "
+                   + "\(result.speech)")
+            expect(!result.detail.contains("<SAY>"),
+                   "the markup itself is not content he asked for: \(result.detail)")
+            expect(streamer.endedMidConstruct,
+                   "the truncation is recorded rather than silently repaired")
         }
 
         // Photographed on the five-turn probe: "scrolling down to find the invoice now" with no

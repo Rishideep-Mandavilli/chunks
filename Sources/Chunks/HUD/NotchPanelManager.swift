@@ -136,6 +136,9 @@ final class NotchPanelManager {
             backing: .buffered,
             defer: false
         )
+        // Named for the crash breadcrumb. Both this panel and the menu-bar one are the same private
+        // class, so a fault can only say "which surface" if the surfaces say so themselves.
+        created.identifier = NSUserInterfaceItemIdentifier("notch-card")
 
         created.isFloatingPanel = true
         // Above the menu bar, so the halo can wrap the cutout. On a display with no notch

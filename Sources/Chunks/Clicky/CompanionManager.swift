@@ -3968,6 +3968,14 @@ final class CompanionManager: ObservableObject {
                     saying += saying.isEmpty ? outcome : " " + outcome
                 }
                 if !saying.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if streamer.endedMidConstruct {
+                        // The words were spoken as far as the stream got them, and the reason the
+                        // sentence stops half-way is the model's, not the app's — but it has to be
+                        // written down, or the next reader sees a truncated answer with no trace of
+                        // why.
+                        Log.write("voice: the reply ended inside a <SAY> — speaking \(saying.count) "
+                            + "chars as far as they go")
+                    }
                     do {
                         try await speakCaptioned(saying)
                         // speakText returns after player.play() — audio is now playing
@@ -3977,6 +3985,14 @@ final class CompanionManager: ObservableObject {
                         print("⚠️ ElevenLabs TTS error: \(error)")
                         speakCreditsErrorFallback()
                     }
+                } else {
+                    // Silence is a state that has to be reported. A turn that said nothing and logged
+                    // nothing is indistinguishable from a turn that is still working, which is exactly
+                    // what he saw on 2026-11-04 and had no way to describe except "not even speaking a
+                    // word".
+                    Log.write("voice: nothing to speak this turn — speech \(streamer.speech.count) "
+                        + "chars, detail \(streamer.detail.count)"
+                        + (streamer.endedMidConstruct ? ", and the reply ended inside a construct" : ""))
                 }
             } catch is CancellationError {
                 // User spoke again — response was interrupted, and the new press already

@@ -35,6 +35,7 @@ enum CrashBreadcrumb {
     private static let surfaceAppWindow = Int32(3)
     private static let surfaceDrawingOverlay = Int32(4)
     private static let surfaceCaption = Int32(5)
+    private static let surfaceInk = Int32(8)
     private static let surfaceOther = Int32(6)
     private static let surfaceUnknown = Int32(7)
 
@@ -70,22 +71,25 @@ enum CrashBreadcrumb {
             lastEventSurface = surfaceNone
             return
         }
-        // Matched on the class name, which is stable, rather than on identity, because these four
-        // surfaces are created in four different files and the handler must not import any of them.
-        let className = NSStringFromClass(type(of: window))
-        let viewName = window.contentView.map { NSStringFromClass(type(of: $0)) } ?? ""
-        if className.contains("NotchPanel") || viewName.contains("NotchHUD") {
-            lastEventSurface = surfaceNotchPanel
-        } else if className.contains("MenuBarPanel") {
-            lastEventSurface = surfaceMenuBarPanel
-        } else if className.contains("AnnotationPanel") || className.contains("OverlayWindow") {
-            lastEventSurface = surfaceDrawingOverlay
-        } else if viewName.contains("CaptionView") {
-            lastEventSurface = surfaceCaption
-        } else if className.contains("Window") && !className.contains("Panel") {
-            lastEventSurface = surfaceAppWindow
-        } else {
-            lastEventSurface = surfaceOther
+        // Matched on the window's own identifier rather than on its class, because the notch card and
+        // the menu-bar panel are the *same* private class — `KeyablePanel` — and the first version of
+        // this reported "another window" for a fault that happened on the card.
+        switch window.identifier?.rawValue {
+        case "notch-card": lastEventSurface = surfaceNotchPanel
+        case "menu-bar-panel": lastEventSurface = surfaceMenuBarPanel
+        default:
+            let className = NSStringFromClass(type(of: window))
+            if className.contains("AnnotationPanel") || className.contains("OverlayWindow") {
+                lastEventSurface = surfaceDrawingOverlay
+            } else if className.contains("InkPanel") {
+                lastEventSurface = surfaceInk
+            } else if className.contains("CaptionPanel") {
+                lastEventSurface = surfaceCaption
+            } else if className.contains("Window") && !className.contains("Panel") {
+                lastEventSurface = surfaceAppWindow
+            } else {
+                lastEventSurface = surfaceOther
+            }
         }
     }
 
@@ -125,6 +129,7 @@ enum CrashBreadcrumb {
         case surfaceAppWindow: return "the app window"
         case surfaceDrawingOverlay: return "the drawing surface"
         case surfaceCaption: return "the caption"
+        case surfaceInk: return "the ink layer"
         case surfaceOther: return "another window"
         default: return "nothing recorded"
         }

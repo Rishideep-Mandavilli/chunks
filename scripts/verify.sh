@@ -485,6 +485,27 @@ file_check "the first-run flow, all three steps" "$RENDER_DIR/setup.png" 60000
 echo
 
 echo "the safety contract, asserted not assumed"
+# Every Accessibility call the shell makes must run off the main thread. The crash of 2026-11-04 was
+# SwiftUI's own `MainActor.assumeIsolated` faulting on a main thread the act path had just blocked, and
+# that call site is not ours to grep — so what is grepped is the *state*: a driver call outside a
+# `driver { }` hop is a 150 ms wait on the main thread again, which is the ground a later callback
+# crashes on. The type names and the pure helpers are listed because they read nothing from another
+# process; `fieldLabel` and `isTrusted` are one attribute each and stay where they are.
+ax_unhopped="$(grep -n 'AXTDriver\.' Sources/Chunks/Clicky/CompanionManager.swift \
+  | grep -v 'driver({' \
+  | grep -vE 'AXTDriver\.(PressResult|TypeResult|ScrollResult|SemanticMiss|RankedPress|PressTarget|TypeTarget|ScrollTarget|PressSnapshot|isTrusted|fieldLabel|appNamesMatch|isAmbiguousFailure|waitForLanding)' \
+  | grep -vE ':[[:space:]]*(///|//)' || true)"
+if [[ -z "$ax_unhopped" ]]; then
+  printf '  \033[32mPASS\033[0m  no Accessibility call runs on the main thread\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  Accessibility work is back on the main thread — it blocks the loop a\n'
+  printf '        SwiftUI callback then assumes the main actor on, and that is the crash of 2026-11-04:\n'
+  printf '%s\n' "$ax_unhopped" | head -6 | sed 's/^/        /'
+  fail=$((fail + 1)); failures+=("main-thread act path")
+fi
+check "main thread: a blocked loop is measurable, and the act path does not block it" \
+  "$BIN" --probe-mainthread
 check "bundle: universal, matching deployment target, hardened with exact entitlements" \
   python3 - "$BIN" "$PWD/scripts/Chunks.entitlements" <<'PY'
 import json, pathlib, plistlib, re, subprocess, sys

@@ -211,13 +211,26 @@ public enum AnswerPanelTests {
         }
 
         test("an unterminated tag at the end of the stream is still shown") {
+            // The property this case was written for is *nothing is swallowed*, and it still holds —
+            // but where the words go changed. Released as text, an unfinished `<SAY>` put markup on the
+            // card and left `speech` empty, and a turn with an empty sentence is not spoken at all: on
+            // 2026-11-04 at 15:00 that was "it was loading for a while and not even speaking a word".
+            // So the words of an unclosed SAY are now speech, the markup is not shown, and the turn
+            // records that the reply was cut. A malformed `[ACT:]` still fails open as raw text — that
+            // one is a broken request the user has to see, and this is not a licence to hide those.
             let streamer = AnswerStreamer()
             streamer.push("The answer is 42.")
             streamer.push("<SAY>never finished")
             let result = streamer.finish()
-            expectEqual(result.detail, "The answer is 42.<SAY>never finished",
-                        "both the answer and the unfinished supported tag must survive")
-            expectEqual(result.speech, "", "an unfinished SAY block must remain text")
+            expect(result.detail.contains("The answer is 42."),
+                   "the answer that arrived before the tag must survive: \(result.detail)")
+            expect(result.speech.contains("never finished"),
+                   "and the unfinished sentence must survive as the words they are, not vanish: "
+                   + "\(result.speech)")
+            expect(!result.detail.contains("<SAY>"),
+                   "the markup itself is not content he asked for: \(result.detail)")
+            expect(streamer.endedMidConstruct,
+                   "the truncation is recorded rather than silently repaired")
         }
 
         // Photographed on the five-turn probe: "scrolling down to find the invoice now" with no
@@ -420,7 +433,9 @@ public enum AnswerPanelTests {
                 pointCount: 0, hasDraft: streamer.draftText != nil, confirmation: .question,
                 question: question, width: 360)
             expectEqual(alone, CGFloat(196), "stage, question, answer, padded well and Copy must all be counted")
-            expectEqual(withConsent, CGFloat(276), "consent needs its own 80pt; it cannot borrow Copy's space")
+            expectEqual(withConsent, CGFloat(314),
+                        "consent needs its own 118pt — the well, its ordinal, the question and the "
+                        + "two targets; it cannot borrow Copy's space")
             expect(withConsent < AnswerPanelLayout.maximumHeight,
                    "the fixture must not hide missing space behind the card's ceiling")
             let textWidth = CGFloat(360) - 2 * AnswerPanelLayout.inset
@@ -632,9 +647,36 @@ public enum AnswerPanelTests {
             expect(AnswerPanelLayout.confirmButtonRowHeight >= 26,
                    "the Allow / Not now targets are too small to tap safely")
             expectEqual(AnswerPanelLayout.confirmHeight,
-                        AnswerPanelLayout.confirmQuestionHeight + AnswerPanelLayout.confirmGap
-                        + AnswerPanelLayout.confirmButtonRowHeight,
+                        2 * AnswerPanelLayout.confirmWellInset + AnswerPanelLayout.confirmOrdinalHeight
+                        + AnswerPanelLayout.confirmOrdinalGap + AnswerPanelLayout.confirmQuestionHeight
+                        + AnswerPanelLayout.confirmGap + AnswerPanelLayout.confirmButtonRowHeight,
                         "the measured block must be the sum of the rows the view draws")
+            // The ordinal is drawn, so it must be paid for. A pending step labelled above a question
+            // the window was sized without is a question whose tap lands in the cutout.
+            expect(AnswerPanelLayout.confirmHeight > AnswerPanelLayout.confirmQuestionHeight
+                    + AnswerPanelLayout.confirmGap + AnswerPanelLayout.confirmButtonRowHeight,
+                   "the ask block reserves no room for the well and its ordinal")
+        }
+
+        test("a failed card reserves its one way back") {
+            // Long enough to clear the floor: a one-line card is clamped to the minimum height, and a
+            // clamped base would make the delta a lie about the row rather than about the arithmetic.
+            let failure = "Chunks could not reach the model. The reply was going to be about the "
+                + "chart in your spreadsheet, and everything it would have said about the totals "
+                + "never arrived."
+            let without = AnswerPanelLayout.measure(speech: failure, detail: "", pointCount: 0)
+            let withRetry = AnswerPanelLayout.measure(speech: failure, detail: "", pointCount: 0,
+                                                      hasRetry: true)
+            expect(without > AnswerPanelLayout.minimumHeight,
+                   "the fixture sits on the floor, so the delta would not be the row's own height")
+            expectEqual(withRetry - without,
+                        AnswerPanelLayout.sectionGap + AnswerPanelLayout.retryRowHeight,
+                        "the retry row must be paid for exactly once, at its own height")
+            // A control the window was not sized for is a control he cannot tap, and the
+            // "Ask again" row is the whole recovery — a failed card without it names the problem
+            // and offers nothing.
+            expect(AnswerPanelLayout.retryRowHeight >= 26,
+                   "the retry target is too small to tap safely")
         }
     }
 }

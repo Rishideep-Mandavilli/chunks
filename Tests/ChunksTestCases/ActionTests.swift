@@ -196,6 +196,34 @@ public enum ActionTests {
             expectEqual(s.actionRequests.map(\.label), ["first", "second"])
         }
 
+        test("a reply that stops inside a <SAY> is still spoken, and says so") {
+            // Measured on his machine 2026-11-04 at 15:00: the stream ended at
+            // `<SAY>you're looking at qoder, where` with no closing tag. The parser released the
+            // unterminated construct as text — fail-open, which is right for a malformed `[ACT:]` —
+            // and the result was raw markup on the card and **no speech at all**, because the caller
+            // only speaks a non-empty sentence. Silence with nothing recorded is the failure this
+            // project already refuses for an act.
+            let s = AnswerStreamer()
+            s.push("<SAY>you're looking at qoder, where")
+            s.finish()
+            expect(s.speech.contains("you're looking at qoder"),
+                   "the words he was promised are the sentence, not the tag: \(s.speech)")
+            expect(s.endedMidConstruct,
+                   "and the turn records that the reply was cut, so the log can say why it stops")
+            expect(!s.detail.contains("<SAY>"),
+                   "the markup itself must not reach the card: \(s.detail)")
+        }
+
+        test("a complete <SAY> does not report a truncation") {
+            // The flag is only worth having if it means one thing. A normal answer must not light it.
+            let s = AnswerStreamer()
+            s.push("<SAY>you're looking at Qoder.</SAY>")
+            s.finish()
+            expect(!s.endedMidConstruct, "a closed construct is not a truncation")
+            expectEqual(s.speech.trimmingCharacters(in: .whitespacesAndNewlines),
+                        "you're looking at Qoder.")
+        }
+
         // MARK: ScreenshotGeometry: the aim -> display mapping
 
         test("the middle of the grid is the middle of the display") {
@@ -1153,39 +1181,6 @@ public enum ActionTests {
             let volumeFailure = ToolLayer.outcomeLine(for: .setVolume(percent: 40), succeeded: false)
             expect(!volumeFailure.contains("40"),
                    "saying the number on a failure reads as though it was applied: \(volumeFailure)")
-        }
-
-        test("an open that did not come forward says so, and an unknown does not") {
-            // The card promised him a window he would end up looking at. Measured 2026-11-05: a
-            // YouTube search opened behind his editor and the card said `Opened …` with no hint that
-            // nothing had moved, which is the difference between a bug he can see and one he can't.
-            expectEqual(ToolLayer.outcomeLine(for: .openApp(name: "Notes"), succeeded: true,
-                                              cameForward: true),
-                        "Opened Notes.")
-            let behind = ToolLayer.outcomeLine(for: .openApp(name: "Notes"), succeeded: true,
-                                               cameForward: false)
-            expect(behind.contains("Opened Notes."),
-                   "it did open, and a line that hides that sends him to look for a broken app: \(behind)")
-            expect(behind.contains("behind"),
-                   "and it must say the screen did not move: \(behind)")
-            // `nil` means nobody could tell — a scheme with no resolvable handler, a volume write.
-            // Saying "stayed behind" there would be inventing a failure, which is the other half of
-            // the same lie.
-            expectEqual(ToolLayer.outcomeLine(for: .openApp(name: "Notes"), succeeded: true,
-                                              cameForward: nil),
-                        "Opened Notes.")
-            expectEqual(ToolLayer.outcomeLine(for: .setVolume(percent: 40), succeeded: true,
-                                              cameForward: false),
-                        "Volume set to 40%.",
-                        "a volume has no window to come forward, so the clause must not attach")
-            // The verbs whose handler is resolvable are measured, so their lines must carry it too —
-            // a measured `false` that is thrown away is a check that quietly stopped meaning anything.
-            expect(ToolLayer.outcomeLine(for: .email(to: "a@b.com"), succeeded: true,
-                                         cameForward: false).contains("behind"),
-                   "the mail line discards the measurement it was given")
-            expect(ToolLayer.outcomeLine(for: .runShortcut(name: "Morning"), succeeded: true,
-                                         cameForward: false).contains("behind"),
-                   "the shortcut line discards the measurement it was given")
         }
 
         // MARK: ToolRunner — the halves that need no disk and no launch

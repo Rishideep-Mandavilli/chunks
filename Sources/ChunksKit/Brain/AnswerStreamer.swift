@@ -113,11 +113,40 @@ public final class AnswerStreamer {
         return (speech, detail)
     }
 
+    /// Set when the stream stopped inside a construct, so the caller can say so out loud.
+    public private(set) var endedMidConstruct = false
+
     /// Flush at the end of the stream. Any unterminated tag is released as text.
+    ///
+    /// One case is treated as what it is rather than as markup: an unclosed `<SAY>` is a sentence the
+    /// model was *saying* when the stream stopped. Measured 2026-11-04 at 15:00, a turn ended exactly
+    /// like that — `reply ends ‣ <SAY>you're looking at qoder, where` — and the result was raw markup
+    /// on the card and **no speech at all**, because the words never reached `speech`, and the caller
+    /// only speaks a non-empty sentence. Silence with nothing in the log is the failure this project
+    /// already refuses for an act: something he can neither hear nor find recorded is indistinguishable
+    /// from something that never happened. So the partial sentence is spoken as far as it goes, and the
+    /// truncation is recorded.
     @discardableResult
     public func finish() -> (speech: String, detail: String) {
-        consume(parser.finish())
+        for event in parser.finish() {
+            if case .text(let text) = event, let words = Self.unclosedSayContent(text) {
+                speech += words
+                pendingSpeechEcho = nil
+                endedMidConstruct = true
+                continue
+            }
+            consume([event])
+        }
         return (speech, detail)
+    }
+
+    /// The words inside a `<SAY>` that never closed, or nil when this text is not one.
+    static func unclosedSayContent(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("<SAY>"), !trimmed.contains("</SAY>") else { return nil }
+        let body = String(trimmed.dropFirst("<SAY>".count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return body.isEmpty ? nil : body
     }
 
     /// What to render right now.

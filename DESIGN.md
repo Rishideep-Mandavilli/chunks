@@ -185,8 +185,12 @@ square along the display edge, and the window throws a real shadow because a lig
 shadow over a bright desktop is invisible. Top-down, in the order a turn happens:
 
 1. **Stage row** — 7 pt state dot, the phase in words ("Asking the model", "Doing it", or the
-   `<DONE_TITLE>` once there is one), and right-aligned elapsed seconds.
-2. **The question he spoke**, one line, kept while the plan runs under it.
+   `<DONE_TITLE>` once there is one), and right-aligned elapsed seconds. Past the 60 s the chain is
+   budgeted to, the figure is drawn in `destructiveText`: a number in the same grey as "4s" asks him
+   to know the ceiling by heart, and a turn past it is not slow, it is the promise failing.
+2. **The question he spoke**, up to two lines, tail-truncated. His own words are the least
+   replaceable text on the surface, so they get the second line — middle truncation deleted the
+   object out of the one sentence he knows precisely and did not type.
 3. **Speech** — what is also said aloud, budgeted at 200 characters. The voice says all of it; the
    card is bounded, because an unbounded `<SAY>` did not make the card taller — `measure` clamps at
    420 — it pushed the chips, the Allow row and the footnote off the bottom edge.
@@ -198,11 +202,22 @@ shadow over a bright desktop is invisible. Top-down, in the order a turn happens
    a table row, not an offer. The tappable ones carry the `lineControl` hairline, because `raised` on
    the card's ground is a 1.05:1 difference and a shadow is not an affordance. A point chip is *not*
    tappable and must not look it.
-7. **The Ask row** — the question naming the control the hit test found, then Allow / Not now at
-   half the card's width each. Wide targets, because mis-tapping "Not now" is the failure worth
-   designing against, and because since 2026-10-18 a permanent act (Send, Pay, Delete, Confirm)
-   always reaches this row even with asking switched off.
+7. **The Ask block** — a `sunken` well holding the labelled ordinal ("Step 6 of 6"), the question
+   naming the control the hit test found, then Allow / Not now at half the card's width each. Wide
+   targets, because mis-tapping "Not now" is the failure worth designing against, and because since
+   2026-10-18 a permanent act (Send, Pay, Delete, Confirm) always reaches this row even with asking
+   switched off.
 8. **The memory footnote**, two lines.
+9. **The way back** — on a failed card only, one full-width `Ask again` in the same object as Allow,
+   because it is the same kind of thing: the primary action of the card the card is waiting on.
+
+**Two orders, not one.** A turn that is *telling* him reads top-down in the order it happened — the
+list above. A turn that is *asking* moves the block to position 2 and folds the plan record and the
+chips away, because it has exactly one job and the moment that can change his machine was the sixth
+thing he reached: at 405 of the 420 pt ceiling, one more line of answer prose and Allow was
+unclickable. The step travels as data, never spliced into the sentence — "Press Send in WhatsApp?
+(step 5 of 5)" stated the plan's position twice in two shapes, one of them a parenthetical inside the
+question he is answering.
 
 ## The listening meter
 

@@ -108,6 +108,7 @@ by its code signature, so the signature is a product requirement, not packaging 
 
 ```bash
 .build/debug/chunks --probe-crash       # dies on purpose, to prove a fault names the event it died on
+.build/debug/chunks --probe-mainthread    # what a 150 ms wait costs the main run loop, inline and detached
 .build/debug/chunks --probe-ax 855,553                  # global top-left logical points
 .build/debug/chunks --probe-ax 1287,86 --named "free claude code"   # + what the name fallback finds
 ```
@@ -194,6 +195,68 @@ because the first version of that check matched the prose describing the rule ra
 The same reasoning covers `Thread.sleep` on the main actor: waiting for a window to land is a
 `Task.sleep`, never a blocking one, because the notch freezes for the length of the wait the user is
 watching.
+
+**And nothing that blocks may run on the main thread at all.** `AXTDriver` waits by design (a 150 ms
+retry on a lazy Chromium surface, a settle before a read-back, a pause between keystroke chunks), so
+every Accessibility call the shell makes goes through `CompanionManager.driver(…)`, one `Task.detached`
+awaited exactly where the call used to be made — the chain keeps its order, nothing runs beside the
+policy gate, and the driver touches nothing main-thread-only (Accessibility messaging and `CGEventPost`
+are thread-safe; the only AppKit is a `NSWorkspace.runningApplications` read). `--probe-mainthread`
+measures the mechanism — a 150 ms wait costs the main run loop 135 ms of timer lateness inline and
+1 ms detached — and `verify.sh` greps for any `AXTDriver.` call in the shell outside a hop, because a
+probe cannot catch a call site that has not been written yet.
+
+
+**The hop is hygiene, and it is not the fix.** The same signature came back on a build that already
+had it, entered from SwiftUI's own event machinery rather than ours: `NSHostingView.mouseEntered` →
+`HoverEventDispatcher`, and once `NSHostingView.mouseDown` → `UpdateGroup.dispatchActions` →
+`_ButtonGesture`. The assertion is Apple's, so no grep removes it. The breadcrumb then named the
+surface — `mouseEntered` on the menu-bar panel, `mouseMoved` on the menu-bar panel, `leftMouseDown` on
+another window — and the reports' own frames showed the surviving entry is `NSHostingView.hitTest`
+reached from `-[NSWindow _latchViewForPressureEvent:]`, i.e. a hit test done while AppKit *dequeues*
+the event. That is why no hover shield is in this tree: stripping tracking areas and no-opping
+`mouseEntered` cannot intercept a hit test, and a shield that provably does not close the chain is
+decoration. What is in the tree instead is the instrument (the breadcrumb, allocation-free) and the
+one raise site that was found: `CaptionPanelManager` was throwing `NSUnknownKeyException` on the main
+thread inside a concurrency job every session, which is the shape known to leave the executor slot
+holding garbage for the next `assumeIsolated` to read. Whether that is *the* cause is not proven — a
+probe built to reproduce it did not — and the next crash report's swallowed-exception marker is the
+test.
+
+**A turn may not outlive its promise, and a log may not end before the crash.** Measured on his
+machine the same evening: a question left the card counting seconds for an hour with no reply, no
+failure and no speech, because the 60 s model budget bounds only the chain — a stalled window-server
+capture, a file read that never returns and an Accessibility call parked inside the driver hop all
+happen before or beside it, and each `await` had no deadline of its own. `turnWatchdogSeconds` (70) is
+a sibling task that fails the card, speaks the fallback and hands it an Ask again, but only while the
+card is still *thinking* — a turn with an answer on it is being read, not stuck; the parked call is not
+killed (it cannot be), the turn's epoch moves on and the task still parked on it walks away when it
+wakes. The capture and the file read are raced against 10 s and 20 s, the transient-hide loop got the
+caption's 40 s ceiling it never had, and `Log.writeCritical` puts turn starts, asks, failures and the
+watchdog on disk synchronously — because `Log.write` queues, and a SIGSEGV kills the queue with the
+line still in it, which is why every earlier report came with a log that ended before the crash. A
+hung turn also writes one durable line every five seconds while the card thinks, so the next report
+shows the turn never moved instead of going quiet at "turn: start".
+
+**An act he approved is said aloud, not only written.** With asking on, the outcome line reached the
+card and never his ears — `reportConfirm` appends to the record and nothing speaks it, while the
+asking-off path rides the turn's own utterance. `NotchHUDModel.onReported` now speaks a line exactly
+when it answered a *live* question, which is the one case nothing else covers, and the double-speak is
+impossible by construction rather than by discipline. And `speakCaptioned` no longer claims success it
+did not verify: a synthesizer that never starts reported `isPlaying` false from the first poll, the
+wait loop exited instantly, and the log said "spoke N chars" about silence — the exact 2026-11-04
+report of an answer on the card with no sound. Two seconds to begin, then a critical line naming that
+the sentence was never said.
+
+**A reply that ends inside `<SAY>` is still spoken.** Measured 2026-11-04 at 15:00: the cloud chain
+served a turn that stopped mid-construct — `reply ends ‣ <SAY>you're looking at qoder, where` — and the
+card showed raw markup while **nothing at all was spoken**, because the parser releases an unterminated
+construct as text (fail-open, which is right for a malformed `[ACT:]` the user must see) and the caller
+only speaks a non-empty sentence. An unclosed `<SAY>` is now treated as the sentence it is: its words go
+to `speech`, the markup does not reach the card, `endedMidConstruct` is recorded and logged, and a turn
+with nothing to say **logs that** instead of being silent in both channels. The rule is the one already
+applied to an act: something he can neither hear nor find in the record is indistinguishable from
+something that never happened.
 
 **A crash handler may not allocate, format, dispatch, or flush.** `CrashBreadcrumb` installs handlers
 for SIGSEGV/SIGBUS/SIGILL/SIGABRT/SIGTRAP that name the last mouse event and the window it landed on
@@ -1208,8 +1271,8 @@ session down with it, and a stale bundle that does not know the flag launches th
 
 ## Current state
 
-**The app runs. 819 of 819 tests green across 46 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 49 checks: 43–45 pass and 4–6 skip,
+**The app runs. 823 of 823 tests green across 46 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 51 checks: 45–47 pass and 4–6 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
@@ -1295,14 +1358,34 @@ written, and reported as a footnote on that same card. The pill above the card c
 voices: the recognizer's live partial transcript while ⌃⌥ is held, then a one-line hint
 (`.status` phase) when nothing is in flight. First run is the cursor welcome plus that notch
 hint — clicky's hosted HLS intro video, its background music and its email gate were all
-deleted, so nothing in the app fetches or plays a remote asset. A `[ACT:…]` or a `[DO:…]` adds
-one more row to that card: the question naming the control the hit test actually found, or the
-one sentence of the tool's effect ("Open Notes?", "Set the volume to 40%?"), with **Allow** /
-**Not now** buttons half the card's width and the line of what happened replacing it after an
-answer. Both kinds go through the same single `ConsentGate`, so the card can never be mid-asking
-two things at once. With the panel's **"Ask before acting" switch off** — the default — neither
-kind is asked: the press or the tool runs straight away and only the line of what happened lands on
-the card, spoken, because there is no question to answer.
+deleted, so nothing in the app fetches or plays a remote asset. A `[ACT:…]` or a `[DO:…]` asks on
+that same card, and **asking reorders it**: the question — a `sunken` well holding the labelled step
+("Step 6 of 6") and the control the hit test actually found, or the one sentence of the tool's effect
+("Open Notes?", "Set the volume to 40%?"), with **Allow** / **Not now** half the card's width each —
+moves to directly under the stage row, and the plan record and the chips fold away. One order for a
+turn that is telling, one for a turn that is asking, because the second has exactly one job and it
+was the sixth thing he reached: measured on the render, an asking card with its chips and four
+outcome lines on it sat at 405 of the 420 pt ceiling, so one more line of answer prose and Allow was
+unclickable. Which step it is travels as data, never spliced into the sentence —
+`Press Send in WhatsApp? (step 5 of 5)` stated the plan's position twice in two shapes, one of them a
+parenthetical inside the question he is answering. **A chip that names the act being asked about is
+the same duplicate**: "press send" beside "Press Send in WhatsApp?" is a second tap with no answer
+behind it. The line of what happened replaces the block after an answer. Both kinds go through the
+same single `ConsentGate`, so the card can never be mid-asking two things at once. With the panel's
+**"Ask before acting" switch off** — the default — neither kind is asked: the press or the tool runs
+straight away and only the line of what happened lands on the card, spoken, because there is no
+question to answer.
+
+**A turn that died gets one way back, and it is the card's only control.** `failTurn` names the
+problem in `hud.fail`'s message and hands the HUD a re-ask of the same pair the turn started from
+(`lastAsk`, recorded at the single funnel every turn passes through, so a spoken question and a
+typed one recover identically). A scheduled prompt gets no button: nothing fired at 07:00 is nobody
+waiting for an answer, and "Ask again" on that card would run it now. The row is charged in
+`AnswerPanelLayout.measure` under `hasRetry` and gated by `NotchHUDModel.canRetry` — a control the
+window was not sized for is a control he cannot tap, and a handler left over from an earlier turn
+would re-ask a question he has already replaced, so `beginThinking` drops it. The spoken fallback
+used to say "Chunks will try again in a moment", which was false by construction: it is called from
+the catch *after* every retry every model offered has been spent.
 
 **The window is where an answer is re-read; the notch is where a turn happens.** ⌃A opens a real
 window (`CompanionWindowView`) that activates the app — the one surface allowed to, because it is the

@@ -26,6 +26,8 @@ enum CompanionVoiceState {
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var lastTranscript: String?
+    /// The last turn asked for, as the pair of words and the way they arrived.
+    private var lastAsk: (text: String, source: ConversationTurn.Source)?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
@@ -336,8 +338,25 @@ final class CompanionManager: ObservableObject {
     /// next step is otherwise a loop with a voice.
     static let maxPlanRounds = 4
 
+    /// The longest a turn may sit with nothing on the card before the card says so.
+    ///
+    /// The 60 s model budget bounds only the chain. A stalled window-server capture, a file read that
+    /// never returns and an Accessibility call parked inside the driver hop all happen before or
+    /// beside it, and each of them left the card counting seconds for an hour on 2026-11-04 with no
+    /// failure, no speech and no way back. Seventy is the budget plus the slack a slow first chunk
+    /// gets, and the watchdog fires only while the card is still *thinking* — a turn with an answer on
+    /// it is not stuck, it is being read.
+    static let turnWatchdogSeconds: Double = 70
+
     /// The round of the current plan, and whether this turn is one of its own continuations.
     private var planRound = 0
+
+    /// Which turn owns the card right now.
+    ///
+    /// Bumped by every ask and by the watchdog. A turn task parked on a call that never returns
+    /// cannot be cancelled into returning, so when it finally wakes it compares this against the
+    /// number it started with and walks away instead of writing over the card a newer turn owns.
+    private var turnEpoch = 0
     private var isContinuingPlan = false
 
     /// The plan round waiting out its recapture delay, if there is one.
@@ -699,6 +718,14 @@ final class CompanionManager: ObservableObject {
     /// how a second press knows what to close.
     private var activeOverlay: AnnotationOverlayWindow?
 
+    /// His marks, left on the display while the turn about them runs.
+    ///
+    /// The overlay closes the instant he presses Return, so without this the answer would arrive
+    /// about a circle that has already gone. It receives no clicks and cannot become key — see
+    /// Every question increments this, so "the start of a turn" can be told from "the start of *this*
+    /// turn" — the distinction the ink's lifetime rests on.
+    private var turnSequence = 0
+
     /// The markup panel the user is drawing on, if there is one.
     private var activeMarkup: CropMarkupWindow?
 
@@ -826,11 +853,18 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
-        // First, before anything that can fault. Four crash reports on 2026-11-04 answered no
-        // questions because a fault does not flush the log, so the last thing in the file was the
-        // last thing that went right. This writes one async-signal-safe line naming the last mouse
-        // event and the window it landed on, then re-raises so macOS still files its report.
+        // First, before anything that can fault: four crash reports today and not one of them says
+        // which surface or which event. A fault does not flush, so the evidence was being lost with
+        // the process.
         CrashBreadcrumb.install()
+        // An outcome line that answered a live question is said aloud from here. The card shows it
+        // either way, but with asking switched on nothing else in the app ever speaks it — and an act
+        // he approved, watched happen and never heard is the "not speaking out" he has reported.
+        hud.onReported = { [weak self] line in
+            Task { [weak self] in
+                try? await self?.speakCaptioned(line)
+            }
+        }
         refreshAllPermissions()
         // A process start is a conversation start. This is the boundary that covers a relaunch, a
         // reboot and a login all at once, because from the app's point of view they are the same
@@ -1159,6 +1193,18 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    /// The ink's lifetime is the card's, and it is watched rather than remembered.
+    ///
+    /// One sink over the card's published phase, because "the card went away" happens in a dozen
+    /// places — a click-away, a new session, a hint replacing the answer — and clearing the ink by
+    /// hand at each of them is how a stale circle survives over a desktop it no longer describes. The
+    /// marks stay while he reads the answer about them (`.result`) and while a confirm card asks about
+    /// the thing he circled (`.waitingForYou` lives inside `.result`), and go when the card goes.
+    ///
+    /// `.listening` and `.thinking` are the two phases a turn *starts* in, and a turn starts twice from
+    /// the ink's point of view: once for the question the marks belong to — an emission that arrives
+    /// moments after the ink goes up and must not take it down — and once for the next question, which
+    /// must. `turnSequence` tells them apart: the ink remembers the turn it was drawn for, and a
     private func bindShortcutTransitions() {
         circleCancellable = globalPushToTalkShortcutMonitor
             .circleTogglePublisher
@@ -1899,6 +1945,37 @@ final class CompanionManager: ObservableObject {
         return await offerPointedAct(act, screenCaptures: screenCaptures, position: position)
     }
 
+    /// Runs one Accessibility call off the main thread, and waits for it right there.
+    ///
+    /// `AXTDriver` blocks by design: it retries a Chromium surface 150 ms after a lazy first read,
+    /// settles a value read-back, and paces a keystroke chunk. Those waits used to run on the main
+    /// thread *inside the main actor's task scope*, and that is a crash rather than a freeze: while
+    /// the thread is blocked there, AppKit queues the events it would normally deliver, and the
+    /// callback that arrives next asks the Swift runtime "am I on the main actor?" — a question whose
+    /// answer is read out of the current task's job, which may already be finished. Three crashes in
+    /// one evening had that one signature: twice from our own `assumeIsolated` in timer blocks (fixed
+    /// by hopping them, and grepped for since), and once on 2026-11-04 at 00:53 from SwiftUI's hover
+    /// dispatch inside `NSHostingView.mouseEntered` — not our code, not reachable by a grep, and only
+    /// dangerous because the thread it ran on had been left in that state.
+    ///
+    /// The driver is safe to move: Accessibility messaging and `CGEventPost` are thread-safe, and the
+    /// only AppKit it touches is `NSWorkspace.runningApplications`, which is a read. Nothing else
+    /// changes: every call is awaited exactly where it was made, so the chain — resolve, policy, card,
+    /// press, re-read-and-compare — keeps its order, and no act ever runs beside another.
+    private func driver<T>(_ work: @escaping @Sendable () -> T) async -> T {
+        await Task.detached(priority: .userInitiated) { AXCarry(work()) }.value.carried
+    }
+
+    /// One Accessibility result carried back across threads.
+    ///
+    /// `AXUIElement` is a Core Foundation reference and Accessibility messaging is documented
+    /// thread-safe, so the value genuinely is transferable; the box exists because the compiler cannot
+    /// know that, and `@unchecked` states the reason rather than hiding it.
+    private struct AXCarry<T>: @unchecked Sendable {
+        let carried: T
+        init(_ carried: T) { self.carried = carried }
+    }
+
     /// An act aimed at a point in the screenshot: map it, hit-test it, then decide.
     private func offerPointedAct(_ act: ActionRequest,
                                  screenCaptures: [CompanionScreenCapture],
@@ -1931,11 +2008,11 @@ final class CompanionManager: ObservableObject {
         }
         // The pixel first, the name second: a model aiming a few points off an icon is a
         // rounding error, not a wrong request, and the element it *named* is the one it meant.
-        guard let target = AXTDriver.target(label: act.label, at: axPoint) else {
+        guard let target = await driver({ AXTDriver.target(label: act.label, at: axPoint) }) else {
             // Say which of the two failures this was, because the fix is different for each:
             // nothing at the point means the aim or the mapping is off, something unpressable
             // means the app has not published that surface to Accessibility.
-            guard let element = AXTDriver.elementAt(axPoint) else {
+            guard let element = await driver({ AXTDriver.elementAt(axPoint) }) else {
                 let reason = AXTDriver.PressResult.noElement(containing: axPoint).userFacingReason
                 Log.write("act: nothing found at \(axPoint)")
                 hud.reportConfirm(reason)
@@ -1957,8 +2034,7 @@ final class CompanionManager: ObservableObject {
                                             question: Self.pressQuestion(
                                                 elementLabel: "the \(named) at "
                                                     + "(\(Int(axPoint.x)),\(Int(axPoint.y)))",
-                                                appName: appName(of: element),
-                                                position: position),
+                                                appName: appName(of: element)),
                                             logPrefix: "act", position: position)
         }
         let element = target.info
@@ -1989,7 +2065,7 @@ final class CompanionManager: ObservableObject {
                 + "\(element.role ?? "-")/\(element.elementLabel) at "
                 + "\(element.frame.map { "(\($0.midX), \($0.midY))" } ?? "-")")
         }
-        if AXTDriver.aimNamesSomethingElse(label: act.label, element: element) {
+        if await driver({ AXTDriver.aimNamesSomethingElse(label: act.label, element: element) }) {
             // The other direction: the aim found a control, the control has a name, and that name
             // is not what the user asked for. With asking off there is no card to catch it, so the
             // log carries it and the outcome line names the control that was actually pressed.
@@ -1998,8 +2074,7 @@ final class CompanionManager: ObservableObject {
         return await offerPolicyAndCard(act, element: element, axPoint: axPoint,
                                         question: Self.pressQuestion(
                                             elementLabel: element.elementLabel,
-                                            appName: appName(of: element),
-                                            position: position),
+                                            appName: appName(of: element)),
                                         logPrefix: "act", position: position)
     }
 
@@ -2019,9 +2094,9 @@ final class CompanionManager: ObservableObject {
             return .stopped(line: reason)
         }
         if act.textToType != nil {
-            switch AXTDriver.typeResolve(named) {
+            switch await driver({ AXTDriver.typeResolve(named) }) {
             case .failure(let miss):
-                return .stopped(line: reportNamedMiss(miss, prefix: "type", act: act))
+                return .stopped(line: await reportNamedMiss(miss, prefix: "type", act: act))
             case .success(let field):
                 let element = field.info
                 Log.write("type: named field — \"\(named.name)\" → \(element.role ?? "-")/"
@@ -2034,9 +2109,9 @@ final class CompanionManager: ObservableObject {
             }
         }
         if let intent = act.scrollIntent {
-            switch AXTDriver.scrollResolve(named, direction: intent.direction) {
+            switch await driver({ AXTDriver.scrollResolve(named, direction: intent.direction) }) {
             case .failure(let miss):
-                return .stopped(line: reportNamedMiss(miss, prefix: "scroll", act: act))
+                return .stopped(line: await reportNamedMiss(miss, prefix: "scroll", act: act))
             case .success(let scroller):
                 let element = scroller.info
                 Log.write("scroll: named — \"\(named.name)\" → \(element.role ?? "-")/"
@@ -2045,22 +2120,21 @@ final class CompanionManager: ObservableObject {
                 var question = ActionRequest.scrollQuestion(elementLabel: named.name,
                                                             direction: intent.direction,
                                                             pages: intent.pages)
-                if let position { question += " (step \(position.index) of \(position.of))" }
                 return await offerPolicyAndCard(act, element: element, axPoint: nil,
                                                 question: question, logPrefix: "scroll",
                                                 position: position)
             }
         }
-        switch AXTDriver.resolve(named) {
+        switch await driver({ AXTDriver.resolve(named) }) {
         case .failure(let miss):
             // The name search compares the words the app publishes *about* a control, and most of the
             // modern web publishes none: measured 2026-10-28, `app=Chrome name=Mute` could not see the
             // mute button in the page's own player bar, because the words were in a child. The ranking
             // is the fallback, not a bypass — same policy, same card, same re-read before pressing,
             // one more kind of words allowed as evidence, and the card says which kind it used.
-            switch AXTDriver.candidateResolve(named) {
+            switch await driver({ AXTDriver.candidateResolve(named) }) {
             case .failure(let rankedMiss):
-                return .stopped(line: reportNamedMiss(rankedMiss, prefix: "act", act: act))
+                return .stopped(line: await reportNamedMiss(rankedMiss, prefix: "act", act: act))
             case .success(let ranked):
                 return await offerRankedAct(act, named: named, ranked: ranked, position: position)
             }
@@ -2080,8 +2154,7 @@ final class CompanionManager: ObservableObject {
             return await offerPolicyAndCard(act, element: element, axPoint: nil,
                                             question: Self.pressQuestion(
                                                 elementLabel: element.elementLabel,
-                                                appName: appName(of: element),
-                                                position: position),
+                                                appName: appName(of: element)),
                                             logPrefix: "act", position: position)
         }
     }
@@ -2108,8 +2181,7 @@ final class CompanionManager: ObservableObject {
         return await offerPolicyAndCard(request, element: element, axPoint: nil,
                                         question: Self.pressQuestion(
                                             elementLabel: description,
-                                            appName: appName(of: element),
-                                            position: position),
+                                            appName: appName(of: element)),
                                         logPrefix: "act", position: position,
                                         // A press aimed at words the application never published as a
                                         // name is an inference about a picture, and `PolicyGate` asks
@@ -2127,9 +2199,9 @@ final class CompanionManager: ObservableObject {
     /// next turn. Naming what is there ends the guessing, for the model and for the user reading the
     /// card.
     private func reportNamedMiss(_ miss: AXTDriver.SemanticMiss, prefix: String,
-                                 act: ActionRequest) -> String {
+                                 act: ActionRequest) async -> String {
         var line = miss.userFacingReason
-        if case .fieldNotFound(let app, _, _) = miss, let hint = availableFieldsHint(app) {
+        if case .fieldNotFound(let app, _, _) = miss, let hint = await availableFieldsHint(app) {
             line += " " + hint
         }
         hud.reportConfirm(line)
@@ -2138,8 +2210,12 @@ final class CompanionManager: ObservableObject {
     }
 
     /// The fields an app publishes, in the words `name=` has to use.
-    private func availableFieldsHint(_ app: String) -> String? {
-        let names = AXTDriver.editableFields(ownedByNamed: app).fields.compactMap { info in
+    ///
+    /// Off the main thread: this is a sweep of up to 700 elements with a settle pause between retries,
+    /// which is the longest thing the act path does after a refusal — see `driver`.
+    private func availableFieldsHint(_ app: String) async -> String? {
+        let sweep = await driver({ AXTDriver.editableFields(ownedByNamed: app) })
+        let names = sweep.fields.compactMap { info in
             [info.title, info.descriptionText]
                 .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .first { !$0.isEmpty }
@@ -2173,7 +2249,6 @@ final class CompanionManager: ObservableObject {
                 + "\(AXTDriver.fieldLabel(for: element)) in \(appName(of: element))? "
                 + "Starting: \"\(head)…\""
         }
-        if let position { question += " (step \(position.index) of \(position.of))" }
         return question
     }
 
@@ -2235,7 +2310,7 @@ final class CompanionManager: ObservableObject {
         hud.onConfirmAnswer = { [weak self] outcome in
             self?.answerAct(outcome)
         }
-        hud.askConfirm(question)
+        hud.askConfirm(question, step: position?.index, of: position?.of)
         // The aim goes in the line, because "which route resolved this press" is the first
         // question anyone asks when a press lands somewhere unexpected: a pixel path prints the
         // point it mapped to, a named path prints `by name` and has no point to print.
@@ -2245,15 +2320,14 @@ final class CompanionManager: ObservableObject {
         return .asked
     }
 
-    /// The card's question for a press, with the plan's position when there is a plan.
+    /// The card's question for a press.
     ///
-    /// "Step 2 of 4" is on the card because a plan is approved one step at a time, and a user who
-    /// tapped Allow twice needs to know the card is going to ask again.
-    static func pressQuestion(elementLabel: String, appName: String,
-                              position: (index: Int, of: Int)?) -> String {
-        let base = "Press \(elementLabel) in \(appName)?"
-        guard let position else { return base }
-        return "\(base) (step \(position.index) of \(position.of))"
+    /// It says only what is about to happen. Which step of a plan it is used to be spliced into this
+    /// sentence — `Press Send in Mail? (step 2 of 4)` — while the timeline beside it said the same
+    /// fact as bare `2/4` digits; now the ordinal travels as data to `askConfirm(step:of:)` and is
+    /// drawn once, labelled, above the question.
+    static func pressQuestion(elementLabel: String, appName: String) -> String {
+        "Press \(elementLabel) in \(appName)?"
     }
 
     /// Run a reply's act tags in order — one spoken request, several acts.
@@ -2507,12 +2581,12 @@ final class CompanionManager: ObservableObject {
         guard let text = act.textToType else {
             return .stopped(line: "That ask was not a type act.")
         }
-        guard let field = AXTDriver.typeTarget(label: act.label, at: axPoint) else {
+        guard let field = await driver({ AXTDriver.typeTarget(label: act.label, at: axPoint) }) else {
             // Web content is the one place a caret exists with no field around it: a Chromium
             // editor publishes nothing until the click puts the cursor in it. The question names
             // the click, so what he approves is exactly what happens — click, caret, keystrokes.
-            if let text = act.textToType, AXTDriver.webEditorCandidate(at: axPoint),
-               let hit = AXTDriver.elementAt(axPoint) {
+            if let text = act.textToType, await driver({ AXTDriver.webEditorCandidate(at: axPoint) }),
+               let hit = await driver({ AXTDriver.elementAt(axPoint) }) {
                 var withClick = act
                 withClick.webFocusClick = true
                 let question = ActionRequest.webTypeQuestion(
@@ -2529,7 +2603,7 @@ final class CompanionManager: ObservableObject {
             // point holds an `AXStaticText "Search"` that answers `AXPress` and is not a field —
             // the field only exists after it is pressed. "There is no text field there" is true and
             // useless; the useful sentence says what to do instead.
-            if let opener = AXTDriver.target(label: act.label, at: axPoint) {
+            if let opener = await driver({ AXTDriver.target(label: act.label, at: axPoint) }) {
                 reason = "\(opener.info.elementLabel) is not a field yet — press it first, "
                     + "then type in the next step."
             }
@@ -2559,20 +2633,20 @@ final class CompanionManager: ObservableObject {
         // nothing else changes: the field the click reveals still goes through the same focus
         // read-back every other field gets before a single character moves.
         if act.webFocusClick, let axPoint {
-            let result = AXTDriver.typeWeb(text, at: axPoint)
+            let result = await driver({ AXTDriver.typeWeb(text, at: axPoint) })
             hud.reportConfirm(result.userFacingReason)
             if result.didType { hud.offerTypedTextForCopy(text) }
             Log.write("type: web focus-click at \(axPoint) → \(result.userFacingReason)")
             return (result.userFacingReason, result.didType)
         }
-        guard let now = fieldNow(act, at: axPoint), now.info == approved
+        guard let now = await fieldNow(act, at: axPoint), now.info == approved
         else {
             let line = "That field moved or closed, so Chunks did not type into it."
             hud.reportConfirm(line)
             Log.write("type: field gone or drifted — approved \(approved.elementLabel)")
             return (line, false)
         }
-        let result = AXTDriver.type(text, into: now)
+        let result = await driver({ AXTDriver.type(text, into: now) })
         hud.reportConfirm(result.userFacingReason)
         if result.didType { hud.offerTypedTextForCopy(text) }
         Log.write("type: \(act.label) → \(result.userFacingReason)")
@@ -2587,8 +2661,9 @@ final class CompanionManager: ObservableObject {
     private func offerScroll(_ act: ActionRequest, direction: ActionRequest.ScrollDirection,
                              pages: Int, at axPoint: CGPoint,
                              position: (index: Int, of: Int)? = nil) async -> StepOutcome {
-        guard let scroller = AXTDriver.scrollTarget(direction: direction, label: act.label,
-                                                    at: axPoint) else {
+        guard let scroller = await driver({ AXTDriver.scrollTarget(direction: direction,
+                                                                   label: act.label,
+                                                                   at: axPoint) }) else {
             let reason = AXTDriver.ScrollResult.noScrollableElement(
                 containing: axPoint).userFacingReason
             hud.reportConfirm(reason)
@@ -2602,7 +2677,6 @@ final class CompanionManager: ObservableObject {
 
         var question = ActionRequest.scrollQuestion(elementLabel: act.label,
                                                     direction: direction, pages: pages)
-        if let position { question += " (step \(position.index) of \(position.of))" }
         return await offerPolicyAndCard(act, element: element, axPoint: axPoint,
                                         question: question, logPrefix: "scroll", position: position)
     }
@@ -2611,14 +2685,14 @@ final class CompanionManager: ObservableObject {
     private func scrollAct(_ act: ActionRequest, direction: ActionRequest.ScrollDirection,
                            pages: Int, at axPoint: CGPoint?,
                            approved: AXElementInfo) async -> (line: String, happened: Bool) {
-        guard let now = scrollerNow(act, direction: direction, at: axPoint),
+        guard let now = await scrollerNow(act, direction: direction, at: axPoint),
               now.info == approved else {
             let line = "That list moved or closed, so Chunks did not scroll it."
             hud.reportConfirm(line)
             Log.write("scroll: scroller gone or drifted at \(axPoint) — approved \(approved.elementLabel)")
             return (line, false)
         }
-        let result = AXTDriver.scroll(direction, pages: pages, into: now)
+        let result = await driver({ AXTDriver.scroll(direction, pages: pages, into: now) })
         hud.reportConfirm(result.userFacingReason)
         Log.write("scroll: \(act.label) → \(result.userFacingReason)")
         return (result.userFacingReason, result.didScroll)
@@ -2645,7 +2719,7 @@ final class CompanionManager: ObservableObject {
         if let point = act.pointerClickPoint {
             // No re-read-and-compare here, because there is no element to compare — what he approved
             // is the place, and the place is what is clicked.
-            let clicked = AXTDriver.click(at: point)
+            let clicked = await driver({ AXTDriver.click(at: point) })
             let line = clicked ? "Clicked the area at (\(Int(point.x)),\(Int(point.y)))."
                                : "The click could not be posted."
             hud.reportConfirm(line)
@@ -2653,7 +2727,7 @@ final class CompanionManager: ObservableObject {
                 + (clicked ? "both events posted" : "event source refused"))
             return (line, clicked)
         }
-        guard let now = pressTargetNow(act, at: axPoint) else {
+        guard let now = await pressTargetNow(act, at: axPoint) else {
             let line = "That control moved or closed, so Chunks did not press it."
             hud.reportConfirm(line)
             Log.write("act: target gone — approved \(approved.elementLabel)")
@@ -2668,8 +2742,8 @@ final class CompanionManager: ObservableObject {
         }
         // Read *before* pressing: after the press the answer is already contaminated by the very
         // activation this check is looking for.
-        let snapshotBefore = AXTDriver.pressSnapshot()
-        let pressed = AXTDriver.press(now)
+        let snapshotBefore = await driver({ AXTDriver.pressSnapshot() })
+        let pressed = await driver({ AXTDriver.press(now) })
         let result: AXTDriver.PressResult
         if case .actionFailed(let code, let action, _, let element) = pressed,
            AXTDriver.isAmbiguousFailure(code),
@@ -2695,34 +2769,35 @@ final class CompanionManager: ObservableObject {
     /// be the thing the card described. A named request cannot fall back to a point, because the
     /// whole reason it is named is that no point was ever agreed to.
     private func pressTargetNow(_ act: ActionRequest, at axPoint: CGPoint?)
-        -> AXTDriver.PressTarget? {
+        async -> AXTDriver.PressTarget? {
         if let named = act.semanticTarget {
             // A card that described a *ranked* control is re-read the same way, and against the words
             // it quoted rather than against an element's own name — which on this route is empty.
             // The name search is not tried first here on purpose: if the page has since published a
             // name for something else, that something else is not what he was asked about.
             if let approved = act.rankedAim {
-                guard case .success(let found) = AXTDriver.candidateResolve(named),
+                guard case .success(let found) = await driver({ AXTDriver.candidateResolve(named) }),
                       CandidateRanker.stillAnswers(approved, now: found.ranked.element) else {
                     return nil
                 }
                 return found.target
             }
-            if case .success(let target) = AXTDriver.resolve(named) { return target }
+            if case .success(let target) = await driver({ AXTDriver.resolve(named) }) { return target }
             return nil
         }
         guard let axPoint else { return nil }
-        return AXTDriver.target(label: act.label, at: axPoint)
+        return await driver({ AXTDriver.target(label: act.label, at: axPoint) })
     }
 
     /// The approved field, found again. The type path's twin of `pressTargetNow`.
-    private func fieldNow(_ act: ActionRequest, at axPoint: CGPoint?) -> AXTDriver.TypeTarget? {
+    private func fieldNow(_ act: ActionRequest, at axPoint: CGPoint?)
+        async -> AXTDriver.TypeTarget? {
         if let named = act.semanticTarget {
-            if case .success(let field) = AXTDriver.typeResolve(named) { return field }
+            if case .success(let field) = await driver({ AXTDriver.typeResolve(named) }) { return field }
             return nil
         }
         guard let axPoint else { return nil }
-        return AXTDriver.typeTarget(label: act.label, at: axPoint)
+        return await driver({ AXTDriver.typeTarget(label: act.label, at: axPoint) })
     }
 
     /// The approved scroller, found again.
@@ -2730,15 +2805,16 @@ final class CompanionManager: ObservableObject {
     /// Re-resolved rather than cached because the scroll happens after the card was answered, and a
     /// list that has since been replaced by a detail view must not be moved by the old verdict.
     private func scrollerNow(_ act: ActionRequest, direction: ActionRequest.ScrollDirection,
-                             at axPoint: CGPoint?) -> AXTDriver.ScrollTarget? {
+                             at axPoint: CGPoint?) async -> AXTDriver.ScrollTarget? {
         if let named = act.semanticTarget {
-            if case .success(let scroller) = AXTDriver.scrollResolve(named, direction: direction) {
+            if case .success(let scroller) = await driver({ AXTDriver.scrollResolve(named, direction: direction) }) {
                 return scroller
             }
             return nil
         }
         guard let axPoint else { return nil }
-        return AXTDriver.scrollTarget(direction: direction, label: act.label, at: axPoint)
+        return await driver({ AXTDriver.scrollTarget(direction: direction, label: act.label,
+                                                     at: axPoint) })
     }
 
     // MARK: - Running a tool
@@ -3414,6 +3490,10 @@ final class CompanionManager: ObservableObject {
             // Unknown, and unknowable: `screencapture -i` returns pixels and no rectangle. Pixel
             // aims on such a turn are refused downstream rather than guessed at.
             cropFrame: nil)
+        // No ink on this path, and that is not an oversight: with no rectangle for the crop, marks he
+        // drew on the frozen picture cannot be placed on the live screen, and a guessed position
+        // would leave a circle over something he never circled.
+        Log.write("annotate: selector path — no ink layer, the crop's place on screen is unknown")
         Log.write("annotate: region selected — \(image.pixelsWide)x\(image.pixelsHigh)px, asking")
         ask(text: "What is the part I selected, and what is it for?")
     }
@@ -3444,9 +3524,76 @@ final class CompanionManager: ObservableObject {
             hud.answerConfirm(outcome)
             return
         }
+        // A question rather than an answer to the open card: the ink's lifetime keys off this, and a
+        // continuation round deliberately does not come through here, because it is the same turn
+        // about the same marks.
+        turnSequence += 1
+        turnEpoch += 1
         lastTranscript = question
         sendTranscriptToBrainWithScreenshot(transcript: question, source: source)
     }
+
+    /// A turn that died, with the one way back into it.
+    ///
+    /// `hud.fail` names the problem; this adds the recovery, because naming the problem and not the
+    /// recovery is the half of an error message this surface already gets right for a missing field
+    /// and got wrong for a dead turn. Only a turn he started himself gets the control — a scheduled
+    /// prompt is nobody waiting for an answer, and "Ask again" on a card for something that fired at
+    /// 07:00 would run it now.
+    private func failTurn(_ message: String) {
+        Log.writeCritical("turn: failed — \(message)")
+        hud.fail(message)
+        guard let ask = lastAsk, ask.source != .routine else { return }
+        hud.onRetry = { [weak self] in
+            self?.ask(text: ask.text, source: ask.source)
+        }
+    }
+
+    /// The watchdog's whole job: a card that has been thinking for seventy seconds with nothing on it
+    /// is not slow, it is abandoned by whatever it is waiting on.
+    ///
+    /// The parked call is not killed — a detached Accessibility read or a window-server capture
+    /// cannot be — so the turn's ownership is taken away instead: the epoch moves on, and the task
+    /// still parked on that call finds, when it wakes, that its card belongs to somebody else. What
+    /// he gets is the honest half this surface owes him: a named failure, a spoken line, and Ask
+    /// again.
+    private func turnStalled(epoch: Int) {
+        guard epoch == turnEpoch else { return }
+        guard case .thinking = hud.phase else { return }
+        turnEpoch += 1
+        Log.writeCritical("turn: watchdog — \(Int(Self.turnWatchdogSeconds))s with nothing on the "
+                          + "card; failing it and letting the parked call finish alone")
+        continuationTask?.cancel()
+        continuationTask = nil
+        isContinuingPlan = false
+        voiceState = .idle
+        failTurn("Chunks waited \(Int(Self.turnWatchdogSeconds)) seconds and nothing landed. "
+                 + "Ask again and it will look once more.")
+        speakCreditsErrorFallback()
+    }
+
+    /// Race a call against a deadline and take whichever finishes first.
+    ///
+    /// The window server, the disk and Accessibility are not ours: each has been photographed
+    /// not returning, and an `await` with no deadline is a card that counts seconds forever. The
+    /// losing side is cancelled rather than awaited, and the caller decides what the timeout means —
+    /// a capture that never came is a failed turn, a file read that never came is a turn without the
+    /// file.
+    private func withDeadline<T: Sendable>(_ seconds: Double,
+                                           _ work: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await work() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw DeadlineExpired()
+            }
+            guard let first = try await group.next() else { throw DeadlineExpired() }
+            group.cancelAll()
+            return first
+        }
+    }
+
+    private struct DeadlineExpired: Error {}
 
     /// Runs one turn: capture the screens, ask the model, stream the answer onto the notch
     /// HUD, point the cursor at whatever the reply names, and read the completion line aloud.
@@ -3457,6 +3604,15 @@ final class CompanionManager: ObservableObject {
     /// cannot be half-handled by one consumer and missed by another.
     private func sendTranscriptToBrainWithScreenshot(transcript: String,
                                                      source: ConversationTurn.Source) {
+        // The pair, kept from the one funnel every turn passes through, is what "Ask again" re-asks.
+        // Not `lastTranscript` alone: that is written by the two callers before they reach here, and a
+        // re-ask needs the way the words arrived too, because a scheduled prompt is nobody waiting for
+        // an answer and gets no button.
+        lastAsk = (transcript, source)
+        // Critical, because this is the line a crash report needs and never had: every fault on
+        // 2026-11-04 left a log with no turn-start in it, so nobody could say which question died.
+        Log.writeCritical("turn: start — \(source.phrase), \(transcript.count) chars: "
+                          + "\(transcript.prefix(80))")
         // A request from the user restarts the plan budget; a continuation of the plan already
         // running spends it. Recognised by the flag rather than by the words, so a user who says
         // "continue" still gets a fresh four rounds.
@@ -3504,7 +3660,19 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         ttsClient.stopPlayback()
 
+        // The watchdog is a sibling, not a deadline inside the work: nothing below can be trusted to
+        // honour a cancellation, and a turn that cannot be interrupted must still be *reported*.
+        let epoch = turnEpoch
+        let watchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.turnWatchdogSeconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.turnStalled(epoch: epoch)
+        }
+
         currentResponseTask = Task {
+            // Every exit path of a turn stops the watchdog, including the guards that bail early:
+            // a watchdog outliving its turn would fail the *next* one at seventy seconds.
+            defer { watchdog.cancel() }
             voiceState = .processing
             hud.beginThinking()
 
@@ -3544,14 +3712,23 @@ final class CompanionManager: ObservableObject {
                 if let regionCapture {
                     screenCaptures = [regionCapture]
                 } else {
-                    // Capture all connected screens so the AI has full context
-                    screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    // Capture all connected screens so the AI has full context. Raced, because the
+                    // window server is the one participant in a turn that has never promised to
+                    // answer, and an unraced capture is the card counting seconds for an hour.
+                    screenCaptures = try await withDeadline(10) {
+                        try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    }
                 }
 
-                // The disk and the display are both done with; the request needs both.
-                await fileRead.value
+                // The disk and the display are both done with; the request needs both. Raced too: a
+                // document that never finishes slicing must cost the turn its file, not its voice.
+                do {
+                    try await withDeadline(20) { await fileRead.value }
+                } catch {
+                    Log.write("turn: the file read did not finish in 20s — the turn goes without it")
+                }
 
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, turnEpoch == epoch else { return }
 
                 // Each image is labelled with its own size *and* the grid to aim in, because the
                 // space a reply comes back in is decided at the picture, not in a prompt the model
@@ -3603,7 +3780,7 @@ final class CompanionManager: ObservableObject {
                     }
                 )
 
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, turnEpoch == epoch else { return }
 
                 streamer.finish()
                 if streamer.retractUnbackedPromises() {
@@ -3616,7 +3793,7 @@ final class CompanionManager: ObservableObject {
                 } else {
                     // A 200 response that parses to nothing is a real outcome, and an empty
                     // card would look like the HUD broke rather than like the model stalled.
-                    hud.fail("The model replied without saying anything.")
+                    failTurn("The model replied without saying anything.")
                 }
 
                 // Memory is applied once the reply is complete, never mid-stream: a partially
@@ -3858,6 +4035,14 @@ final class CompanionManager: ObservableObject {
                     saying += saying.isEmpty ? outcome : " " + outcome
                 }
                 if !saying.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if streamer.endedMidConstruct {
+                        // The words were spoken as far as the stream got them, and the reason the
+                        // sentence stops half-way is the model's, not the app's — but it has to be
+                        // written down, or the next reader sees a truncated answer with no trace of
+                        // why.
+                        Log.write("voice: the reply ended inside a <SAY> — speaking \(saying.count) "
+                            + "chars as far as they go")
+                    }
                     do {
                         try await speakCaptioned(saying)
                         // speakText returns after player.play() — audio is now playing
@@ -3867,6 +4052,14 @@ final class CompanionManager: ObservableObject {
                         print("⚠️ ElevenLabs TTS error: \(error)")
                         speakCreditsErrorFallback()
                     }
+                } else {
+                    // Silence is a state that has to be reported. A turn that said nothing and logged
+                    // nothing is indistinguishable from a turn that is still working, which is exactly
+                    // what he saw on 2026-11-04 and had no way to describe except "not even speaking a
+                    // word".
+                    Log.write("voice: nothing to speak this turn — speech \(streamer.speech.count) "
+                        + "chars, detail \(streamer.detail.count)"
+                        + (streamer.endedMidConstruct ? ", and the reply ended inside a construct" : ""))
                 }
             } catch is CancellationError {
                 // User spoke again — response was interrupted, and the new press already
@@ -3875,7 +4068,7 @@ final class CompanionManager: ObservableObject {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 Log.write("turn failed: \(Log.userMessage(for: error))")
-                hud.fail(Log.userMessage(for: error))
+                failTurn(Log.userMessage(for: error))
                 speakCreditsErrorFallback()
             }
 
@@ -3939,10 +4132,22 @@ final class CompanionManager: ObservableObject {
 
         transientHideTask?.cancel()
         transientHideTask = Task {
+            // Capped, like the caption's wait: a synthesizer that reports "still playing" forever used
+            // to make this loop the thing that never ended, and an overlay that never hides is a
+            // screen he cannot use.
+            let started = Date()
+            func gaveUpWaiting() -> Bool {
+                Date().timeIntervalSince(started) > Self.captionCeilingSeconds
+            }
             // Wait for TTS audio to finish playing
             while ttsClient.isPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
+                if gaveUpWaiting() {
+                    Log.write("overlay: transient hide stopped waiting for playback after "
+                              + "\(Int(Self.captionCeilingSeconds))s")
+                    break
+                }
             }
 
             // Wait for pointing animation to finish (location is cleared
@@ -3950,6 +4155,11 @@ final class CompanionManager: ObservableObject {
             while detectedElementScreenLocation != nil {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
+                if gaveUpWaiting() {
+                    Log.write("overlay: transient hide stopped waiting for the pointer after "
+                              + "\(Int(Self.captionCeilingSeconds))s")
+                    break
+                }
             }
 
             // Pause 1s after everything finishes, then fade out
@@ -3983,13 +4193,38 @@ final class CompanionManager: ObservableObject {
     ///
     /// `speakText` returns as soon as playback starts, so the wait is on `isPlaying` — the only honest
     /// signal this client gives.
+    /// Say the words, and say afterwards whether they were said.
+    ///
+    /// The caption is drawn before the voice starts, so a silent speaker and a working one look the
+    /// same on screen — and on 2026-11-04 the answer appeared on the card with no speech at all and
+    /// nothing in the log about it. Every call now records its own outcome, because the rule this
+    /// project already applies to an act applies to a sentence: something he cannot hear and cannot
+    /// find in the record is indistinguishable from something that never happened.
     private func speakCaptioned(_ text: String) async throws {
         captions.show(text)
+        let started = Date()
         do {
             try await ttsClient.speakText(text)
         } catch {
             captions.hide()
+            Log.write("voice: refused after \(String(format: "%.1f", Date().timeIntervalSince(started)))s "
+                + "(\(text.count) chars) — \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
             throw error
+        }
+        // A synthesizer that never starts reports `isPlaying` false from the very first poll, and the
+        // wait loop below then exits instantly and logs "spoke N chars" about silence — which is
+        // exactly the 2026-11-04 report: an answer on the card, a log claiming speech, and no sound.
+        // Two seconds to begin; if it does not, the sentence was never said and the record says so.
+        var began = false
+        for _ in 0..<8 {
+            if ttsClient.isPlaying { began = true; break }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        guard began else {
+            captions.hide()
+            Log.writeCritical("voice: the synthesizer never started — \(text.count) chars were never "
+                              + "said; the answer is on the card only")
+            return
         }
         var waited = 0.0
         while ttsClient.isPlaying, waited < Self.captionCeilingSeconds {
@@ -3997,9 +4232,21 @@ final class CompanionManager: ObservableObject {
             waited += 0.25
         }
         captions.hide()
+        Log.write("voice: spoke \(text.count) chars in "
+            + "\(String(format: "%.1f", Date().timeIntervalSince(started)))s"
+            + (waited >= Self.captionCeilingSeconds ? " — stopped waiting at the ceiling, "
+                + "the voice may still be playing" : ""))
     }
 
-    private func speakCreditsErrorFallback() {        let utterance = "I can't reach the model right now. Chunks will try again in a moment."
+    /// The one sentence said when a turn died, spoken because a card nobody is looking at is silent.
+    ///
+    /// It names the control rather than promising automatic retry. The old line said "Chunks will try
+    /// again in a moment", which was false by construction: this is called from the catch at the end
+    /// of the chain, after every retry every model offered has already been spent — and a sentence
+    /// that promises a retry nobody performs is why he asked, on 2026-11-04, why the app was "not even
+    /// speaking a word" when he tried again.
+    private func speakCreditsErrorFallback() {
+        let utterance = "I can't reach the model right now. Ask me again when you want it retried."
         let synthesizer = NSSpeechSynthesizer()
         synthesizer.startSpeaking(utterance)
         voiceState = .responding

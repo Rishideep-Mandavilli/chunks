@@ -217,12 +217,31 @@ SwiftUI's own event machinery: twice `NSHostingView.mouseEntered` → `HoverEven
 ours, so no grep removes it, and it is not the hover feature either, since a plain button gesture
 reaches the same call. A synthetic click dispatched into the real card in a fresh process does *not*
 fault (`--probe-hover`, now in the gate), so the trigger needs something the probe does not reproduce —
-a real event, in the app's own panel, after the app's own history. What was missing was evidence: a
-fault does not flush, so four reports answered no questions. `CrashBreadcrumb` now installs handlers
-for SIGSEGV/SIGBUS/SIGILL/SIGABRT/**SIGTRAP** (a Swift runtime trap raises the last of these, and the
-first version of the probe missed it) that write one async-signal-safe line naming the last mouse event
-and the surface it landed on, then re-raise so macOS still files its report. `--probe-crash` dies on
-purpose to prove the line arrives, and the gate requires exit 139 plus the sentence.
+a real event, in the app's own panel, after the app's own history. **A synthetic `mouseEntered`
+delivered straight to a hosting view is not evidence at all**: it hangs the process in every surface
+combination tried, including a card of two plain buttons, and hangs are the probe's own call rather
+than the app's behaviour. The probe's threading was itself wrong twice — a `Task { @MainActor }`
+started before `NSApplication.run` is on a pool thread, and AppKit calls made there crash with a
+message that looks exactly like the bug under investigation — so its work now begins in
+`applicationDidFinishLaunching`, which AppKit guarantees on the main thread inside the loop.
+What was missing was evidence: a fault does not flush, so four reports answered no questions.
+`CrashBreadcrumb` now installs handlers for SIGSEGV/SIGBUS/SIGILL/SIGABRT/**SIGTRAP** (a Swift runtime
+trap raises the last of these, and the first version of the probe missed it) that write one
+async-signal-safe line naming the last mouse event and the surface it landed on — by window
+*identifier*, because the notch card and the menu-bar panel are the same private class and the first
+version said "another window" for a fault on the card — then re-raise so macOS still files its report.
+`--probe-crash` dies on purpose to prove the line arrives, and the gate requires exit 139 plus the
+sentence.
+
+**A reply that ends inside `<SAY>` is still spoken.** Measured 2026-11-04 at 15:00: the cloud chain
+served a turn that stopped mid-construct — `reply ends ‣ <SAY>you're looking at qoder, where` — and the
+card showed raw markup while **nothing at all was spoken**, because the parser releases an unterminated
+construct as text (fail-open, which is right for a malformed `[ACT:]` the user must see) and the caller
+only speaks a non-empty sentence. An unclosed `<SAY>` is now treated as the sentence it is: its words go
+to `speech`, the markup does not reach the card, `endedMidConstruct` is recorded and logged, and a turn
+with nothing to say **logs that** instead of being silent in both channels. The rule is the one already
+applied to an act: something he can neither hear nor find in the record is indistinguishable from
+something that never happened.
 
 1. **All coordinates are `LogicalPoint`.** Screenshots are device pixels (2x); AX reports
    logical points; `NSPanel` frames are logical. Conversion happens exactly once, inside

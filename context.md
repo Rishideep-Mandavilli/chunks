@@ -3317,3 +3317,47 @@ seconds and whether it was refused.
 
 Green: 827/827, gate 51 passed / 4 environment skips (the two new canaries and the main-thread measure
 are in it), smoke 18/18.
+
+## 2026-11-04 (late evening) — I retracted my own reproducer, and found the silence
+
+He said it was still happening, and gave the sharpest clue yet: **opening the menu-bar panel quits the
+app**. The breadcrumb earned its keep immediately — the log now carried
+
+```
+chunks faulted on SIGSEGV — last mouse event: mouseEntered on another window at uptime 3646s
+```
+
+"another window" was my fault: the notch card and the menu-bar panel are the *same* private class,
+`KeyablePanel`, so the handler had nothing to distinguish them. Both now carry a window identifier and
+the next report will name the surface.
+
+**Then I had to take back a claim.** The hover probe looked like a deterministic reproducer: with the
+synthetic `mouseEntered` added, the run exited 139 and the report showed the same five frames as his.
+Fixed the threading and it stopped reproducing anything. Two things were wrong with it. A
+`Task { @MainActor in … }` enqueued before `NSApplication.run` runs on a **pool thread**, so the probe
+was building windows and delivering events off the main thread — the very defect that produced the
+"NSWindow should only be instantiated on the main thread" abort at 23:14 yesterday, dressed up as a
+result. And a synthetic enter delivered straight to a hosting view **hangs** the process in every
+combination, including a card of two plain buttons, which is the probe's own call going where AppKit
+does not intend, not the app doing anything. The work now starts in `applicationDidFinishLaunching`,
+which AppKit guarantees on the main thread inside the loop, and with that fixed every mode exits 0.
+So: no reproducer, and `--probe-hover` stays only as the canary it can honestly be. That is written
+into the file and into `AGENTS.md` rather than left in a commit message nobody will read.
+
+**The silence had a separate, findable cause, and it was in the log all along.** The turn he screenshotted
+ended mid-construct: `reply ends ‣ <SAY>you're looking at qoder, where`. The parser releases an
+unterminated construct as text — fail-open, correct for a broken `[ACT:]` he must see — so the markup
+went on the card and `speech` stayed empty, and the caller only speaks a non-empty sentence. Nothing was
+said, and nothing was recorded. Now an unclosed `<SAY>` is treated as the sentence it is: its words go
+to speech, the markup doesn't reach the card, the truncation is logged, and a turn with nothing to say
+logs *that* too. Two unit cases, plus the older case that asserted the raw-tag behaviour rewritten to
+keep its original property (nothing is swallowed) with the reason for the change beside it.
+
+History, since it narrows the crash: the app's own reports are six, and the SwiftUI-event signature
+first appears at **00:53 on 11-04** — after the caption panel ran for about 1¾ hours without it, and
+forty-five minutes after the ink layer shipped. That is a hint, not a finding, and I am not going to
+call it one.
+
+Green: 829/829 tests, gate 53 passed / 1 environment skip plus the local-model flake that passes
+standalone on the same binary, smoke 18/18. No keep-alive, as he asked: the app should work like it did,
+and the recorder is what will say why it doesn't.

@@ -162,26 +162,6 @@ public struct ScreenCapture: Sendable {
 
             case .arrow(let from, let to):
                 drawArrow(from: px(from), to: px(to), lineWidth: lineWidth, context: context)
-
-            case .pin(let point):
-                // Filled disc with a pale ring, because a pin is the one mark that has to survive being
-                // burned into a JPEG at half resolution: a hollow circle of one pixel would vanish,
-                // and a pin the model cannot see is a question about nothing. The three radii are
-                // `AnnotationShape`'s — the same numbers the layer on his screen draws with, scaled
-                // into this image, with a floor because a clamp to 1280px can shrink a display enough
-                // that the true scale would leave a dot under two pixels wide.
-                let centre = px(point)
-                let scale = measuredScale
-                let dot = max(3, AnnotationShape.pinDotRadius * scale)
-                let gap = max(1, AnnotationShape.pinRingGap * scale)
-                context.fillEllipse(in: CGRect(x: centre.x - dot, y: centre.y - dot,
-                                               width: dot * 2, height: dot * 2))
-                context.setLineWidth(max(1, AnnotationShape.pinRingWidth * scale))
-                context.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-                context.strokeEllipse(in: CGRect(x: centre.x - dot - gap, y: centre.y - dot - gap,
-                                                 width: (dot + gap) * 2, height: (dot + gap) * 2))
-                context.setLineWidth(lineWidth)
-                context.setStrokeColor(AnnotationShape.overlayStrokeColor)
             }
         }
 

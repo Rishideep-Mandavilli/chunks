@@ -245,33 +245,7 @@ if [[ -z "$geom_app" || -z "$geom_title" || "$geom_title" == "desktop" ]]; then
   printf '  \033[33mSKIP\033[0m  geometry: no real window on screen to place (the desktop is not one)\n'
   skip=$((skip + 1))
 else
-  # Accessibility publishes an app's windows intermittently — measured 2026-11-03, six of eight running
-  # apps answered an empty window list at once — so a window the listing called reachable can refuse the
-  # move a second later, correctly. Walking the next few candidates keeps the check about the arithmetic
-  # rather than about which app happened to be quiet; a SKIP when every one refuses is the honest answer.
-  geom_out=""
-  # A while-read loop, not a for-in: app names contain spaces ("Google Chrome"), and word splitting
-  # would hand the probe half an app name and call the refusal a failure.
-  while IFS= read -r candidate; do
-    [[ -z "$candidate" ]] && continue
-    try_out="$("$BIN" --probe-geometry "$candidate|left" 2>&1)"
-    if printf '%s' "$try_out" | grep -q "would write"; then
-      geom_out="$try_out"
-      geom_app="${candidate%%|*}"
-      geom_title="${candidate##*|}"
-      break
-    fi
-  done < <("$BIN" --probe-windows 2>&1 | grep -E '^  [A-Za-z]' | grep '"' \
-      | grep -v '"desktop"' | grep -v 'out of reach' | head -6 \
-      | sed -E 's/^  //; s/  +/ /g' | awk '{i=index($0,"\""); app=substr($0,1,i-2); sub(/[ ]+$/,"",app);
-                                          title=$0; sub(/^[^"]*"/,"",title); sub(/".*/,"",title);
-                                          print app "|" title}')
-  if [[ -z "$geom_out" ]]; then
-    printf '  \033[33mSKIP\033[0m  geometry: every listed window refused the move — Accessibility was publishing nothing reachable at that moment\n'
-    skip=$((skip + 1))
-  fi
-fi
-if [[ -n "${geom_out:-}" ]]; then
+  geom_out="$("$BIN" --probe-geometry "$geom_app|$geom_title|left" 2>&1)"
   pixel_out="$("$BIN" --probe-geometry "$geom_app|$geom_title|400,220" 2>&1)"; pixel_status=$?
   # `display=3` is inside the grammar's cap and outside this Mac's one screen, so it reaches the runtime
   # answer. `display=9` is past the cap and is refused at parse — two different doors, and a check that
@@ -473,11 +447,7 @@ echo "file reading, end to end"
 # the day it is written and fails for a reason that has nothing to do with the app the day after.
 TEXT_FIXTURE="$PWD/AGENTS.md"
 PDF_FIXTURE="$(ls -1t "$HOME"/Downloads/*.pdf 2>/dev/null | head -1 || true)"
-# The newest real Word document, never a `~$…` owner file: Word drops one beside an open document and
-# it is *newer* than the document, so a plain `ls -t` picks 165 bytes of author metadata and calls it
-# "a Word file" — which is exactly how this check failed on 2026-11-04, and the same trap the product's
-# own ranking had to be closed against (`FileMention.isAutomaticCandidate`).
-DOC_FIXTURE="$(ls -1t "$HOME"/Downloads/*.docx 2>/dev/null | grep -v '/~\$' | head -1 || true)"
+DOC_FIXTURE="$(ls -1t "$HOME"/Downloads/*.docx 2>/dev/null | head -1 || true)"
 IMG_FIXTURE="$(ls -1t "$HOME"/Downloads/*.png "$HOME"/Downloads/*.jpg "$HOME"/Downloads/*.jpeg 2>/dev/null | head -1 || true)"
 
 check "find: a sentence names one file"              "$BIN" --probe-find 'read the resume in my downloads'
@@ -512,105 +482,7 @@ file_check "the menu-bar panel"            "$RENDER_DIR/panel.png"  40000
 file_check "the first-run flow, all three steps" "$RENDER_DIR/setup.png" 60000
 echo
 
-echo "the ink that stays on screen while a turn runs"
-# Shows his marks on the display for a few seconds and never takes a click: click-through, no key
-# window, no activation, and it clears itself. The probe flips the window's sharing type and captures
-# either side of it, because "the capture shows no ink" is also what an invisible layer would produce.
-check "ink: inert, invisible to captures, and it lets go" "$BIN" --probe-ink
-"$BIN" --render-ink "$RENDER_DIR/ink.png" >/dev/null 2>&1
-file_check "the ink render, one of every mark" "$RENDER_DIR/ink.png" 20000
-echo
-
 echo "the safety contract, asserted not assumed"
-# Every Accessibility call the shell makes must run off the main thread. The crash of 2026-11-04 was
-# SwiftUI's own `MainActor.assumeIsolated` faulting on a main thread the act path had just blocked, and
-# that call site is not ours to grep — so what is grepped is the *state*: a driver call outside a
-# `driver { }` hop is a 150 ms wait on the main thread again, which is the ground a later callback
-# crashes on. The type names and the pure helpers are listed because they read nothing from another
-# process; `fieldLabel` and `isTrusted` are one attribute each and stay where they are.
-ax_unhopped="$(grep -n 'AXTDriver\.' Sources/Chunks/Clicky/CompanionManager.swift \
-  | grep -v 'driver({' \
-  | grep -vE 'AXTDriver\.(PressResult|TypeResult|ScrollResult|SemanticMiss|RankedPress|PressTarget|TypeTarget|ScrollTarget|PressSnapshot|isTrusted|fieldLabel|appNamesMatch|isAmbiguousFailure|waitForLanding)' \
-  | grep -vE ':[[:space:]]*(///|//)' || true)"
-if [[ -z "$ax_unhopped" ]]; then
-  printf '  \033[32mPASS\033[0m  no Accessibility call runs on the main thread\n'
-  pass=$((pass + 1))
-else
-  printf '  \033[31mFAIL\033[0m  Accessibility work is back on the main thread — it blocks the loop a\n'
-  printf '        SwiftUI callback then assumes the main actor on, and that is the crash of 2026-11-04:\n'
-  printf '%s\n' "$ax_unhopped" | head -6 | sed 's/^/        /'
-  fail=$((fail + 1)); failures+=("main-thread act path")
-fi
-check "main thread: a blocked loop is measurable, and the act path does not block it" \
-  "$BIN" --probe-mainthread
-check "hover: a click dispatched into the real card does not fault the process" \
-  "$BIN" --probe-hover
-# A probe must never draw on the desktop he is working on. Two of them did — the hover probe's fake
-# notch card and the crash probe's helper window both ordered front inside the screen, so every gate
-# run put a Chunks card with an Allow button in the middle of his display and he reasonably read it as
-# the app losing its place. The runtime line is required below, and this is the static half: any probe
-# file that orders a window front must park it off every display first, because a check that only
-# watches the two known cases misses the next one.
-probe_offenders=""
-for pf in Sources/Chunks/*Probe*.swift Sources/Chunks/CrashBreadcrumb.swift; do
-  [[ -f "$pf" ]] || continue
-  if grep -qE 'orderFrontRegardless\(\)|orderFront\(nil\)|makeKeyAndOrderFront' "$pf" \
-     && ! grep -q 'ProbeWindow.parkOffscreen' "$pf"; then
-    probe_offenders="$probe_offenders $pf"
-  fi
-done
-if [[ -z "$probe_offenders" ]]; then
-  printf '  \033[32mPASS\033[0m  no probe orders a window it has not parked off every display\n'
-  pass=$((pass + 1))
-else
-  printf '  \033[31mFAIL\033[0m  a probe will draw on his desktop (missing parkOffscreen in):%s\n' "$probe_offenders"
-  fail=$((fail + 1)); failures+=("probe windows offscreen")
-fi
-# SwiftUI's hover dispatch has faulted three times — NSHostingView.mouseEntered into
-# HoverEventDispatcher into Apple's own MainActor.assumeIsolated — and the breadcrumb named the
-# menu-bar panel twice. The assertion is Apple's, so the only thing this repo owns is whether a
-# mouseEntered can arrive: the two floating surfaces carry no .onHover at all and host their SwiftUI
-# in HoverShieldHostingView, which strips enter/exit tracking areas as fast as they are installed.
-# A hover tint creeping back onto either surface is a crash coming back, so both halves are static
-# checks and the runtime half (zero enter/exit areas on a laid-out card) is in --probe-hover.
-hover_offenders=""
-for sf in Sources/Chunks/HUD/NotchHUDView.swift Sources/Chunks/Clicky/CompanionPanelView.swift; do
-  if grep -q '\.onHover' "$sf"; then hover_offenders="$hover_offenders $sf"; fi
-done
-shield_offenders=""
-for mf in Sources/Chunks/HUD/NotchPanelManager.swift Sources/Chunks/Clicky/MenuBarPanelManager.swift; do
-  if ! grep -q 'HoverShieldHostingView(rootView:' "$mf"; then shield_offenders="$shield_offenders $mf"; fi
-done
-if [[ -z "$hover_offenders" && -z "$shield_offenders" ]]; then
-  printf '  \033[32mPASS\033[0m  the floating surfaces carry no SwiftUI hover and both are shield-hosted\n'
-  pass=$((pass + 1))
-else
-  printf '  \033[31mFAIL\033[0m  hover is back on a crash surface (onHover in:%s shield missing in:%s)\n' \
-    "$hover_offenders" "$shield_offenders"
-  fail=$((fail + 1)); failures+=("hover on the floating surfaces")
-fi
-hover_out="$("$BIN" --probe-hover 2>&1)"
-if printf '%s' "$hover_out" | grep -q "off every display"; then
-  printf '  \033[32mPASS\033[0m  the hover probe parked its card outside every display before showing it\n'
-  pass=$((pass + 1))
-else
-  printf '  \033[31mFAIL\033[0m  the hover probe could not say where its window was parked\n'
-  printf '        %s\n' "$(printf '%s' "$hover_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
-  fail=$((fail + 1)); failures+=("probe window position")
-fi
-# A crash that says nothing is a crash that teaches nothing. Four reports in eighteen hours all faulted
-# inside SwiftUI's event dispatch and none of them named the surface or the event, because a fault does
-# not flush the log — so the app now installs a signal handler that writes one line first, and this
-# check dies on purpose to prove the line arrives. Exit 139 is the pass condition.
-crash_out="$("$BIN" --probe-crash 2>&1)"; crash_status=$?
-if [[ $crash_status -eq 139 ]] && printf '%s' "$crash_out" | grep -q "faulted on SIGSEGV — last mouse event: leftMouseDown"; then
-  printf '  \033[32mPASS\033[0m  a fault names the last mouse event and the surface it landed on\n'
-  pass=$((pass + 1))
-else
-  printf '  \033[31mFAIL\033[0m  a crash still leaves no trace (exit %d)\n' "$crash_status"
-  printf '        %s\n' "$(printf '%s' "$crash_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
-  fail=$((fail + 1)); failures+=("crash breadcrumb")
-fi
 check "bundle: universal, matching deployment target, hardened with exact entitlements" \
   python3 - "$BIN" "$PWD/scripts/Chunks.entitlements" <<'PY'
 import json, pathlib, plistlib, re, subprocess, sys

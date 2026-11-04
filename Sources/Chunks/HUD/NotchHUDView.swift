@@ -26,6 +26,8 @@ struct NotchHUDView: View {
         max(0, lineHeight - font.pointSize)
     }
 
+    @State private var chipHovered: Int?
+
     /// Whether *this* draft has been copied.
     ///
     /// Local, and reset when a new draft arrives: the button is the only proof that the tap did
@@ -99,8 +101,7 @@ struct NotchHUDView: View {
             if model.showsElapsed {
                 Text(model.elapsedText)
                     .font(.system(size: 11, weight: .medium).monospacedDigit())
-                    .foregroundColor(model.overBudget ? DS.Colors.destructiveText
-                                                      : DS.Colors.textTertiary)
+                    .foregroundColor(DS.Colors.textTertiary)
             }
         }
         .padding(.horizontal, AnswerPanelLayout.inset)
@@ -128,34 +129,17 @@ struct NotchHUDView: View {
 
     // MARK: - Card
 
-    /// The card, in the order he needs to read it.
-    ///
-    /// Two orders, not one. A turn that is *telling* him something reads top-down in the order it
-    /// happened — stage, his question, the answer, what it changed. A turn that is *asking* has one
-    /// job, and the old order buried the Allow row under the answer, a four-line plan record and two
-    /// chips; the moment that can change his machine was the last thing he reached. So when a
-    /// question is live it comes second, in a well, and the steps that already ran fold into one line.
     private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
             stageRow
 
-            if model.confirmQuestion != nil {
-                Spacer().frame(height: AnswerPanelLayout.sectionGap)
-                confirmBlock
-            }
-
             if !model.spokenQuestion.isEmpty {
-                let rows = AnswerPanelLayout.questionRowCount(for: model.spokenQuestion,
-                                                              width: textWidth)
                 Text(model.spokenQuestion)
                     .font(Font(AnswerPanelLayout.questionFont))
                     .foregroundColor(DS.Colors.textSecondary)
-                    .lineLimit(2)
-                    // Tail, never middle. The centre of his sentence is where the object is:
-                    // "open whatsapp, search for …, and message him hi" lost the thing he asked for.
-                    .truncationMode(.tail)
-                    .frame(height: rows * AnswerPanelLayout.questionRowHeight, alignment: .topLeading)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(height: AnswerPanelLayout.questionRowHeight, alignment: .leading)
             }
 
             if !model.speech.isEmpty {
@@ -177,7 +161,7 @@ struct NotchHUDView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if !model.visibleActLines.isEmpty || model.foldedActCount > 0 {
+            if !model.visibleActLines.isEmpty {
                 Spacer().frame(height: AnswerPanelLayout.timelineGap)
                 timeline
             }
@@ -198,6 +182,11 @@ struct NotchHUDView: View {
                 }
             }
 
+            if model.confirmQuestion != nil {
+                Spacer().frame(height: AnswerPanelLayout.sectionGap)
+                confirmRow
+            }
+
             if let note = model.memoryNote {
                 Spacer().frame(height: AnswerPanelLayout.sectionGap)
                 Text(note)
@@ -205,16 +194,6 @@ struct NotchHUDView: View {
                     .foregroundColor(DS.Colors.textTertiary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-
-            // One way back into a turn that died. The same object as `Allow` because it is the same
-            // kind of thing — the primary action of the card the card is now waiting on — and a
-            // second, weaker button for "say it again" would compete with the one that matters.
-            if model.canRetry {
-                Spacer().frame(height: AnswerPanelLayout.sectionGap)
-                Button("Ask again") { model.onRetry?() }
-                    .buttonStyle(ConfirmButtonStyle(filled: true))
-                    .hudLayoutProbe(.retry)
             }
         }
         .hudLayoutProbe(.cardContent)
@@ -299,9 +278,7 @@ struct NotchHUDView: View {
             Spacer(minLength: 6)
             Text(model.elapsedTextOrNone)
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
-                // Past the budget the figure is the failure, so it is drawn in the failure's colour.
-                .foregroundColor(model.overBudget ? DS.Colors.destructiveText
-                                                   : DS.Colors.textSecondary)
+                .foregroundColor(DS.Colors.textSecondary)
         }
         .frame(height: AnswerPanelLayout.stageRowHeight, alignment: .leading)
     }
@@ -313,11 +290,7 @@ struct NotchHUDView: View {
     private var timeline: some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.foldedActCount > 0 {
-                // "done" when the card is asking and nothing is showing beneath the count, "earlier"
-                // when it is only the top of a visible list. The number is the same fact either way;
-                // the word tells him whether there is more below it to read.
-                Text("+\(model.foldedActCount) "
-                     + (model.visibleActLines.isEmpty ? "done" : "earlier"))
+                Text("+\(model.foldedActCount) earlier")
                     .font(.system(size: 10))
                     .foregroundColor(DS.Colors.textSecondary)
                     .frame(height: AnswerPanelLayout.timelineRowHeight, alignment: .leading)
@@ -363,13 +336,7 @@ struct NotchHUDView: View {
 
     /// Point targets and suggested actions are the same widget, stacked in the order
     /// `AnswerPanelLayout.measure` counts them in: points first, then actions.
-    ///
-    /// None while the card is asking. The chip "press send" beside the question "Press Send in
-    /// WhatsApp?" is the same act offered twice — one of them a second tap with no answer behind it —
-    /// and the asking card is the one state that has no height to spare: at 405 of a 420 pt ceiling,
-    /// two chip rows are the difference between an Allow button he can reach and one he cannot.
     private var chips: [Chip] {
-        if model.isAsking { return [] }
         var out: [Chip] = model.points.enumerated().map { Chip(id: $0.offset,
                                                                label: $0.element.label,
                                                                isAction: false) }
@@ -416,7 +383,7 @@ struct NotchHUDView: View {
         // inset visible; past that the words truncate, as they do everywhere else on this surface.
         .frame(maxWidth: 240, alignment: .leading)
         .frame(height: AnswerPanelLayout.chipHeight - 4)
-        .physical(DS.Colors.raised,
+        .physical(chipHovered == chip.id && pressable ? DS.Colors.hover : DS.Colors.raised,
                   radius: DS.CornerRadius.small,
                   elevation: .raised,
                   // `raised` on the card's ground is a 1.05:1 difference, which is a shadow, not an
@@ -425,39 +392,23 @@ struct NotchHUDView: View {
                   edge: pressable ? DS.Colors.lineControl : DS.Colors.line)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .onHover { inside in
+            guard pressable else { return }
+            chipHovered = inside ? chip.id : (chipHovered == chip.id ? nil : chipHovered)
+        }
     }
 
-    /// The width any wrapped line on this card actually gets. One number, because the view and
-    /// `AnswerPanelLayout.measure` must divide the same inset out of the same width or a row wraps in
-    /// one and not the other — which is how a card gets sized short of its own content.
-    private var textWidth: CGFloat {
-        model.cardWidth - 2 * AnswerPanelLayout.inset
-    }
-
-    /// The press question: which step it is, one line naming the control the hit test found, then the
-    /// two answers, each half the card's width.
+    /// The press question: one line naming the control the hit test found, then the two
+    /// answers, each half the card's width.
     ///
-    /// Drawn in a `sunken` well, the same material the drafted message uses to say *this is the
-    /// payload* — because this payload is the decision, and the card is now waiting on it. Wide
-    /// targets on purpose: this is the only tap in Chunks that can change something outside the app,
-    /// so "Not now" being the easy mis-tap is the failure worth designing against, and since
-    /// 2026-10-18 a permanent act (Send, Pay, Delete, Confirm) always reaches this row even with
-    /// asking switched off.
-    private var confirmBlock: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // The ordinal is a labelled line of its own, not a parenthetical in the sentence: the
-            // timeline's `5/5` digits say the same kind of fact about the steps that already ran, and
-            // two shapes for one fact is how he stops trusting either.
-            if let step = model.confirmStep, let of = model.confirmStepTotal {
-                Text("Step \(step) of \(of)")
-                    .font(DS.Fonts.micro)
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(height: AnswerPanelLayout.confirmOrdinalHeight, alignment: .leading)
-                Spacer().frame(height: AnswerPanelLayout.confirmOrdinalGap)
-            }
-
+    /// Wide targets on purpose. This is the only tap in Chunks that can change something
+    /// outside the app, so "Not now" being the easy mis-tap is the failure worth designing
+    /// against. The heights are `AnswerPanelLayout`'s, so the window is sized for exactly
+    /// this row.
+    private var confirmRow: some View {
+        Group {
             Text(model.confirmQuestion ?? "")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textPrimary)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -474,16 +425,6 @@ struct NotchHUDView: View {
                     .hudLayoutProbe(.deny)
             }
         }
-        .padding(.horizontal, AnswerPanelLayout.confirmWellInset)
-        .padding(.vertical, AnswerPanelLayout.confirmWellInset)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .physical(DS.Colors.sunken, radius: DS.CornerRadius.medium,
-                  elevation: .sunken, edge: DS.Colors.lineStrong)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(model.confirmStep != nil && model.confirmStepTotal != nil
-            ? "Step \(model.confirmStep!) of \(model.confirmStepTotal!): "
-              + "\(model.confirmQuestion ?? "")"
-            : model.confirmQuestion ?? "")
     }
 
     private var headlineText: String {
@@ -521,6 +462,8 @@ private struct NotchHaloShape: Shape {
 private struct ConfirmButtonStyle: ButtonStyle {
     var filled: Bool
 
+    @State private var isHovered = false
+
     func makeBody(configuration: Configuration) -> some View {
         let pressed = configuration.isPressed
         return configuration.label
@@ -528,20 +471,18 @@ private struct ConfirmButtonStyle: ButtonStyle {
             .foregroundColor(filled ? DS.Colors.onInk : DS.Colors.ink)
             .frame(maxWidth: .infinity)
             .frame(height: AnswerPanelLayout.confirmButtonRowHeight)
-            // No hover state on this surface, deliberately. SwiftUI's hover dispatch is where the
-            // app has faulted: NSHostingView.mouseEntered → HoverEventDispatcher → its own
-            // MainActor.assumeIsolated → SIGSEGV, three times, named by the crash breadcrumb. The
-            // press sink and the 1 pt drop are the feedback; a tint that needs the pointer tracked
-            // is not worth a crash on the one tap that can change his machine.
             .physical(filled
                       ? (pressed ? DS.Colors.actionHover : DS.Colors.action)
-                      : (pressed ? DS.Colors.pressed : DS.Colors.raised),
+                      : (pressed ? DS.Colors.pressed
+                                 : (isHovered ? DS.Colors.hover : DS.Colors.raised)),
                       radius: DS.CornerRadius.small,
                       elevation: pressed ? .pressed : .raised,
                       edge: filled ? DS.Colors.ink : DS.Colors.line)
             .offset(y: pressed ? 1 : 0)
             .contentShape(Rectangle())
             .animation(DS.Motion.tap, value: pressed)
+            .animation(DS.Motion.tap, value: isHovered)
+            .onHover { isHovered = $0 }
     }
 }
 

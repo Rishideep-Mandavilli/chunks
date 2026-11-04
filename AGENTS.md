@@ -152,12 +152,7 @@ finds a desktop icon. Two more read-only doors came out of the semantic work:
 .build/debug/chunks --probe-reply --local   # ask the local model a plan question and audit its real words
 .build/debug/chunks --probe-read '~/Downloads/build.log|why did it fail'  # one path, end to end
 .build/debug/chunks --probe-voice-answer "yes"  # what a spoken sentence would do to the open card, answering nothing
-.build/debug/chunks --probe-ink        # the ink that stays on screen: inert, invisible to captures, lets go
-.build/debug/chunks --probe-mainthread # does a wait in the act path stall the main run loop
-.build/debug/chunks --probe-hover      # a click dispatched into the real card — does the process survive
-.build/debug/chunks --probe-crash      # dies on purpose, to prove a fault names the last mouse event
 .build/debug/chunks --render-caption /tmp/caption.png   # the speech caption, drawn offscreen, three rows
-.build/debug/chunks --render-ink /tmp/ink.png   # one of every drawn mark, offscreen, to look at
 .build/debug/chunks --render-ui /tmp/notch-card.png   # every notch state drawn offscreen, to look at
 .build/debug/chunks --render-window /tmp/window.png   # the app window, full and empty, same way
 .build/debug/chunks --render-panel /tmp/panel.png      # the menu-bar panel, at its real 320x380
@@ -198,88 +193,6 @@ because the first version of that check matched the prose describing the rule ra
 The same reasoning covers `Thread.sleep` on the main actor: waiting for a window to land is a
 `Task.sleep`, never a blocking one, because the notch freezes for the length of the wait the user is
 watching.
-
-**And nothing that blocks may run on the main thread at all.** `AXTDriver` waits by design (a 150 ms
-retry on a lazy Chromium surface, a settle before a read-back, a pause between keystroke chunks), so
-every Accessibility call the shell makes goes through `CompanionManager.driver(…)`, one `Task.detached`
-awaited exactly where the call used to be made — the chain keeps its order, nothing runs beside the
-policy gate, and the driver touches nothing main-thread-only (Accessibility messaging and `CGEventPost`
-are thread-safe; the only AppKit is a `NSWorkspace.runningApplications` read). `--probe-mainthread`
-measures the mechanism — a 150 ms wait costs the main run loop 135 ms of timer lateness inline and
-1 ms detached — and `verify.sh` greps for any `AXTDriver.` call in the shell outside a hop, because a
-probe cannot catch a call site that has not been written yet.
-
-**That hop is hygiene, and it is not the fix.** Two more crashes came on a build that already had it
-(2026-11-04, 19:45 and 19:48), with the same top five frames as the timer crashes —
-`swift_getObjectType` ← `swift_task_isMainExecutorImpl` ← `MainActor.assumeIsolated` — but entered from
-SwiftUI's own event machinery: twice `NSHostingView.mouseEntered` → `HoverEventDispatcher`, once
-`NSHostingView.mouseDown` → `UpdateGroup.dispatchActions` → `_ButtonGesture`. The assertion is not
-ours, so no grep removes it, and it is not the hover feature either, since a plain button gesture
-reaches the same call. A synthetic click dispatched into the real card in a fresh process does *not*
-fault (`--probe-hover`, now in the gate), so the trigger needs something the probe does not reproduce —
-a real event, in the app's own panel, after the app's own history. **A synthetic `mouseEntered`
-delivered straight to a hosting view is not evidence at all**: it hangs the process in every surface
-combination tried, including a card of two plain buttons, and hangs are the probe's own call rather
-than the app's behaviour. The probe's threading was itself wrong twice — a `Task { @MainActor }`
-started before `NSApplication.run` is on a pool thread, and AppKit calls made there crash with a
-message that looks exactly like the bug under investigation — so its work now begins in
-`applicationDidFinishLaunching`, which AppKit guarantees on the main thread inside the loop.
-What was missing was evidence: a fault does not flush, so four reports answered no questions.
-`CrashBreadcrumb` now installs handlers for SIGSEGV/SIGBUS/SIGILL/SIGABRT/**SIGTRAP** (a Swift runtime
-trap raises the last of these, and the first version of the probe missed it) that write one
-async-signal-safe line naming the last mouse event and the surface it landed on — by window
-*identifier*, because the notch card and the menu-bar panel are the same private class and the first
-version said "another window" for a fault on the card — then re-raise so macOS still files its report.
-`--probe-crash` dies on purpose to prove the line arrives, and the gate requires exit 139 plus the
-sentence. **And the breadcrumb earned its keep on the seventh report**: 2026-11-04 22:36, it named
-`mouseEntered` on the menu-bar panel, and the report's own frames confirmed the chain —
-`NSHostingView.mouseEntered` → `sendHoverEvent` → `HoverEventDispatcher` → the hit test → SwiftUI's
-`MainActor.assumeIsolated` → `swift_getObjectType` at 0x220. The assertion is Apple's and the object it
-dereferences is already freed, so nothing in this repo can fix it; the only thing this repo owns is
-whether a `mouseEntered` can arrive at all. It cannot, now: the notch card and the menu-bar panel carry
-no `.onHover` and no `.help` (the panel's hints are `accessibilityHint`, which does not track the
-pointer), and both host their SwiftUI in `HoverShieldHostingView`, which strips every
-`.mouseEnteredAndExited` tracking area the moment SwiftUI installs it and swallows the three
-pointer-tracking messages as a second lock. Clicks, key status and gestures are untouched — a press is
-`mouseDown`, which no tracking area is involved in. Two static gate checks (no `.onHover` on either
-surface, both managers shield-hosted) and a runtime one (`--probe-hover` asserts zero enter/exit areas
-on a laid-out card) hold the line; the main window keeps its hover, because it is an ordinary
-activating window that no breadcrumb has ever named.
-
-**A turn may not outlive its promise, and a log may not end before the crash.** Measured on his
-machine the same evening: a question left the card counting seconds for an hour with no reply, no
-failure and no speech, because the 60 s model budget bounds only the chain — a stalled window-server
-capture, a file read that never returns and an Accessibility call parked inside the driver hop all
-happen before or beside it, and each `await` had no deadline of its own. `turnWatchdogSeconds` (70) is
-a sibling task that fails the card, speaks the fallback and hands it an Ask again, but only while the
-card is still *thinking* — a turn with an answer on it is being read, not stuck; the parked call is not
-killed (it cannot be), the turn's epoch moves on and the task still parked on it walks away when it
-wakes. The capture and the file read are raced against 10 s and 20 s, the transient-hide loop got the
-caption's 40 s ceiling it never had, and `Log.writeCritical` puts turn starts, asks, failures and the
-watchdog on disk synchronously — because `Log.write` queues, and a SIGSEGV kills the queue with the
-line still in it, which is why every earlier report came with a log that ended before the crash. A
-hung turn also writes one durable line every five seconds while the card thinks, so the next report
-shows the turn never moved instead of going quiet at "turn: start".
-
-**An act he approved is said aloud, not only written.** With asking on, the outcome line reached the
-card and never his ears — `reportConfirm` appends to the record and nothing speaks it, while the
-asking-off path rides the turn's own utterance. `NotchHUDModel.onReported` now speaks a line exactly
-when it answered a *live* question, which is the one case nothing else covers, and the double-speak is
-impossible by construction rather than by discipline. And `speakCaptioned` no longer claims success it
-did not verify: a synthesizer that never starts reported `isPlaying` false from the first poll, the
-wait loop exited instantly, and the log said "spoke N chars" about silence — the exact 2026-11-04
-report of an answer on the card with no sound. Two seconds to begin, then a critical line naming that
-the sentence was never said.
-
-**A reply that ends inside `<SAY>` is still spoken.** Measured 2026-11-04 at 15:00: the cloud chain
-served a turn that stopped mid-construct — `reply ends ‣ <SAY>you're looking at qoder, where` — and the
-card showed raw markup while **nothing at all was spoken**, because the parser releases an unterminated
-construct as text (fail-open, which is right for a malformed `[ACT:]` the user must see) and the caller
-only speaks a non-empty sentence. An unclosed `<SAY>` is now treated as the sentence it is: its words go
-to `speech`, the markup does not reach the card, `endedMidConstruct` is recorded and logged, and a turn
-with nothing to say **logs that** instead of being silent in both channels. The rule is the one already
-applied to an act: something he can neither hear nor find in the record is indistinguishable from
-something that never happened.
 
 1. **All coordinates are `LogicalPoint`.** Screenshots are device pixels (2x); AX reports
    logical points; `NSPanel` frames are logical. Conversion happens exactly once, inside
@@ -1133,17 +1046,6 @@ something that never happened.
    intent is the model's job: every attachment is labelled *"Chunks' best guess at the file he means
    — if his sentence was about something else, ignore this and answer about his screen."*
 
-   **The never-automatic list is a name rule now, and it has three members.** A leading dot, `.DS_Store`
-   and `.localized` were the original set; `~$…` is the third and it arrived the hard way. Word writes an
-   *owner file* beside a document while that document is open — 165 bytes of author metadata, no
-   document, and **newest by modification time**, which is exactly what a tie-break chooses. Measured
-   2026-11-04: the gate's own fixture discovery picked `~$5103310103-K.s.satwik-.docx` as "a Word file"
-   and the read refused it, which is the check catching the product answering a sentence about a resume
-   from a lock file. The rule now lives in `FileMention.isAutomaticCandidate` — pure, judged on the last
-   path component so a bare name and a full path cannot give different answers — because the negative
-   cases are the ones that matter, and because it had sat in the disk layer, untested, since it was
-   written.
-
 10. **A screen is carried backwards only when his words ask for it.** *"read and understand this
     problem"* then *"now answer it"* is one conversation, but every turn captures the screen afresh —
     so on the second turn the problem is only still there by luck. `ScreenCarry` keeps the last turn's
@@ -1260,8 +1162,8 @@ something that never happened.
 
 ## Current state
 
-**The app runs. 830 of 830 tests green across 46 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 57 checks: 50–53 pass and 4–7 skip,
+**The app runs. 818 of 818 tests green across 46 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 48 checks: 42–44 pass and 4–6 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
@@ -1286,7 +1188,6 @@ Done and tested:
 | Retry + rate limit | `Brain/RetryPolicy.swift` | Backoff with jitter, token bucket |
 | Request/SSE | `Brain/GeminiTransport.swift` | Pure builders; `store:false` enforced by test |
 | Region resolution | `Annotate/RegionResolver.swift` | Marks → padded, clamped crop rect |
-| The ink that stays on screen | `Chunks/Annotate/InkLayer.swift` | Click-through, never key, no dim; cleared by the turn's end or its own cap; `sharingType = .none` keeps it out of every capture, measured by flipping the flag |
 | Card sizing | `AnswerPanelLayout.swift` | One measurement for card height, mirrored by the view |
 | Notch anchor | `NotchGeometry.swift` | Cutout from the auxiliary strips; menu-bar fallback; the only place that flips top-left ↔ AppKit for the HUD |
 | Image → screen mapping | `Capture/ScreenshotGeometry.swift` | The sanctioned route from the model's 0–1000 aim grid to AppKit and AX point spaces; scale-independent by construction, and it keeps the mapped point inside the display |
@@ -1348,34 +1249,14 @@ written, and reported as a footnote on that same card. The pill above the card c
 voices: the recognizer's live partial transcript while ⌃⌥ is held, then a one-line hint
 (`.status` phase) when nothing is in flight. First run is the cursor welcome plus that notch
 hint — clicky's hosted HLS intro video, its background music and its email gate were all
-deleted, so nothing in the app fetches or plays a remote asset. A `[ACT:…]` or a `[DO:…]` asks on
-that same card, and **asking reorders it**: the question — a `sunken` well holding the labelled step
-("Step 6 of 6") and the control the hit test actually found, or the one sentence of the tool's effect
-("Open Notes?", "Set the volume to 40%?"), with **Allow** / **Not now** half the card's width each —
-moves to directly under the stage row, and the plan record and the chips fold away. One order for a
-turn that is telling, one for a turn that is asking, because the second has exactly one job and it
-was the sixth thing he reached: measured on the render, an asking card with its chips and four
-outcome lines on it sat at 405 of the 420 pt ceiling, so one more line of answer prose and Allow was
-unclickable. Which step it is travels as data, never spliced into the sentence —
-`Press Send in WhatsApp? (step 5 of 5)` stated the plan's position twice in two shapes, one of them a
-parenthetical inside the question he is answering. **A chip that names the act being asked about is
-the same duplicate**: "press send" beside "Press Send in WhatsApp?" is a second tap with no answer
-behind it. The line of what happened replaces the block after an answer. Both kinds go through the
-same single `ConsentGate`, so the card can never be mid-asking two things at once. With the panel's
-**"Ask before acting" switch off** — the default — neither kind is asked: the press or the tool runs
-straight away and only the line of what happened lands on the card, spoken, because there is no
-question to answer.
-
-**A turn that died gets one way back, and it is the card's only control.** `failTurn` names the
-problem in `hud.fail`'s message and hands the HUD a re-ask of the same pair the turn started from
-(`lastAsk`, recorded at the single funnel every turn passes through, so a spoken question and a
-typed one recover identically). A scheduled prompt gets no button: nothing fired at 07:00 is nobody
-waiting for an answer, and "Ask again" on that card would run it now. The row is charged in
-`AnswerPanelLayout.measure` under `hasRetry` and gated by `NotchHUDModel.canRetry` — a control the
-window was not sized for is a control he cannot tap, and a handler left over from an earlier turn
-would re-ask a question he has already replaced, so `beginThinking` drops it. The spoken fallback
-used to say "Chunks will try again in a moment", which was false by construction: it is called from
-the catch *after* every retry every model offered has been spent.
+deleted, so nothing in the app fetches or plays a remote asset. A `[ACT:…]` or a `[DO:…]` adds
+one more row to that card: the question naming the control the hit test actually found, or the
+one sentence of the tool's effect ("Open Notes?", "Set the volume to 40%?"), with **Allow** /
+**Not now** buttons half the card's width and the line of what happened replacing it after an
+answer. Both kinds go through the same single `ConsentGate`, so the card can never be mid-asking
+two things at once. With the panel's **"Ask before acting" switch off** — the default — neither
+kind is asked: the press or the tool runs straight away and only the line of what happened lands on
+the card, spoken, because there is no question to answer.
 
 **The window is where an answer is re-read; the notch is where a turn happens.** ⌃A opens a real
 window (`CompanionWindowView`) that activates the app — the one surface allowed to, because it is the
@@ -1558,50 +1439,6 @@ Read it before picking anything up from this list.
   orientation (the crop came back mirrored — render it with `NSImageView`), and
   `NSGraphicsContext(bitmapImageRep:)` returns **nil** for a PNG-decoded rep, so a burn-in must draw
   into a rep it created itself. It needs no consent either way, because it moves and presses nothing.
-  **The marks stay on the screen while the answer is being written.** The overlay closes the instant
-  he presses Return and the turn takes seconds, so "the button you circled" would otherwise be a
-  sentence about a mark that has already gone. `InkLayerManager`
-  (`Sources/Chunks/Annotate/InkLayer.swift`) puts the same shapes back on the display — click-through,
-  never key or main, `_setPreventsActivation`, no dim, `.floating` under the card — and clears them when
-  the card about them goes: dismissed, replaced by a hint, or taken by a new question, with a 120 s cap
-  behind all of it. The marks stay while he reads the answer, because they are the referent of the card
-  and so live exactly as long as it does; a confirm card asking about the thing he circled keeps them
-  too. One Combine sink on the card's phase decides this rather than a dozen hand-placed clears, and it
-  carries a turn token, because a turn *starts* twice from the ink's point of view — once for the
-  question the marks belong to, an emission that lands moments after the ink goes up and must not take
-  it down, and once for the next question, which must.
-  It is the overlay's opposite on purpose: a display-sized window that *takes* the mouse is the
-  2026-10-11 lockup, and one that cannot take a click cannot hold him, which is why this surface needs
-  no exits and no watchdog. It goes up *after* the opening capture, because the picture the model
-  reads is that crop with the same marks burned in and a live layer over the screen at capture time
-  would be the ink twice. **And it is in no picture of its own**: `sharingType = .none`, measured
-  2026-11-03 by flipping the flag and capturing either side of it — 6528 ink pixels in the display
-  composite with sharing allowed, 0 with it none, while the window server's on-screen list carried the
-  window in both states. So the list answers "is it on the screen" and a capture answers "is it in a
-  picture", and the two must not be swapped; the first version of that check failed in both directions
-  on the same evening by reading the list in the same runloop turn as the order-front. The whole-screen
-  live capture excludes every window this app owns anyway, so the flag is the belt to that route's
-  braces. The fallback selector path has no ink and says so in the log: `screencapture -i` returns
-  pixels and no rectangle, so marks drawn on a frozen crop cannot be placed on the live screen, and a
-  guessed position would circle something he never circled.
-  **The tools are six and the eraser is one of them.** Pen, circle, box, arrow, a **pin** (one click,
-  one point — "this exact thing" rather than "this area") and an **eraser** that rubs topmost-first.
-  The pin's three radii live in `AnnotationShape` as pure numbers — the 5 pt dot he sees, the pale ring
-  around it, and the 24 pt reach the eraser and the crop both use — because the burn-in, the overlay
-  and the ink layer all draw the same mark, and three copies of one number is three chances for "the
-  thing I pinned" to mean a dot on his screen and a ring in the crop. The reach is deliberately much
-  wider than the dot: an eraser that only removed a pin when he hit five points of solid red exactly is
-  a tool he has to aim with the thing he is aiming at, and a test asserts the gap. The prompt is told
-  the marks by kind (`AnnotationSession.descriptionForModel` — "1 region circled, 1 region pinned"),
-  carried on the capture itself so it cannot outlive the picture it describes, and a pin is explained
-  as a point, not an area.
-  **Verify without drawing:** `--probe-ink` shows the layer on the real display, asserts the four
-  inertness properties off the live panel, flips the sharing type and captures either side of it,
-  proves a clear and the time cap both take it down, and refuses a display that is not there;
-  `--render-ink` draws one of every mark offscreen to look at. Both are in the gate. What has not been
-  watched is the ink on his own screen during a real turn: whether marks that outlive the gesture read
-  as help or as clutter, and whether they should fade rather than vanish when the answer lands, are
-  his to judge.
 - **The Notebook tier is built** (TASKS.md 3.3, 2026-11-02): `<NOTE>` writes an uncapped
   `notebook.md` beside `memory.md` through `SecretSweeper`, `[NOTES:…]` searches it on demand and the
   labelled block rides into the next turn, and the panel has a "Show notebook" row. What has not been

@@ -196,34 +196,6 @@ public enum ActionTests {
             expectEqual(s.actionRequests.map(\.label), ["first", "second"])
         }
 
-        test("a reply that stops inside a <SAY> is still spoken, and says so") {
-            // Measured on his machine 2026-11-04 at 15:00: the stream ended at
-            // `<SAY>you're looking at qoder, where` with no closing tag. The parser released the
-            // unterminated construct as text — fail-open, which is right for a malformed `[ACT:]` —
-            // and the result was raw markup on the card and **no speech at all**, because the caller
-            // only speaks a non-empty sentence. Silence with nothing recorded is the failure this
-            // project already refuses for an act.
-            let s = AnswerStreamer()
-            s.push("<SAY>you're looking at qoder, where")
-            s.finish()
-            expect(s.speech.contains("you're looking at qoder"),
-                   "the words he was promised are the sentence, not the tag: \(s.speech)")
-            expect(s.endedMidConstruct,
-                   "and the turn records that the reply was cut, so the log can say why it stops")
-            expect(!s.detail.contains("<SAY>"),
-                   "the markup itself must not reach the card: \(s.detail)")
-        }
-
-        test("a complete <SAY> does not report a truncation") {
-            // The flag is only worth having if it means one thing. A normal answer must not light it.
-            let s = AnswerStreamer()
-            s.push("<SAY>you're looking at Qoder.</SAY>")
-            s.finish()
-            expect(!s.endedMidConstruct, "a closed construct is not a truncation")
-            expectEqual(s.speech.trimmingCharacters(in: .whitespacesAndNewlines),
-                        "you're looking at Qoder.")
-        }
-
         // MARK: ScreenshotGeometry: the aim -> display mapping
 
         test("the middle of the grid is the middle of the display") {

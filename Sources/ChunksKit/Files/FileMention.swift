@@ -34,30 +34,6 @@ public enum FileMention {
         }
     }
 
-    /// Files that are never automatic candidates, whatever the sentence says.
-    ///
-    /// A leading dot is a configuration file or a shell history. Both stay readable when he *names* one
-    /// — that goes through `ReadRequest` and its credential list — but neither may be picked up by a
-    /// ranking, because "read the log in my downloads" attaching `~/.zsh_history` would send every
-    /// command he has typed this year to a cloud model. `.DS_Store` is a binary Finder index wearing a
-    /// name a text detector does not catch.
-    ///
-    /// And `~$` is a Microsoft owner file: Word writes one beside a document while the document is
-    /// open, and it holds the author's name in 165 bytes of metadata with no document in it. It is
-    /// newest by modification time, which is exactly how a ranking chooses it — measured 2026-11-04,
-    /// when the gate's own fixture discovery picked `~$5103310103-K.s.satwik-.docx` as "a Word file"
-    /// and the read refused it. The check caught the product doing that to a sentence about a resume.
-    public static let neverAutomaticNames: Set<String> = [".DS_Store", ".localized"]
-
-    /// Whether a file may be chosen by a ranking at all. Judged on the last path component, because
-    /// callers hand this either a bare name or a full path and the answer must not depend on which.
-    public static func isAutomaticCandidate(_ nameOrPath: String) -> Bool {
-        let last = URL(fileURLWithPath: nameOrPath).lastPathComponent
-        return !last.hasPrefix(".")
-            && !last.hasPrefix("~$")
-            && !neverAutomaticNames.contains(last)
-    }
-
     public struct Candidate: Equatable, Sendable {
         public var path: String
         public var name: String

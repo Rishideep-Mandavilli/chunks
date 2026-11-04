@@ -125,7 +125,7 @@ enum UIRenderProbe {
         let states: [(label: String, model: NotchHUDModel)] = [
             ("1 · listening, mid-sentence", listening()),
             ("2 · waiting on the model", waiting()),
-            ("3 · answering, a plan of six, asking about step 6", answering()),
+            ("3 · answering, a plan of five, asking about step 4", answering()),
             ("4 · a turn that failed", failed()),
             ("5 · adding a routine from a spoken sentence", routineAsking()),
             ("6 · listening, and the room is quiet", listeningQuiet()),
@@ -158,9 +158,6 @@ enum UIRenderProbe {
             view.layoutSubtreeIfNeeded()
             frames.append((state.label, state.model, view, window, height))
         }
-        if let first = frames.first {
-            HoverBindings.describe(first.view, surface: "the notch card, which is up while he works")
-        }
 
         let totalHeight = frames.reduce(gutter) { $0 + $1.height + gap } + gap
         let canvas = NSImage(size: NSSize(width: width + gutter * 2 + 150, height: totalHeight))
@@ -172,8 +169,6 @@ enum UIRenderProbe {
         var draftChecks = 0
         var draftConfirmationChecks = 0
         var draftLayoutPassed = true
-        var tapChecks = 0
-        var tapPassed = true
         for frame in frames.reversed() {
             y -= frame.height
             frame.view.layoutSubtreeIfNeeded()
@@ -189,15 +184,6 @@ enum UIRenderProbe {
                 let passed = checkDraftLayout(in: frame.view, model: frame.model,
                                               isMaxDraft: frame.label.contains("maximum draft"))
                 draftLayoutPassed = passed && draftLayoutPassed
-            }
-            // The two taps the card can be waiting on: the answers to a question, and the one way
-            // back out of a failure. Both are checked on every state that draws them, because a
-            // control below the bottom edge of the window is a control that simply cannot be used,
-            // and the sizing arithmetic lives in a different file from the drawing.
-            if frame.model.confirmQuestion != nil || frame.model.canRetry {
-                tapChecks += 1
-                tapPassed = checkTapTargets(in: frame.view, model: frame.model,
-                                            label: frame.label) && tapPassed
             }
             NSAttributedString(string: frame.label, attributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: .medium),
@@ -223,10 +209,8 @@ enum UIRenderProbe {
             print("render-ui: could not write \(url.path): \(error.localizedDescription)")
             exit(1)
         }
-        let passed = draftLayoutPassed && tapPassed && draftChecks == 3 && draftConfirmationChecks == 1
+        let passed = draftLayoutPassed && draftChecks == 3 && draftConfirmationChecks == 1
         print("render-ui: draft-layout \(passed ? "PASS" : "FAIL") (\(draftChecks) fixtures, 340 characters, 360pt)")
-        print("render-ui: tap-targets \(tapPassed ? "PASS" : "FAIL") (\(tapChecks) fixtures with a "
-              + "question or a way back)")
         exit(passed ? 0 : 1)
     }
 
@@ -320,56 +304,6 @@ enum UIRenderProbe {
         print("render-ui: \(name) \(passed ? "PASS" : "FAIL") - Copy=\(copyBounds) visible=\(visibleContent) "
               + "window=\(host.bounds.size) block=\(block.bounds.height) text=\(text.bounds.height) viewport=\(viewport.bounds.height)"
               + (passed ? " scroll=PASS" : " - \(failures.joined(separator: "; "))"))
-        return passed
-    }
-
-    /// The taps a card cannot afford to lose: the two answers to a question, and the one way back
-    /// out of a failure.
-    ///
-    /// The sizing arithmetic lives in `AnswerPanelLayout.measure` and the drawing lives in
-    /// `NotchHUDView`, and nothing but a real layout pass proves they still agree. A control below the
-    /// bottom edge of the window is a control that cannot be used — and the buried Ask row this
-    /// surface was designed against is exactly that failure, so it is checked against the native
-    /// rects SwiftUI laid out, never against the numbers that reserved them.
-    @MainActor
-    private static func checkTapTargets(in host: NSView, model: NotchHUDModel,
-                                       label: String) -> Bool {
-        func descendants(of view: NSView) -> [HUDLayoutProbeView] {
-            let own = (view as? HUDLayoutProbeView).map { [$0] } ?? []
-            return own + view.subviews.flatMap { descendants(of: $0) }
-        }
-        let markers = descendants(of: host)
-        var failures: [String] = []
-        let visible = host.bounds.intersection(host.visibleRect)
-        if abs(host.bounds.height - model.contentHeight - model.notchHeight) > 0.5 {
-            failures.append("the window is not the height the arithmetic reserved")
-        }
-        let expected: [HUDLayoutProbePart] = (model.confirmQuestion != nil
-                                                ? [.allow, .deny] : [])
-            + (model.canRetry ? [.retry] : [])
-        for part in expected {
-            let matches = markers.filter { $0.part == part }
-            guard let view = matches.first, matches.count == 1 else {
-                failures.append("\(part.rawValue): expected one marker, got \(matches.count)")
-                continue
-            }
-            let rect = view.convert(view.bounds, to: host)
-            if rect.isEmpty || !visible.contains(rect) {
-                failures.append("\(part.rawValue) is outside the window (\(rect) in \(visible))")
-            }
-            if view.bounds.height < 26 {
-                failures.append("\(part.rawValue) lost its usable hit area "
-                                + "(\(view.bounds.height))")
-            }
-        }
-        // A card that failed must not also be holding a question: the two taps mean opposite things.
-        if model.canRetry, model.confirmQuestion != nil {
-            failures.append("a failed card is asking a question at the same time")
-        }
-        let passed = failures.isEmpty
-        print("render-ui: taps \(passed ? "PASS" : "FAIL") - \(label) "
-              + "window=\(host.bounds.size) \(expected.map { $0.rawValue }.joined(separator: "+"))"
-              + (passed ? "" : " - \(failures.joined(separator: "; "))"))
         return passed
     }
 
@@ -490,7 +424,6 @@ enum UIRenderProbe {
         ))
         let views = [("1 · a afternoon of turns, one still running", left),
                      ("2 · nothing asked yet", right)]
-        HoverBindings.describe(left, surface: "the app window")
 
         let canvas = NSImage(size: NSSize(width: size.width * 2 + gap * 3,
                                           height: size.height + gap * 2))
@@ -565,7 +498,6 @@ enum UIRenderProbe {
             ))
             hosted.frame = NSRect(x: 0, y: 0, width: width, height: entry.height)
             hosted.layoutSubtreeIfNeeded()
-            if views.isEmpty { HoverBindings.describe(hosted, surface: "the menu-bar panel") }
             views.append((entry.label, hosted, entry.height))
         }
 
@@ -718,8 +650,8 @@ enum UIRenderProbe {
         let streamer = AnswerStreamer()
         streamer.push("""
         <SAY>found dad's chat — the message is in the box, say the word and it goes.</SAY>
-        the plan ran five steps: launch, search, type the name, open the chat, type the message. \
-        send is the sixth and it is a commitment, so it is asked about rather than run.
+        the plan ran four steps: launch, search, type the name, open the chat. send is the fifth \
+        and it is a commitment, so it is asked about rather than run.
         <DONE_TITLE>Messaging Dad</DONE_TITLE>
         <NEXT_ACTIONS>
         - press send
@@ -729,21 +661,18 @@ enum UIRenderProbe {
         streamer.finish()
         model.apply(streamer)
 
-        // Five steps that ran, and the sixth is the one being asked about — the counts on this card
-        // must agree, because "+5 done" beside "Step 5 of 5" is one fact stated two ways and one of
-        // them is wrong. The step travels as data, not inside the sentence.
-        model.beginStep(index: 1, of: 6)
+        model.beginStep(index: 1, of: 5)
         model.reportConfirm("Opened WhatsApp.")
-        model.beginStep(index: 2, of: 6)
+        model.beginStep(index: 2, of: 5)
         model.reportConfirm("Pressed Search.")
-        model.beginStep(index: 3, of: 6)
+        model.beginStep(index: 3, of: 5)
         model.reportConfirm("Typed 3 characters into Search.")
-        model.beginStep(index: 4, of: 6)
+        model.beginStep(index: 4, of: 5)
         model.reportConfirm("Pressed Dad.")
-        model.beginStep(index: 5, of: 6)
+        model.beginStep(index: 5, of: 5)
         model.reportConfirm("Typed hi into Compose message.")
 
-        model.askConfirm("Press Send in WhatsApp?", step: 6, of: 6)
+        model.askConfirm("Press Send in WhatsApp? (step 5 of 5)")
         model.setElapsedForRendering(9.3)
         return model
     }
@@ -844,11 +773,8 @@ enum UIRenderProbe {
         model.beginListening()
         model.showCaption("what is this error on my screen")
         model.beginThinking()
-        model.fail("Hit the free-tier rate limit — this key allows a few requests a minute.")
-        // The render shows the row; the real handler is the manager's `failTurn`. Without this the
-        // recovery is reserved by the arithmetic and inspected by nobody, which is how a control that
-        // cannot be tapped ships.
-        model.onRetry = {}
+        model.fail("Every model on this key is busy. Try again in a moment, or switch to the "
+                   + "local brain in the panel.")
         model.setElapsedForRendering(61.0)
         return model
     }
@@ -858,7 +784,7 @@ enum UIRenderProbe {
 /// Native conversion back into the host also includes SwiftUI's placement and any scroll offset.
 /// Disabled in the shipping view; the renderer enables them without replacing the real controls.
 enum HUDLayoutProbePart: String {
-    case cardContent, draftBlock, draftCopy, draftViewport, draftText, allow, deny, retry
+    case cardContent, draftBlock, draftCopy, draftViewport, draftText, allow, deny
 }
 
 private struct HUDLayoutProbeEnabled: EnvironmentKey {
@@ -910,39 +836,4 @@ extension View {
 
 private extension NSSize {
     var rect: NSRect { NSRect(origin: .zero, size: self) }
-}
-
-/// SwiftUI's hover bindings, counted on a real hosted view.
-///
-/// Measured rather than grepped, because the crash is not in code we can see: on 2026-11-04 the app
-/// died 16 seconds after an answer with a SIGSEGV inside `NSHostingView.mouseEntered` →
-/// `HoverEventDispatcher.receiveEvents` → `ViewResponder.hitTest` → `MainActor.assumeIsolated`,
-/// faulting in the runtime's main-executor check — the same check that killed it twice on
-/// 2026-11-03 from our own timer blocks. Those call sites are gone and a grep keeps them gone, but
-/// SwiftUI's assertion is reached only because *some* view asked for hover, so the thing to prove is
-/// that nothing does. A tracking area owned by a class from SwiftUI's own bundle is the dispatcher's
-/// footprint: no bindings, no area, no path into the crashing function.
-enum HoverBindings {
-
-    /// Tracking areas SwiftUI installed for itself, over the whole view tree.
-    static func count(in view: NSView) -> Int {
-        var total = 0
-        for area in view.trackingAreas where isSwiftUI(area.owner) { total += 1 }
-        for sub in view.subviews { total += count(in: sub) }
-        return total
-    }
-
-    static func describe(_ view: NSView, surface: String) {
-        let owners = Set(view.subviews.flatMap { $0.trackingAreas }.compactMap { area in
-            area.owner.map { NSStringFromClass(type(of: $0)) }
-        })
-        print("hover: \(surface) — \(count(in: view)) SwiftUI-owned tracking area(s)"
-            + (owners.isEmpty ? "" : ", owners seen: \(owners.joined(separator: ", "))"))
-    }
-
-    private static func isSwiftUI(_ owner: AnyObject?) -> Bool {
-        guard let owner else { return false }
-        let bundle = Bundle(for: type(of: owner)).bundleIdentifier ?? ""
-        return bundle.hasPrefix("com.apple.SwiftUI")
-    }
 }

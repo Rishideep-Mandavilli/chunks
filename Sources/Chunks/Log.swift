@@ -64,62 +64,17 @@ enum Log {
         let line = formatted(message)
         queue.async {
             rotateIfNeeded()
-            appendLine(line)
+            guard let data = (line + "\n").data(using: .utf8) else { return }
+            if let handle = try? FileHandle(forWritingTo: fileURL) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                _ = try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: fileURL)
+            }
         }
         // Also to the unified log, so `log stream` still works for someone who prefers it.
         NSLog("%@", line)
-    }
-
-    /// A line that must survive a fault a moment later.
-    ///
-    /// `write` queues, and a SIGSEGV kills the queue with the line still sitting in it — which is why
-    /// every crash report on 2026-11-04 came with a log that ended *before* the crash, and whole
-    /// process lifetimes left no lines at all. Turn boundaries, failures and the watchdog use this:
-    /// one synchronous open/append/close, sub-millisecond, on paths that run a handful of times per
-    /// turn rather than per key-down.
-    static func writeCritical(_ message: String) {
-        let line = formatted(message)
-        queue.sync {
-            rotateIfNeeded()
-            appendLine(line)
-        }
-        NSLog("%@", line)
-    }
-
-    private static func appendLine(_ line: String) {
-        guard let data = (line + "\n").data(using: .utf8) else { return }
-        if let handle = try? FileHandle(forWritingTo: fileURL) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            _ = try? handle.write(contentsOf: data)
-        } else {
-            try? data.write(to: fileURL)
-        }
-    }
-
-    /// Appends one line synchronously, for a process that is about to die.
-    ///
-    /// `write` is asynchronous on purpose, and a thread that has just faulted may never let that queue
-    /// drain — which is why four crash reports on 2026-11-04 named neither the surface nor the event
-    /// that triggered them. This path opens the file with `O_APPEND` and writes in place of the queue.
-    /// Allocating inside a signal handler is technically unsafe, and the alternative is losing the one
-    /// sentence that makes the next report answerable, so the trade is made deliberately rather than
-    /// by accident.
-    static func appendEmergency(_ message: String) {
-        let line = formatted(message) + "\n"
-        let descriptor = open(fileURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
-        guard descriptor >= 0 else { return }
-        defer { close(descriptor) }
-        line.withCString { pointer in
-            var remaining = strlen(pointer)
-            var cursor = pointer
-            while remaining > 0 {
-                let written = Darwin.write(descriptor, cursor, remaining)
-                if written <= 0 { break }
-                cursor += Int(written)
-                remaining -= written
-            }
-        }
     }
 
     /// Blocks until every queued line has reached the file.

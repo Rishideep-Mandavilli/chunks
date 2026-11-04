@@ -38,17 +38,7 @@ public enum AnswerPanelLayout {
     ///
     /// It used to live only on the pill and then vanish, which is exactly when it is most needed:
     /// a five-step plan is hard to read if the sentence it is carrying out is no longer on screen.
-    ///
-    /// Two lines, not one. The card used to give this row 16 pt and truncate the middle, which
-    /// deleted the object out of the one sentence he knows precisely and did not type: "open
-    /// whatsapp, search for …, and message him hi". His own words are the least replaceable text on
-    /// the surface, so they get the second line and tail truncation.
     public static let questionRowHeight: CGFloat = 16
-
-    /// How many lines the spoken question occupies at this width, capped at two.
-    public static func questionRowCount(for text: String, width: CGFloat) -> CGFloat {
-        min(2, lines(text, font: questionFont, lineHeight: questionRowHeight, width: width))
-    }
 
     /// One line of the act timeline: what a step did, and which step of how many.
     public static let timelineRowHeight: CGFloat = 18
@@ -112,14 +102,6 @@ public enum AnswerPanelLayout {
     /// How much of a footnote the card can show.
     public static let noteCharacterBudget = 150
 
-    /// The row a failed turn offers: one way back into the conversation.
-    ///
-    /// A failure used to end the exchange — the card said why, and he had to re-type or re-say the
-    /// whole question to try again. Naming the problem and not the recovery is the half of an error
-    /// message this surface already gets right for a missing field, so the failed card gets a real
-    /// control: "Ask again" re-asks what he just asked.
-    public static let retryRowHeight: CGFloat = 28
-
     /// Room for a drafted message: a scrollable viewport, its well, and Copy outside the scroll.
     ///
     /// The 56 pt viewport does not include the well's padding. Omitting those two 6 pt insets made
@@ -157,33 +139,15 @@ public enum AnswerPanelLayout {
     }
 
     /// Two lines, because a question that names a control, an app and a step in a plan does not fit
-    /// in one at 332 pt. A question the user cannot read in full is a question they answer from the
-    /// shape of it.
+    /// in one at 332 pt: `Type "good night" into Compose message in WhatsApp? (step 2 of 5)`. A
+    /// question the user cannot read in full is a question they answer from the shape of it.
     public static let confirmQuestionHeight: CGFloat = 32
     public static let confirmButtonRowHeight: CGFloat = 28
     public static let confirmGap: CGFloat = 8
 
-    /// The ordinal line above the question: "Step 5 of 5".
-    ///
-    /// It used to be spelled inside the sentence — `Press Send in WhatsApp? (step 5 of 5)` — while
-    /// the act rows beside it said the same fact as bare `5/5` digits and the fold line said a third
-    /// thing again. One fact, one place, one shape: the pending step is labelled here, and the steps
-    /// that already ran keep their counter in the timeline.
-    public static let confirmOrdinalHeight: CGFloat = 14
-    public static let confirmOrdinalGap: CGFloat = 4
-
-    /// The well the ask sits in.
-    ///
-    /// The question is drawn in a `sunken` field, the same material the drafted message uses to say
-    /// *this is the payload*, because when the card is asking it has one job and the card should look
-    /// like it: the ask now sits directly under the stage row instead of under the answer, the
-    /// timeline and the chips.
-    public static let confirmWellInset: CGFloat = 10
-
-    /// Room for the whole question block: the ordinal, the line the user reads and the row they tap.
+    /// Room for the whole question block: the line the user reads and the row they tap.
     public static var confirmHeight: CGFloat {
-        2 * confirmWellInset + confirmOrdinalHeight + confirmOrdinalGap
-            + confirmQuestionHeight + confirmGap + confirmButtonRowHeight
+        confirmQuestionHeight + confirmGap + confirmButtonRowHeight
     }
 
     /// How many characters of detail the card will show.
@@ -250,7 +214,6 @@ public enum AnswerPanelLayout {
                                actionCount: Int = 0,
                                hasNote: Bool = false,
                                hasDraft: Bool = false,
-                               hasRetry: Bool = false,
                                confirmation: CardConfirmation = .none,
                                question: String = "",
                                timelineTexts: [String] = [],
@@ -277,7 +240,7 @@ public enum AnswerPanelLayout {
         // above the answer. Omitting it is how a card gets sized 16 pt short of its own content
         // and clips the first line of the reply instead of the question.
         if !question.isEmpty {
-            height += questionRowCount(for: question, width: textWidth) * questionRowHeight
+            height += questionRowHeight
         }
         if detailLines > 0 {
             height += sectionGap + detailLines * detailLineHeight
@@ -293,10 +256,9 @@ public enum AnswerPanelLayout {
         if chipCount > 0 {
             height += chipGap + CGFloat(chipCount) * chipHeight
         }
-        // Counted in its own block because the total is a sum, not a layout: the ask now draws
-        // second, directly under the stage, and the fold line above keeps the collapsed timeline
-        // charged as the one row it became. A question the user cannot reach because the window is
-        // too short is the same class of bug as a clipped answer — the press simply never gets asked.
+        // Counted between the chips and the footnote because that is the order the card draws
+        // them in. A question the user cannot reach because the window is too short is the same
+        // class of bug as a clipped answer — the press simply never gets asked.
         switch confirmation {
         case .none:
             break
@@ -308,11 +270,6 @@ public enum AnswerPanelLayout {
         // lines: the ceiling and the allowance have to be the same number.
         if hasNote {
             height += sectionGap + noteHeight
-        }
-        // The retry row is the last thing a failed card draws, so it is the last thing counted — and
-        // a control the window was not sized for is a control he cannot tap.
-        if hasRetry {
-            height += sectionGap + retryRowHeight
         }
 
         // Clamped, not merely bounded: a reply long enough to exceed the maximum is real,

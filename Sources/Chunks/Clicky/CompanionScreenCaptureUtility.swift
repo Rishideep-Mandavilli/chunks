@@ -31,15 +31,6 @@ struct CompanionScreenCapture {
     /// fraction of it, and mapping a crop's aim as a fraction of the whole display is the failure
     /// this exists to prevent: the number is plausible and the press is elsewhere.
     var imageFrame: CGRect { cropFrame ?? displayFrame }
-
-    /// What he drew, in words — "1 region circled, 1 region pinned" — when this picture is a region
-    /// he marked rather than a whole screen.
-    ///
-    /// Carried on the capture and not remembered beside it, so the description cannot outlive the
-    /// picture it describes: a stale one would tell the model there is a pin in a screenshot that
-    /// has none. `AnnotationSession.descriptionForModel` stays intent-neutral on purpose — a mark is
-    /// evidence for the model to look at, not a meaning to be handed to it.
-    var markDescription: String = ""
 }
 
 @MainActor

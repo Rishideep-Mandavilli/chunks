@@ -12,36 +12,6 @@ public enum AnnotationShape: Equatable, Sendable {
     case rect(LogicalRect)
     /// An arrow, drawn from tail to head.
     case arrow(from: LogicalPoint, to: LogicalPoint)
-    /// A pin: one point, marked, with no extent of its own.
-    ///
-    /// The other four shapes are *regions* — they say "this area". A pin says "this exact thing", which
-    /// is what "explain the button I just put a dot on" needs and what a circle cannot say without the
-    /// model guessing which part of the circle he meant. Its bounding box is a small disc rather than a
-    /// point, because a pin that dragged the session's crop down to 1x1 would hand the model a picture
-    /// of nothing.
-    case pin(LogicalPoint)
-
-    /// The context a pin carries into a crop, in logical points.
-    ///
-    /// Deliberately much wider than the dot that is drawn (`pinDotRadius`): it is the crop's padding
-    /// *and* the eraser's reach, and an eraser that only removed a pin when he hit five points of
-    /// solid red exactly would be a tool he has to aim at with the thing he is aiming at.
-    public static let pinRadius: Double = 24
-
-    /// The radius of the dot a pin is drawn as, in logical points.
-    ///
-    /// Pure, and shared by the three places a pin appears — the drawing surface, the layer that keeps
-    /// the marks on screen while the turn runs, and the burn-in that paints them into the picture the
-    /// model reads. Three copies of one number is three chances for "the thing I pinned" to mean a
-    /// dot on his screen and a ring in the crop.
-    public static let pinDotRadius: Double = 5
-
-    /// The pale ring just outside the dot, which is what keeps a pin legible on a dark wallpaper.
-    public static let pinRingGap: Double = 1.5
-    public static let pinRingWidth: Double = 2
-
-    /// The whole drawn mark's radius: dot, gap and ring.
-    public static var pinDrawnRadius: Double { pinDotRadius + pinRingGap + pinRingWidth }
 
     /// The smallest rect containing the mark, in display-local logical points.
     public var boundingBox: LogicalRect {
@@ -73,11 +43,6 @@ public enum AnnotationShape: Equatable, Sendable {
             let maxX = Swift.max(from.x, to.x) + pad
             let maxY = Swift.max(from.y, to.y) + pad
             return LogicalRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-
-        case .pin(let point):
-            let radius = AnnotationShape.pinRadius
-            return LogicalRect(x: point.x - radius, y: point.y - radius,
-                               width: radius * 2, height: radius * 2)
         }
     }
 
@@ -113,29 +78,6 @@ public struct AnnotationSession: Equatable, Sendable {
 
     public mutating func clear() { shapes.removeAll() }
 
-    /// Remove the mark under a point, topmost first, and say whether anything went.
-    ///
-    /// Topmost first because that is the one he can see on top of the others, and the one he means when
-    /// he rubs at a pile of ink. Hit-testing is by bounding box rather than by distance to the stroke's
-    /// own pixels: a freehand line is a sampled polyline, and the honest question at this scale is
-    /// "which mark did he touch", not "which pixel of which mark", and a box test answers the first one
-    /// without a nearest-segment search over every point of every stroke.
-    public mutating func erase(at point: LogicalPoint) -> Bool {
-        for index in shapes.indices.reversed() {
-            if shapes[index].boundingBox.contains(point) {
-                shapes.remove(at: index)
-                return true
-            }
-        }
-        return false
-    }
-
-    /// The mark under a point, without removing it — the same rule the eraser uses, so the two cannot
-    /// disagree about what "under" means.
-    public func shape(at point: LogicalPoint) -> AnnotationShape? {
-        shapes.last { $0.boundingBox.contains(point) }
-    }
-
     public var boundingBox: LogicalRect? {
         guard let first = shapes.first?.boundingBox else { return nil }
         return shapes.dropFirst().reduce(first) { $0.union($1.boundingBox) }
@@ -155,7 +97,6 @@ public struct AnnotationSession: Equatable, Sendable {
             case .ellipse: noun = "circled"
             case .rect: noun = "boxed"
             case .arrow: noun = "pointed at"
-            case .pin: noun = "pinned"
             }
             counts[noun, default: 0] += 1
         }

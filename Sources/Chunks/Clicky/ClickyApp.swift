@@ -139,28 +139,6 @@ struct leanring_buddyApp: App {
                 }
             }
         }
-        if CrashProbe.isRequested {
-            // The instrument that tells us what the next crash was doing. This process is meant to die.
-            CrashProbe.start()
-        }
-        if HoverProbe.isRequested {
-            // The crash of 2026-11-04 is inside SwiftUI, so the only way to watch the path is to walk
-            // it deliberately, in a process whose death is the answer.
-            HoverProbe.start()
-        }
-        if MainThreadProbe.isRequested {
-            // The thread, not the code: this is the only way to see the state a SwiftUI callback
-            // crashes in, since the crashing call site belongs to SwiftUI.
-            MainThreadProbe.start()
-        }
-        if InkProbe.isRequested {
-            // The ink is a display-sized window, so the question it has to answer is the one the
-            // overlay got wrong once: does it let go, and does it take anything with it.
-            InkProbe.start()
-        }
-        if InkRenderProbe.isRequested {
-            InkRenderProbe.start()
-        }
         if UIRenderProbe.isSetupRequested {
             let path = UIRenderProbe.requestedSetupPath()
             if Thread.isMainThread {
@@ -344,10 +322,6 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         companionManager.stop()
-        // A clean quit must be distinguishable from a fault in the record: without this line and this
-        // flush, both look like a log that simply stops.
-        Log.writeCritical("app: terminating cleanly")
-        Log.flush()
     }
 
     /// Put the notch HUD on screen and connect its taps back to the pipeline.

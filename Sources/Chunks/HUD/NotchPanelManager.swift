@@ -28,7 +28,7 @@ final class NotchPanelManager {
 
     private let model: NotchHUDModel
     private var panel: NSPanel?
-    private var hostingView: HoverShieldHostingView<NotchHUDView>?
+    private var hostingView: NSHostingView<NotchHUDView>?
     private var screen: NSScreen?
     private var geometry: NotchGeometry?
     private var screenChangeObserver: NSObjectProtocol?
@@ -125,7 +125,7 @@ final class NotchPanelManager {
         let view = NotchHUDView(model: model, onSelectAction: { [weak self] action in
             self?.onSelectAction?(action)
         })
-        let hosting = HoverShieldHostingView(rootView: view)
+        let hosting = NSHostingView(rootView: view)
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = .clear
         hosting.autoresizingMask = [.width, .height]
@@ -136,9 +136,6 @@ final class NotchPanelManager {
             backing: .buffered,
             defer: false
         )
-        // Named for the crash breadcrumb. Both this panel and the menu-bar one are the same private
-        // class, so a fault can only say "which surface" if the surfaces say so themselves.
-        created.identifier = NSUserInterfaceItemIdentifier("notch-card")
 
         created.isFloatingPanel = true
         // Above the menu bar, so the halo can wrap the cutout. On a display with no notch

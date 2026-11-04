@@ -1800,6 +1800,8 @@ final class CompanionManager: ObservableObject {
             acting, right now: the user is asked first.
             an [ACT:…], [TYPE:…] or [DO:…] puts one question on the card — "Press send in Mail?", "Type \\"good night\\" into the message box in WhatsApp?", "Open Notes?" — with Allow and Not now, and nothing happens until the user picks Allow. Say that you are asking, never that it is done: "i'll ask you to press send", not "i pressed send".
             the card holds one question at a time, so a plan of several tags is asked about one step at a time — "Press Search in WhatsApp? (step 1 of 5)" — and a "not now" on any step drops the steps after it.
+            the whole keyboard is available too: [DO:key:App|key expression] posts one real keystroke into that application — [DO:key:Terminal|ctrl+c], [DO:key:Qoder|command+shift+p], [DO:key:Notes|command+s], [DO:key:Code|shift+down x5] to select five lines. Names: any letter, digit or punctuation key, return, tab, space, backspace, delete, escape, left, right, up, down, home, end, pageup, pagedown, f1-f12, with + for modifiers (command/ctrl/option/shift) and " xN" to repeat. This is how an editor is driven when it publishes no controls to aim at, which is what every Electron and browser-based app does: the key goes to whatever has the focus, so name the application you mean.
+            three things are refused, and will come back as refusals, so do not offer to do them: command+q (quitting has its own verb, which names the cost), command+option+escape (force quit) and caps lock (a switch on his keyboard, not an edit — use shift for a capital). A return is asked about when the focused field is a single line, because there it submits rather than breaking.
             your words are not the act. you cannot know whether the user will allow it, or whether the control is even there, so never say a thing is typed, sent, opened or clicked — the app finishes the sentence with what really happened, and that line is the only past tense here.
             """
             : """
@@ -1807,6 +1809,8 @@ final class CompanionManager: ObservableObject {
             an [ACT:…], [TYPE:…] or [DO:…] runs straight away — Chunks presses the control, types the text or runs the tool, then says out loud whether it worked. So say what you are doing ("opening pluralsight", "typing that in now"), and never say "i'll ask you to allow it", "allow it on the card", or "tap Allow" — there is no card to tap, and promising one makes the user wait for a question that is never coming.
             it is still not you doing it: Chunks decides whether the act happens, refuses anything unsafe, and reports an act that failed. So never claim a result you did not get told — "i'll open it" is right, "it's saved", "i sent it" and "i've typed it" are guesses, and they are guesses the user can see contradicted one line below.
             emit your tags in order and Chunks runs them as a plan, stopping at the first step that does not happen. secure text fields, Keychain and password windows are refused even now, and an act the app refuses comes back as a refusal the user hears.
+            the keyboard is NOT available while this switch is off: [DO:key:…] is refused before any card, because a keystroke leaves no pointer behind to check, and the switch is the thing that says whether Chunks may act at all. Do not emit [DO:key:…] and do not promise to press, select or shortcut anything — drive the controls the screen shows instead, and if the app publishes no controls to aim at, say what you cannot do rather than pretending.
+
             one class is still asked about even with this switch off: a control the *app* calls Send, Submit, Pay, Purchase, Delete, Transfer or Confirm. That is a commitment, not navigation, and Chunks puts a card in front of it whatever you were told about asking. So do not end a plan with a send you expect to fire quietly, and never say something was sent, paid or deleted — put the words in the field, say they are ready, and let the user answer the card or ask you again.
             """
     }
@@ -2890,6 +2894,14 @@ final class CompanionManager: ObservableObject {
             reportToolLine(line)
             then?(line, succeeded)
         }
+        // The single execution point is where his rule about the keyboard has to live. `toolRefusal`
+        // stops it before the card, but a plan may lead with a tool and run it straight through when
+        // asking is off, and that door must not be a way to press a key on a machine where the switch
+        // says Chunks does not act without asking. Refused here too, in the same words.
+        if request.requiresAskingEnabled && !askBeforeActing {
+            report(KeyAction.switchRequiredReason, false)
+            return
+        }
         // The two schedule tools write the store the panel shows, so they run here rather than in
         // `ToolRunner`: the routines belong to this type, and handing a shell's file to a stateless
         // executor would put a second owner on the schedule.
@@ -2940,6 +2952,45 @@ final class CompanionManager: ObservableObject {
                     + "\(result.output.count) chars of output")
                 report(line, result.succeeded)
             }
+        case .key(let app, let body):
+            // Its own branch because the refusals are sentences he needs, not a boolean: an app that
+            // is not running, a screen that went somewhere else, and a focus that turns a newline
+            // into a submission are three different things to say.
+            Task {
+                let effect = await ToolRunner.runKey(app: app, body: body)
+                let line: String
+                let succeeded: Bool
+                switch effect {
+                case .pressed(let focus):
+                    succeeded = true
+                    line = ToolLayer.outcomeLine(for: request, succeeded: true)
+                    let combo = KeyAction.parse(body)
+                    // Where it landed, in the same breath as what was pressed. A keystroke leaves no
+                    // pointer behind, so this is the only evidence he gets that it went to the
+                    // element the card meant.
+                    Log.write("tool: key \(combo?.display ?? body) into \(app) — focus \(focus.display)")
+                case .appNotFound(let name):
+                    succeeded = false
+                    line = "\(name) is not running. Ask me to open it first — that is a different "
+                        + "thing to say yes to."
+                case .notFrontmost(let name):
+                    succeeded = false
+                    line = "\(name) did not come to the front, so nothing was pressed. Keys go "
+                        + "wherever the caret is, and I will not send them blind."
+                case .focusChanged(let reason, let focus):
+                    succeeded = false
+                    line = "Not pressed: \(reason) (focused: \(focus.display))."
+                case .unreadableKey:
+                    succeeded = false
+                    line = "Chunks could not read that as a key, so nothing was pressed."
+                case .permissionMissing:
+                    succeeded = false
+                    line = "Chunks cannot post keystrokes without Accessibility, so nothing was pressed."
+                }
+                Log.write("tool: key \(succeeded ? "ran" : "refused") — \(line)")
+                report(line, succeeded)
+            }
+
         default:
             Task {
                 // Through `runForOutcome`, not `run`: for the verbs that bring something up, "it
@@ -2998,6 +3049,12 @@ final class CompanionManager: ObservableObject {
 
     /// Why this tool must not even be offered, in the user's words.
     private func toolRefusal(for request: DoRequest) -> String? {
+        // One tool is tied to the asking switch and cannot run without it — his decision on
+        // 2026-11-05, and `requiresAskingEnabled` is the data that says which. The refusal is said
+        // here, before a card exists, so he is never asked to approve a keystroke that then declines
+        // to happen; and it is said from the request's own flag rather than a `case .key` written
+        // twice, so the unit cases about that flag are about the live path.
+        if request.requiresAskingEnabled && !askBeforeActing { return KeyAction.switchRequiredReason }
         switch request {
         case .addRoutine(let title, let cadence, let prompt):
             return RoutinesStore.validate(title: title, prompt: prompt, cadence: cadence,
@@ -3007,6 +3064,19 @@ final class CompanionManager: ObservableObject {
                 $0.title.lowercased() == title.lowercased()
             }) else { return "There is no routine called \"\(title)\"." }
             return nil
+        case .key(_, let body):
+            // A key this app refuses outright is refused whatever the switch says: ⌘Q already has
+            // a verb that names the cost, and caps lock is a switch on his keyboard, not an edit.
+            if let combo = KeyAction.parse(body),
+               case .refused(let reason) = KeyAction.classify(combo, focusedRole: nil) {
+                return reason
+            }
+            if KeyAction.parse(body) == nil {
+                return "Chunks cannot read \"\(body)\" as a key. It wants a name like return, "
+                    + "escape, or a combination like command+s."
+            }
+            return nil
+
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .reveal, .runCommand,
              .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .listWindows,
              .openFileWith, .moveWindow:

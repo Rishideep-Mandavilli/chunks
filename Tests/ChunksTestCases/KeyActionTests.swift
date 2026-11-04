@@ -155,6 +155,53 @@ public enum KeyActionTests {
                    "VoiceOver gets words, not glyphs")
         }
 
+        test("the modifier bits are the ones this SDK actually uses") {
+            // Printed out of `CGEventFlags` on this machine. `secondaryFn` is 0x800000 here, not the
+            // 0x02000000 a reading of an old header suggests — and the wrong bit is a keystroke the
+            // app receives as a different combination.
+            let shift = KeyAction.parse("shift+down").map { KeyAction.eventFlags(for: $0) }
+            expectEqual(shift, 0x20000, "shift is the bit a menu shows as ⇧")
+            expectEqual(KeyAction.parse("ctrl+c").map { KeyAction.eventFlags(for: $0) }, 0x40000)
+            expectEqual(KeyAction.parse("option+right").map { KeyAction.eventFlags(for: $0) }, 0x80000)
+            expectEqual(KeyAction.parse("cmd+s").map { KeyAction.eventFlags(for: $0) }, 0x100000)
+            expectEqual(KeyAction.parse("home").map { KeyAction.eventFlags(for: $0) }, 0x800000,
+                        "the function-row keys must carry fn, or AppKit delivers a plain arrow")
+            expectEqual(KeyAction.parse("cmd+shift+p").map { KeyAction.eventFlags(for: $0) },
+                        0x120000, "modifiers combine")
+            expectEqual(KeyAction.parse("a").map { KeyAction.eventFlags(for: $0) }, 0,
+                        "a bare letter must not arrive with a modifier held down")
+        }
+
+        test("return is routine only where a newline is the only thing it can mean") {
+            let enter = KeyAction.parse("return")!
+            expectEqual(KeyAction.classify(enter, focusedRole: "AXTextArea"), .routine,
+                        "a multiline editor can only break a line")
+            // The inversion matters: the old rule asked only about the roles it recognised as
+            // single-line, so a web area — what Chrome reports as its focus, measured with
+            // --probe-keys — fell through to routine. A Return inside a form field is a submission.
+            if case .command = KeyAction.classify(enter, focusedRole: "AXWebArea") {
+                // expected
+            } else {
+                expect(false, "return in a web area must be asked about, not run")
+            }
+            if case .command = KeyAction.classify(enter, focusedRole: "AXGroup") {
+                // expected
+            } else {
+                expect(false, "an element whose newline-hood is unproven is not a licence to press it")
+            }
+        }
+
+        test("the keyboard is linked to the asking switch, both ways round") {
+            // His decision on 2026-11-05: keys exist only while the switch is on, because a
+            // keystroke is the act that leaves no pointer behind to check.
+            expect(KeyAction.isAllowed(askingEnabled: true),
+                   "with asking on, a key is offered as a question like every other act")
+            expect(!KeyAction.isAllowed(askingEnabled: false),
+                   "with asking off the keyboard is refused — not run silently")
+            expect(KeyAction.switchRequiredReason.contains("Ask before acting"),
+                   "the refusal names the row he has to change, not just the fact that he cannot")
+        }
+
         test("the table is complete enough to be believed about the whole keyboard") {
             // A missing entry is a refusal the model cannot predict, so the coverage of the keys this
             // feature exists for is itself the assertion.

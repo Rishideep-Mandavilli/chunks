@@ -51,6 +51,9 @@ struct leanring_buddyApp: App {
         if VoiceAnswerProbe.isRequested {
             VoiceAnswerProbe.run()
         }
+        if KeyProbe.isRequested {
+            KeyProbe.start()
+        }
         if MainThreadProbe.isRequested {
             // The thread, not the code: this is the only way to see the state a SwiftUI callback
             // crashes in, since the crashing call site belongs to SwiftUI.

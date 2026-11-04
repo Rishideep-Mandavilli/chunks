@@ -156,11 +156,30 @@ public enum DoRequest: Equatable, Sendable {
     /// card is worded, exactly like a close.
     case moveWindow(app: String, title: String?, to: WindowPlacementPolicy.Target)
 
+    /// One keystroke, in one named application. `[DO:key:Terminal|ctrl+c]`.
+    ///
+    /// The body is kept as written and parsed by `KeyAction`, because the vocabulary is a table and
+    /// the judgement belongs there: this type decides *which verb* a sentence is, not whether ⌘Q is
+    /// allowed to happen.
+    case key(app: String, body: String)
+
     /// Whether this request only *reads* the machine, and so must never be offered as a question.
     ///
     /// One property rather than a list at each call site, because getting it wrong is asymmetric: a
     /// read that takes a card asks him to approve looking, and an act that skips one does something he
     /// did not agree to.
+    /// Whether this verb may only be offered while the user has asked to be asked.
+    ///
+    /// His decision on 2026-11-05, and it is not a hedge: the keyboard is the least visible act this
+    /// app can perform — it leaves no pointer behind for him to check — so it is linked to the switch
+    /// whose whole purpose is saying whether Chunks may act without asking. With the switch off the
+    /// answer is a refusal in words, raised *before* any card, because a card whose Allow leads to a
+    /// refusal makes the question a lie.
+    public var requiresAskingEnabled: Bool {
+        if case .key = self { return true }
+        return false
+    }
+
     public var isContextRead: Bool {
         if case .listWindows = self { return true }
         return false
@@ -296,6 +315,18 @@ public enum DoRequest: Equatable, Sendable {
 
         // What is open. `all` means every app; anything else is an app name, matched the same
         // half-name way the window verbs match it, so "list windows in chrome" works.
+        // The keyboard. `App|key expression`, and the expression is validated *here* so a model
+        // that writes `cmd+q` or `hypnotic` gets a refusal it can see rather than a keystroke it did
+        // not name. No alias list: "press", "type" and "hotkey" are all verbs that already mean other
+        // things in this protocol, and a synonym table is how two tags end up disagreeing.
+        case "key", "keypress", "press_key":
+            guard let split = argument.firstIndex(of: "|") else { return nil }
+            let app = argument[..<split].trimmingCharacters(in: .whitespaces)
+            let body = argument[argument.index(after: split)...].trimmingCharacters(in: .whitespaces)
+            guard !app.isEmpty, !app.contains("/"), app.count <= 60 else { return nil }
+            guard KeyAction.parse(body) != nil else { return nil }
+            return .key(app: app, body: body)
+
         case "list_windows", "windows", "what_is_open":
             let filter = argument.trimmingCharacters(in: .whitespaces)
             guard !filter.isEmpty, !filter.contains("/"), filter.count <= 60 else { return nil }
@@ -663,6 +694,12 @@ public enum DoRequest: Equatable, Sendable {
     /// describe in one sentence.
     public var invalidatesTheScreen: Bool {
         switch self {
+        // A keystroke is not a launch. It can change what is on the screen — ⌘N opens a window — but
+        // the property this one drives is "the screenshot the pixel steps were aimed at no longer
+        // exists", which is decided by which application came up. Every act, keyed or pointed, is
+        // re-resolved against the live tree before it happens regardless.
+        case .key: return false
+
         case .openApp, .openURL, .runShortcut, .email, .reveal,
              .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith, .moveWindow:
             return true
@@ -682,6 +719,14 @@ public enum ToolLayer {
     /// The question for the card. One line, present tense, names the exact effect.
     public static func question(for request: DoRequest) -> String {
         switch request {
+        case .key(let app, let body):
+            // The expression is validated at parse, so a failure to read it here is a bug rather than
+            // a bad tag — and the fallback still names the app, because that is the half he is
+            // actually approving: keys go wherever the caret is.
+            guard let combo = KeyAction.parse(body) else {
+                return "Press \(body) in \(app)?"
+            }
+            return KeyAction.question(for: combo, appName: app)
         case .openApp(let name):
             return "Open \(name)?"
         case .setVolume(let percent):
@@ -793,6 +838,7 @@ public enum ToolLayer {
 
     public static func effect(of request: DoRequest) -> Effect {
         switch request {
+        case .key: return .changesSystemState
         case .listWindows:
             return .readsTheMachine
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .addRoutine, .removeRoutine,
@@ -886,6 +932,15 @@ public enum ToolLayer {
             let name = (path as NSString).lastPathComponent
             return succeeded ? forward("Opened \(name) in \(app).")
                              : "\(app) did not open \(name)."
+        case .key(let app, let body):
+            // The count belongs in the report. "Pressed backspace in Qoder" about ten of them is a
+            // different act from the one he approved, and this line is the only record a keystroke
+            // leaves: there is no pointer where it went.
+            guard let combo = KeyAction.parse(body) else {
+                return succeeded ? "Pressed \(body) in \(app)." : "Nothing pressed \(body) in \(app)."
+            }
+            return succeeded ? KeyAction.outcome(for: combo, appName: app)
+                             : "Nothing pressed \(combo.display) in \(app)."
         case .moveWindow(let app, let title, let target):
             // Says *where*, because with asking off this line is the only record that anything happened,
             // and "Moved the window." does not tell him which way to look.

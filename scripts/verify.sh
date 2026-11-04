@@ -335,6 +335,27 @@ else
   printf '  \033[31mFAIL\033[0m  prompt: a supported tag is missing, or the sleep example is back on `-u`\n'
   fail=$((fail + 1)); failures+=("prompt teaches the new tags")
 fi
+# The whole keyboard (TASKS.md 3.10), and where one key would land. The probe posts nothing: it reads
+# the table, the classification and the live focus. This is the only door that can answer that
+# question at all, because a keystroke is the one act in this app that leaves no pointer, no control
+# name and no pixel behind — an Electron editor publishes no tree to quote, so the target is an app
+# plus whatever holds its caret, and he has to be able to see that before he says yes.
+check "keyboard: the vocabulary classifies, the refusals hold, the focus is named" \
+  "$BIN" --probe-keys Terminal
+# The live prompt must carry the keyboard sentence belonging to the switch this machine is *actually*
+# under. Both branches are asserted by `--probe-keys`, which reads the function; this reads the spliced
+# request, so a prompt built with the wrong half — or with the acting rules dropped — still fails here.
+keyboard_line="the whole keyboard is available too"
+if printf '%s' "$prompt_out" | grep -q "the user has switched asking off"; then
+  keyboard_line="keyboard is NOT available"
+fi
+if printf '%s' "$prompt_out" | grep -q "$keyboard_line"; then
+  printf '  \033[32mPASS\033[0m  prompt: the keyboard sentence matches the asking switch on this machine\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  prompt: missing "%s" for the switch this machine is under\n' "$keyboard_line"
+  fail=$((fail + 1)); failures+=("prompt matches the asking switch")
+fi
 # The memory trust rule, driven through his real `memory.md` in a temporary copy. Both halves must
 # hold: an inference may not retire something he said, and his own correction must be able to — the
 # second one matters because the file is capped, so a replacement that cannot land makes a full file
@@ -616,6 +637,19 @@ if ! grep -qE 'UserDefaults\.standard\.(set|removeObject)' Sources/Chunks/*Probe
 else
   printf '  \033[31mFAIL\033[0m  a probe writes UserDefaults again — running it would switch his app\n'
   fail=$((fail + 1)); failures+=("probe must not persist settings")
+fi
+# The keyboard is tied to the asking switch — his decision — and the tie has to survive someone
+# editing either door. `toolRefusal` stops a key act before a card exists; `runTool`, the only place
+# a tool executes, stops it again, because a plan may lead with a tool and run straight through when
+# asking is off. Both read the request's own flag instead of a `case .key` written twice, so the unit
+# cases about `requiresAskingEnabled` are cases about the live path and not about a dead property.
+if grep -q 'request\.requiresAskingEnabled && !askBeforeActing' Sources/Chunks/Clicky/CompanionManager.swift \
+   && [[ $(grep -c 'requiresAskingEnabled' Sources/Chunks/Clicky/CompanionManager.swift) -ge 2 ]]; then
+  printf '  \033[32mPASS\033[0m  keyboard: the switch is read at the card door *and* the execution point\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  keyboard: a key act could reach the driver with asking switched off\n'
+  fail=$((fail + 1)); failures+=("keyboard is gated by the asking switch")
 fi
 # A crash that says nothing is a crash that teaches nothing. Four reports in eighteen hours all
 # faulted inside SwiftUI's event dispatch and none of them named the surface or the event, because a

@@ -132,7 +132,9 @@ and `--probe-candidates` has still never reached a *page* control (0 candidates 
 never injected, `<NOTE>`/`[NOTES:]` verified live on Gemini. 3.4 realtime duplex voice **not started**.
 3.5 bundled skills + MCP **zero files**. 3.6 presence/notch face **not started**. 3.7 onboarding
 **done-unseen**. 3.8 launch-hold **done-unseen**. **New 3.9–3.15** from his ask: 3.9 file writes
-(blocked-on-him), 3.10 VS Code by name (buildable now), 3.11 PDF stays read-only (a refusal wording),
+(blocked-on-him), 3.10 **the whole keyboard, in any app — built 2026-11-05** (his widened scope: every
+IDE, every app, real keystrokes and not clipboard tricks; linked to the asking switch),
+3.11 PDF stays read-only (a refusal wording),
 3.12 browser in three levels (L1 and L2 buildable now, L3 blocked-on-him), 3.13 process and window
 choreography (**slices 1 and 2 built** — the four window verbs, then geometry by name with a coordinate
 refused at parse; the listing half went to 3.12 level 1), 3.14 a durable job
@@ -697,8 +699,8 @@ AppKit, Metal-rendered editors like Zed). A keystroke needs none of that: it goe
 of the focused app, which is why the scope he asked for is achievable and why the target of a key act is
 **an app plus its focus**, not an element the card can quote.
 
-**Slice 1 — BUILT 2026-11-05, inert: nothing calls it yet.** `Action/KeyAction.swift` in ChunksKit, pure
-and tested by 12 cases. The key table was printed out of this machine's `Carbon.HIToolbox` rather than
+**Slice 1 — BUILT 2026-11-05.** `Action/KeyAction.swift` in ChunksKit, pure
+and tested by 16 cases. The key table was printed out of this machine's `Carbon.HIToolbox` rather than
 typed from memory (K is 40, I is 34, the digits are scattered — a remembered table presses the wrong key
 silently, which is invariant 1's failure with a keystroke instead of a coordinate). It parses
 `cmd+s`, `shift+down x3`, `backspace`, `ctrl+option+delete`, folds the names a person says onto the SDK's
@@ -712,22 +714,40 @@ keyboard is not an edit — and `return` is asked about when the focused role is
 unknown**, because the unknown case is the common one here and PolicyGate's rule is that unreadable
 metadata fails toward asking.
 
-**Slice 2 — the driver.** `AXTDriver.keys(_:)`: post keyDown/keyUp with the modifier flags, hold `fn` for
-the function-row keys, and refuse to post a single event until the app's `AXFocusedUIElement` is the one
-the card named — the same `focusRefused` rule that already guards `[TYPE:]`, because keystrokes land
-wherever the caret is and a card about one window must not type into another.
+**Slice 2 — BUILT 2026-11-05.** `AXTDriver.keys(_:pid:expected:)`: post keyDown/keyUp with the modifier
+flags — read off this SDK, not remembered (`shift` is 1<<17, `control` 1<<18, `option` 1<<19, `command`
+1<<20, `fn` 1<<23; a wrong bit is a different shortcut, silently) — hold `fn` for the function-row keys,
+and re-read the app's live focus *before* the first event and refuse if the act changed meaning. It is
+the `[TYPE:]` rule restated for a key with no field to name: the honest answer for an Electron editor is
+that the app does not publish its caret, which is exactly why the target of a key act is an app plus its
+focus and why the switch, not a quoted control, is what protects him. `KeyFocus` reports whether the app
+answered at all, and `.focusChanged` refuses rather than typing into whatever moved under it.
 
-**Slice 3 — the grammar, the gate and the teaching.** `[KEY:app=Qoder|cmd+s]` and
-`[KEY:app=Terminal name="shell"|ctrl+c]` parsed into an act, `PolicyGate` taking the classification above
-as its key table, the prompt told the vocabulary exists and told what it cannot do (no pointer movement,
-no clipboard, no key refused), and `--probe-keys` printing the classification and *which element holds
-the focus in a named app right now* without pressing anything — the read-only door he can be sent to
-when a key went somewhere he did not expect.
+**Slice 3 — BUILT 2026-11-05.** `[DO:key:App|expression]` — the tool form rather than an act form,
+because a keystroke has no coordinate, no window and no control to aim at, so it is the same shape as
+`open_app` and `run_command`: `DoRequest.key(app:body:)`, parsed only when `KeyAction.parse` accepts the
+body, and `requiresAskingEnabled` is the flag that carries his decision below. `ToolRunner.runKey` finds
+the running app (a key act is refused rather than launching — opening an app is a different yes), raises
+it with a bounded poll and refuses if that failed, then posts through the driver. The card's question
+names the application and the glyphs it will press (`⌥⌘↑ ×1`), the outcome line says what the focus
+answered, and the log carries the same sentence. `CompanionManager.toolRefusal` is the door that returns
+`KeyAction.switchRequiredReason` when asking is off, and the prompt teaches the vocabulary in the
+asking-on half and says the keyboard is unavailable in the asking-off half — `--probe-keys` asserts both
+branches from the same function the live request splices, so the check does not depend on which way this
+machine happens to be switched.
 
-**Still his call, and it is the one that decides whether this is safe to leave on:** with asking off,
-routine keys type into whatever has the focus, which includes his chat composer and his terminal. The
-default should probably stay asking-on for the key verbs even when the switch is off. Say so and I will
-build it that way.
+**Decided 2026-11-05, by him: the keyboard exists only while "Ask before acting" is on.** Asked whether
+routine keys should be allowed with the switch off, he said no — *"make it linked to, when switch is on
+only, since it serves that purpose"*. So the switch is not a convenience here, it is the permission: with
+asking off, `[DO:key:…]` is refused before a card exists, for the routine keys as much as the ⌘ ones, and
+the refusal tells him which row in the panel to flip. Three consequences worth stating, because they are
+the reason this is the right shape and not a hedge: a keystroke is the least visible act in the app (no
+pointer moves, no window changes, nothing for a later re-read to compare against), the routine class is
+exactly the class that overlaps his own typing (a `backspace x10` aimed at whatever holds the focus does
+not care that he was mid-sentence in his chat), and a capability gated by a switch he can see is auditable
+where one gated by a classification he cannot is not. What it costs: with asking off — his default —
+the keyboard does nothing at all, so the Electron editors that motivated this stay driveable only through
+`[TYPE:]` and `[DO:open_file_with:]`.
 
 **The failure today:** VS Code is Electron, so `AXManualAccessibility` gets its tree and typing works —
 but a *file* edit through the UI means finding the explorer row, opening it, aiming the cursor at a
@@ -769,6 +789,13 @@ what the rule was written for.
 
 Acceptance: `--probe-controls Code` lists what the app publishes, and a spoken "open the file I named
 in VS Code" lands on the right document — his screen for that one.
+
+**The keyboard's acceptance is also his screen.** `--probe-keys` proves the table, the classification,
+the three refusals, the bounded repeat and both prompt branches, and 16 + 22 unit cases pin the parse and
+the gate; none of it has posted a real keystroke into a real editor on his machine. What only he can say:
+whether a card that names the *application* ("⌘S in Qoder?") rather than a control reads as a question he
+can answer, whether raising the app before the key lands feels right when he was looking elsewhere, and
+whether `shift+down x5` selecting five lines in his editor of choice behaves as the table claims.
 
 ### 3.11 Read the PDF; say what it is not
 

@@ -155,6 +155,83 @@ public enum ToolRunner {
         return Bundle(path: appURL.path)?.bundleIdentifier
     }
 
+    /// The keyboard verb, run end to end: find the app, make sure it is the one holding the
+    /// screen, then post the key.
+    ///
+    /// The front-of-queue check is not ceremony. A keystroke goes to the focused element of the
+    /// focused application, so "press ⌘S in the editor" while his terminal is front would save the
+    /// terminal's file — an act on the wrong machine-state, approved for the right one. The rule is
+    /// the one the open verbs now use: raise it, then believe the screen rather than the request; and
+    /// if the screen went somewhere he moved it himself, stop rather than fight him for it.
+    @MainActor
+    public static func runKey(app: String, body: String) async -> KeyEffect {
+        guard let combo = KeyAction.parse(body) else { return .unreadableKey }
+        guard let running = runningApplication(named: app) else { return .appNotFound(app) }
+
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier
+            != running.processIdentifier {
+            running.activate(options: [.activateAllWindows])
+            var waited = 0.0
+            while NSWorkspace.shared.frontmostApplication?.processIdentifier
+                != running.processIdentifier, waited < 2.0 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                waited += 0.1
+            }
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == running.processIdentifier else {
+                return .notFrontmost(app)
+            }
+        }
+
+        // What the card was worded from. The driver re-reads the live focus and refuses if the act
+        // means something else there — a Return that turns out to submit, not break a line.
+        let expected = KeyAction.classify(combo, focusedRole: nil)
+        let outcome = AXTDriver.keys(combo, pid: Int(running.processIdentifier),
+                                     expected: expected)
+        switch outcome {
+        case .pressed(_, let focus): return .pressed(focus: focus)
+        case .focusChanged(let reason, let focus): return .focusChanged(reason: reason, focus: focus)
+        case .permissionMissing: return .permissionMissing
+        }
+    }
+
+    /// The running application a person named, or nil when nothing running answers to it. A key
+    /// cannot be sent to an app that is not up, and launching it is a different act with its own
+    /// card — `[DO:open_app:]` — so this refuses rather than quietly doing two things.
+    @MainActor
+    public static func runningApplication(named name: String) -> NSRunningApplication? {
+        let wanted = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !wanted.isEmpty else { return nil }
+        let running = NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && $0.localizedName != nil
+        }
+        let exact = running.filter { $0.localizedName?.lowercased() == wanted }
+        if let one = exact.first, exact.count == 1 { return one }
+        if !exact.isEmpty { return exact.first }
+        // The same half-name rule the rest of the app uses — "chrome" for "Google Chrome" — and the
+        // same discipline: two that answer is a question, not a pick.
+        let partial = running.filter { AXTDriver.matchesAppName(label: wanted,
+                                                                owner: $0.localizedName ?? "") }
+        return partial.count == 1 ? partial.first : nil
+    }
+
+    /// What a keyboard act did, in the four ways it can end.
+    public enum KeyEffect: Sendable {
+        case pressed(focus: AXTDriver.KeyFocus)
+        case appNotFound(String)
+        case notFrontmost(String)
+        /// The live focus makes this a different act from the one approved. Refused, and the reason
+        /// is the sentence he gets.
+        case focusChanged(reason: String, focus: AXTDriver.KeyFocus)
+        case unreadableKey
+        case permissionMissing
+
+        public var succeeded: Bool {
+            if case .pressed = self { return true }
+            return false
+        }
+    }
+
     /// The effect of an open, as the screen reports it.
     public struct OpenOutcome: Sendable {
         public let opened: Bool
@@ -172,6 +249,8 @@ public enum ToolRunner {
     @MainActor
     public static func run(_ request: DoRequest) async -> Bool {
         switch request {
+        case .key(let app, let body):
+            return (await runKey(app: app, body: body)).succeeded
         case .addRoutine, .removeRoutine, .addReminder, .cancelReminder:
             // Not this type's work. The schedule is the file the panel shows and `CompanionManager`
             // owns it, so the routine tools are applied there and never reach this executor.

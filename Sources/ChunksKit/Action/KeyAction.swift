@@ -183,6 +183,9 @@ public enum KeyAction {
     /// delete a file; it is asking for a freeze, and the keystroke loop has no other bound.
     public static let maxRepeat = 200
 
+    /// How many repeats still get typed at a speed a person can follow.
+    public static let visibleRepeatCount = 24
+
     // MARK: - Reading what was asked
 
     /// Parse a key body: `cmd+s`, `shift+down x3`, `backspace`, `ctrl+c`, `option+shift+right x10`.
@@ -321,20 +324,22 @@ public enum KeyAction {
         if mods.contains(.control) {
             return .command(reason: "A control combination can stop a process or close a session.")
         }
-        // `return` in a single-line field submits. That is the permanent-act class, by name.
+        // `return` is the one key whose meaning the focus decides, so it is the one key asked about
+        // by anything other than a positive answer. Routine only when the focused element is a
+        // multiline text area — the role that can only take a newline. Single-line fields submit,
+        // and so can a web area, a group, or an app that says nothing: measured 2026-11-05 with
+        // `--probe-keys "Google Chrome"`, the focus answers `AXWebArea`, and a Return in a form
+        // field inside that is a submission, not a line break. Guessing the other way is how a
+        // message gets sent.
         if combo.key == "return" {
-            guard let focusedRole else {
-                // Unknown fails toward asking — the rule `PolicyGate` already applies to an element
-                // it cannot read. It is the common case here rather than an edge: an Electron editor
-                // publishes no tree at all, so "what has the focus" is unanswerable exactly in the
-                // apps this feature is for, and a Return into a chat composer is a sent message.
-                return .command(reason: "Chunks cannot see which field has the focus, so it cannot "
-                    + "say whether return makes a newline or submits it.")
-            }
-            if isSingleLineField(focusedRole) {
+            if focusedRole == "AXTextArea" { return .routine }
+            if let role = focusedRole, isSingleLineField(role) {
                 return .command(reason: "The field that has the focus is a single line, so return "
                     + "submits it rather than breaking it.")
             }
+            return .command(reason: "Chunks cannot prove the focused element takes a newline — it "
+                + "answers `\(focusedRole ?? "nothing")` — so return is asked about rather than "
+                + "assumed.")
         }
         return .routine
     }
@@ -346,6 +351,43 @@ public enum KeyAction {
         return role == "AXTextField" || role == "AXSearchField" || role == "AXComboBox"
             || role == "AXPasswordBox" || role == "AXSecureTextField"
     }
+
+    // MARK: - Handing it to the driver
+
+    /// The modifier bits, as the driver's `CGEventFlags` raw values.
+    ///
+    /// Returned as an integer rather than a `CGEventFlags` so this file stays a pure table: the
+    /// mapping is the part that can be wrong without anyone seeing it, and it has to be testable
+    /// without a keyboard. `function` is set by the driver for any key the table marks
+    /// `needsFunction` — home, end, page up and down, forward delete — which AppKit honours only
+    /// while `fn` is held.
+    public static func eventFlags(for combo: Combo) -> UInt64 {
+        // Every number here was printed out of `CGEventFlags` on this machine, not written from the
+        // header as remembered: `secondaryFn` is 1<<23 on this SDK, not the 1<<25 a reading of
+        // `0x02000000` suggests, and the wrong bit is a keystroke that arrives as a different key.
+        var flags: UInt64 = 0
+        if combo.modifiers.contains(.shift) { flags |= 1 << 17 }      // 0x20000
+        if combo.modifiers.contains(.control) { flags |= 1 << 18 }    // 0x40000
+        if combo.modifiers.contains(.option) { flags |= 1 << 19 }     // 0x80000
+        if combo.modifiers.contains(.command) { flags |= 1 << 20 }    // 0x100000
+        if combo.needsFunction || combo.modifiers.contains(.function) { flags |= 1 << 23 }
+        return flags
+    }
+
+    /// Whether this act may be offered at all on this machine's settings.
+    ///
+    /// He decided it on 2026-11-05: the keyboard is **linked to the asking switch and available only
+    /// while it is on**, because that switch is the thing that says whether Chunks may act on his
+    /// machine without asking. A keystroke is the least visible act this app can perform — it leaves
+    /// no pointer where he can see what happened — so it inherits the switch rather than working
+    /// around it. With the switch off the answer is a refusal in words, never a silent run and never
+    /// a card that would only be told to go away.
+    public static func isAllowed(askingEnabled: Bool) -> Bool { askingEnabled }
+
+    /// The sentence for the switch being off. It names what to do, not just what failed, because he
+    /// cannot be expected to remember which row in the panel this is.
+    public static let switchRequiredReason = "Keyboard acts are only available with Ask before acting "
+        + "switched on. It is in the panel, and it means every key I press is one you said yes to."
 
     // MARK: - Saying it
 

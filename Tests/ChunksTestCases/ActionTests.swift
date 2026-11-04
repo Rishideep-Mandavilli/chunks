@@ -1183,6 +1183,54 @@ public enum ActionTests {
                    "saying the number on a failure reads as though it was applied: \(volumeFailure)")
         }
 
+        test("the keyboard tag reads, and refuses to read what is not a key") {
+            let interrupt = DoRequest.parse("key:Terminal|ctrl+c")
+            expectEqual(interrupt, .key(app: "Terminal", body: "ctrl+c"),
+                        "the app and the expression are both load-bearing: keys go to the focused "
+                        + "element of the focused application")
+            let palette = DoRequest.parse("key:Qoder|command+shift+p")
+            expect(palette != nil, "an editor with no published controls is exactly what this is for")
+            // A body that is not a key must fail at the parse, so the raw tag reaches the card as
+            // text he can read instead of Chunks pressing the nearest thing it could recognise.
+            expect(DoRequest.parse("key:Terminal|") == nil, "an empty expression is not a keystroke")
+            expect(DoRequest.parse("key:Terminal|hypnotic") == nil,
+                   "an unknown key must not become a keystroke by approximation")
+            expect(DoRequest.parse("key:Terminal") == nil, "no expression, no act")
+            expect(DoRequest.parse("key:/Applications/Notes.app|cmd+n") == nil,
+                   "a path is not an application name — the same rule open_app holds")
+        }
+
+        test("a key act is worded as the key, the app, and the count") {
+            let request = DoRequest.parse("key:Code|shift+down x5")!
+            let question = ToolLayer.question(for: request)
+            expect(question.contains("⇧down ×5"),
+                   "the selection he approved has to be the selection on the card: \(question)")
+            expect(question.contains("Code"),
+                   "which application receives it is the thing being agreed to: \(question)")
+            expectEqual(ToolLayer.outcomeLine(for: request, succeeded: true),
+                        "Pressed ⇧down ×5 in Code.",
+                        "the count belongs in the report; five keys silently is a different act")
+            expect(ToolLayer.outcomeLine(for: request, succeeded: false).contains("Nothing pressed"),
+                   "a refused keystroke must not read as a done one")
+            expect(ToolLayer.effect(of: request) == .changesSystemState,
+                   "a key changes the machine — it is not a read, and reads never take cards")
+            expect(!request.invalidatesTheScreen,
+                   "a key is not a launch: the plan hold is about a screenshot no longer existing")
+        }
+
+        test("only the keyboard verb is gated by the asking switch") {
+            expect(DoRequest.parse("key:Terminal|ctrl+c")?.requiresAskingEnabled == true,
+                   "the key act must be refused outright when asking is off")
+            // The others must NOT be, or the switch stops meaning what it says: with asking off,
+            // routine acts run. This is the assertion that keeps the new rule from spreading.
+            expect(DoRequest.parse("open_app:Notes")?.requiresAskingEnabled == false,
+                   "open_app is not gated by the switch — it has its own rules")
+            expect(DoRequest.parse("run_command:caffeinate -di -t 60")?.requiresAskingEnabled == false,
+                   "run_command is always asked, which is a different property from switch-linked")
+            expect(DoRequest.parse("list_windows:all")?.requiresAskingEnabled == false,
+                   "a read must never become a gated act by association")
+        }
+
         // MARK: ToolRunner — the halves that need no disk and no launch
 
         test("the app name matches the bundle ignoring case and the .app suffix") {

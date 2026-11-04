@@ -2773,3 +2773,127 @@ public enum AXTDriver {
                          action: target.action)
     }
 }
+
+// MARK: - Full keyboard access (TASKS.md 3.10)
+
+extension AXTDriver {
+
+    /// What an application says is focused, and whether it answered at all.
+    ///
+    /// `answered` is the field that makes this honest. Measured on this machine, an Electron editor
+    /// publishes no usable tree — `--probe-fields Qoder` reads 220 elements and finds zero fields —
+    /// so "I do not know where the caret is" is the normal answer for exactly the apps the keyboard
+    /// feature is for, and it must never be reported as "nothing is focused".
+    public struct KeyFocus: Equatable, Sendable {
+        public let role: String?
+        public let name: String?
+        public let answered: Bool
+
+        /// The words for the card. A role is not something to say to a person; `AXTextArea` becomes
+        /// "text area", and an unnamed element is described as what it is — the focus.
+        public var display: String {
+            if let name, !name.isEmpty { return "\"\(name)\"" }
+            if let role {
+                return Self.spokenRole(role)
+            }
+            return answered ? "whatever has the focus" : "an app that does not say"
+        }
+
+        static func spokenRole(_ role: String) -> String {
+            switch role {
+            case "AXTextArea": return "the text area"
+            case "AXTextField": return "the text field"
+            case "AXWebArea": return "the web page"
+            case "AXGroup": return "the focused area"
+            default: return role.hasPrefix("AX") ? "the " + role.dropFirst(2).lowercased() : role
+            }
+        }
+    }
+
+    public enum KeyOutcome: Equatable, Sendable {
+        case pressed(times: Int, focus: KeyFocus)
+        /// The live focus makes this a different act from the one that was asked about. The card
+        /// said "press return", the focus says that means Send — the same reason a press is
+        /// re-resolved against the tree before it happens: an approval is about a state of the
+        /// machine, and the machine moved.
+        case focusChanged(reason: String, focus: KeyFocus)
+        case permissionMissing
+    }
+
+    /// Read a named application's focus. Presses nothing; `--probe-keys` runs this and only this.
+    public static func keyFocus(pid: Int) -> KeyFocus {
+        readFocus(AXUIElementCreateApplication(CInt(pid)))
+    }
+
+    /// Post one key, the number of times asked, into the process whose pid is given.
+    ///
+    /// The caller — the shell, on the main actor — is the one that made sure that process is
+    /// frontmost, because activation is an AppKit action and this file's rule is that the driver
+    /// touches nothing main-thread-only. Keys go to the focused element of the focused application;
+    /// if the wrong application is front, the wrong thing is typed, so that check is not a nicety.
+    public static func keys(_ combo: KeyAction.Combo, pid: Int,
+                            expected: KeyAction.Kind) -> KeyOutcome {
+        guard isTrusted() else { return .permissionMissing }
+        let app = AXUIElementCreateApplication(CInt(pid))
+        let focus = readFocus(app)
+
+        // Re-decide with what the app says *now*. A routine key that turns out to be a submission is
+        // refused rather than performed, and the reason is the card's next sentence.
+        if case .command(let reason) = KeyAction.classify(combo, focusedRole: focus.role),
+           expected == .routine {
+            return .focusChanged(reason: reason, focus: focus)
+        }
+        if case .refused(let reason) = KeyAction.classify(combo, focusedRole: focus.role) {
+            return .focusChanged(reason: reason, focus: focus)
+        }
+
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            return .focusChanged(reason: "no keyboard event source could be made", focus: focus)
+        }
+        let flags = CGEventFlags(rawValue: KeyAction.eventFlags(for: combo))
+        for index in 0..<combo.times {
+            postKey(combo.keyCode, source, flags: flags)
+            // The same breath the `[TYPE:]` path gives a receiving app: a tight loop of synthetic
+            // keystrokes outruns an editor's own queue and the loss is silent. Short runs keep the
+            // visible cadence; a long selection is not something anyone is watching character by
+            // character.
+            if combo.times > 1, combo.times <= KeyAction.visibleRepeatCount,
+               index < combo.times - 1 {
+                usleep(keystrokeCadenceMicroseconds)
+            }
+        }
+        return .pressed(times: combo.times, focus: focus)
+    }
+
+    private static func readFocus(_ app: AXUIElement) -> KeyFocus {
+        guard let raw = copyAttribute(app, kAXFocusedUIElementAttribute as String),
+              CFGetTypeID(raw) == AXUIElementGetTypeID() else {
+            return KeyFocus(role: nil, name: nil, answered: false)
+        }
+        let element = raw as! AXUIElement
+        let role = stringAttribute(element, kAXRoleAttribute as String)
+        let name = stringAttribute(element, kAXDescriptionAttribute as String)
+            ?? stringAttribute(element, kAXTitleAttribute as String)
+        return KeyFocus(role: role, name: name, answered: true)
+    }
+
+    /// How many repeated keystrokes still get the human-speed cadence.
+    static let visibleRepeatCount = 24
+
+    /// One physical key with its modifiers, down and up.
+    ///
+    /// The flags go on **both** events. Posting a keyDown with ⌘ and a keyUp without it is the shape
+    /// that leaves an app believing the modifier is still held, which reads afterwards as every plain
+    /// letter opening a menu.
+    private static func postKey(_ virtualKey: CGKeyCode, _ source: CGEventSource,
+                                flags: CGEventFlags) {
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: virtualKey,
+                                 keyDown: true) else { return }
+        down.flags = flags
+        down.post(tap: .cghidEventTap)
+        guard let up = CGEvent(keyboardEventSource: source, virtualKey: virtualKey,
+                               keyDown: false) else { return }
+        up.flags = flags
+        up.post(tap: .cghidEventTap)
+    }
+}

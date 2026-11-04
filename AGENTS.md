@@ -151,6 +151,7 @@ finds a desktop icon. Two more read-only doors came out of the semantic work:
 .build/debug/chunks --probe-notebook 'the landlord'  # his notebook read-only, then the tier's rules on a copy
 .build/debug/chunks --probe-windows Safari  # every window Chunks can see, and what each verb would ask
 .build/debug/chunks --probe-geometry 'Safari|Inbox|left'  # the rectangle a move would write, and nothing moved
+.build/debug/chunks --probe-keys Terminal  # how every key expression classifies, and where a key would land
 .build/debug/chunks --probe-reply --local   # ask the local model a plan question and audit its real words
 .build/debug/chunks --probe-read '~/Downloads/build.log|why did it fail'  # one path, end to end
 .build/debug/chunks --probe-voice-answer "yes"  # what a spoken sentence would do to the open card, answering nothing
@@ -962,6 +963,33 @@ session down with it, and a stale bundle that does not know the flag launches th
    raw pixels, and "put that on the second display" when only one is plugged in, are refusals, not
    guesses.
 
+   **A keystroke is the least visible act in this app, so it exists only while the asking switch is on.**
+   `[DO:key:App|command+s]` posts real key events to a named application: no pointer moves, no control is
+   aimed, no window has to change, and therefore **nothing exists for the re-read-before-pressing rule to
+   compare afterwards** — the usual corroboration is simply absent. So the capability is gated by the
+   switch itself (`DoRequest.requiresAskingEnabled`, and `KeyAction.isAllowed`), which was his decision on
+   2026-11-05: *"make it linked to, when switch is on only, since it serves that purpose."* With asking
+   off, a key act is refused **before a card exists**, routine keys included, and the refusal names the
+   row in the panel to flip. That is why the prompt's asking-off half says the keyboard is unavailable
+   rather than teaching the tag: a model that offers to press keys on a build that will not is a lie the
+   user has to discover by watching nothing happen. Three more rules, all of them the same fear: the key
+   table is **printed out of this machine's `Carbon.HIToolbox`, never remembered** (K is 40, I is 34, the
+   digits are scattered — a code recalled wrongly presses a different key silently, which is invariant 1's
+   failure with a keystroke instead of a coordinate); repetition is capped at `KeyAction.maxRepeat` (200),
+   because an uncapped `x100000` is a freeze with a voice attached; and `return` is routine **only** in an
+   `AXTextArea` — in a one-line field it submits, and in a web area or an Electron editor the app does not
+   publish what the caret will do with it, so both are asked about. The judgement lives in
+   `KeyAction.classify` (ChunksKit, pure): plain editing is routine, any `⌘` or `⌃` combination is asked
+   whatever the switch says, and `⌘Q`, `⌘⌥esc` and caps lock are refused outright — quitting already has
+   an always-asked verb that names the cost, and a keyboard-wide toggle has no undo. Execution re-reads
+   the live focus before the first event and refuses if the act changed meaning, refuses to *launch* an
+   app (a key goes to a running one — opening is a different yes), and refuses if raising it failed.
+   `--probe-keys [App]` prints all of it, plus which of the vocabulary is routine, asked, refused or
+   unreadable and what the named app says is focused right now, and posts nothing; `verify.sh` gates it,
+   including both prompt branches read from the same function the live request splices. What has never
+   been watched is a real key landing in his editor — the card names the *application*, not a control, and
+   whether that reads as a question he can answer is his call.
+
    **A command has three outcomes, and `runTool` is the only place any tool executes.**
    `[DO:run_command:…]` waits `commandWatchSeconds` (3) and then **stops watching without killing**:
    the user approved the whole line, and `caffeinate -di -t 21600` is a six-hour sleep hold that is
@@ -1271,8 +1299,8 @@ session down with it, and a stale bundle that does not know the flag launches th
 
 ## Current state
 
-**The app runs. 823 of 823 tests green across 46 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 51 checks: 45–47 pass and 4–6 skip,
+**The app runs. 841 of 841 tests green across 47 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 53 checks: 51–52 pass and 1–2 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
@@ -1311,6 +1339,7 @@ Done and tested:
 | What is open | `Action/OpenWindows.swift` | The read half: window list → one labelled block for the next turn, grouped by app, whole groups only under a 3 KB budget, with the count of what was left out |
 | Which window he meant | `Action/WindowAct.swift`, `Action/WindowDriver.swift` | The pure half decides (a title answers when every distinctive word he said is in it, two equal answers are refused *with both names listed*, and nothing is ever chosen by where it sits); the driver enumerates windows through Accessibility **and** the window server — Accessibility alone publishes nothing for an app on another display — and performs raise/minimise/close/quit without moving the cursor |
 | Where a window goes | `Action/WindowPlacementPolicy.swift` | Twelve named places and nothing else: halves, quarters, full, centre, `main`/`second`/`display=N`. Refuses a coordinate at parse, computes in Accessibility's own top-left point space with no conversion, and is covered at 1x/2x/3x and on a negative-origin second display. `--probe-geometry` prints the rectangle it would write |
+| The whole keyboard | `Action/KeyAction.swift`, `Action/AXTDriver.swift` (`keys`) | `[DO:key:App|expr]`: a key table printed from this machine's `Carbon.HIToolbox`, a parse that refuses to guess, and a judgement (routine / always asked / refused) that gates the least corroborated act in the app. Available only with "Ask before acting" on; `⌘Q`, `⌘⌥esc` and caps lock refused whatever the switch says; `--probe-keys` prints the classification and the live focus and posts nothing |
 | File read policy | `Action/ReadRequest.swift` | `[READ:~/path|question]`: allow-listed roots, a credential deny-list matched on the **resolved** path so a symlink into `~/.ssh` is refused, 24 KB cap sliced by file kind (tail for logs, head for code) |
 | Opening a file in an app | `Action/OpenFilePolicy.swift` | The five answers behind `[DO:open_file_with:…]` and their exact sentences, decided where a test can reach and a probe can quote: installed app + one file is a card, two matches asks, and a credential or an out-of-roots path is refused before a card exists |
 | Read-input budget | `Action/ReadInputBudget.swift` | One 6,000-unit UTF-8-byte token upper bound for the whole attachment, charging the exact live frame — path, coverage warning and untrusted-data label included. PDFs enter as ranked whole pages in document order and an oversized best page is refused rather than clipped; text and office files enter as contiguous whole lines, with boundary fragments trimmed as bytes before decoding |
@@ -1539,9 +1568,20 @@ Read it before picking anything up from this list.
   asserted the always-asked contract on the first run (2026-11-02), and 15 unit cases pin the parse, the
   wording, the ambiguity refusal and the rule that position never decides. Unseen: a spoken *"close that
   window"* on a document with unsaved work — whether the card's cost sentence reads in time to matter,
-  and whether `terminate()`'s refusal line arrives before or after the app's own sheet. Move, resize and
-  "put that on the second display" are deliberately not built: they are the one slice here that has to
-  get invariant 1 right, so they wait for the 1x/2x/3x round-trip coverage.
+  and whether `terminate()`'s refusal line arrives before or after the app's own sheet. Moving a window
+  by name is built (`--probe-geometry` prints the rectangle and moves nothing, and the policy is covered
+  at 1x/2x/3x plus a negative-origin second display); moving it by *pixels* is a refusal, not a feature
+  waiting to be written.
+- **The whole keyboard is built and gated, and no real key has been watched landing.** `[DO:key:App|expr]`
+  posts genuine key events — backspace, delete, a selection by `shift+down x5`, a palette by `⇧⌘P` — into
+  any running application, which is the only way into the editors that publish no Accessibility tree
+  (`--probe-fields Qoder` reads 220 elements and 0 fields). It exists only while "Ask before acting" is
+  on: he decided that on 2026-11-05, and `verify.sh` now asserts the tie at both the card door and the
+  execution point. 16 unit cases pin the table, the parse and the judgement; `--probe-keys` prints the
+  classification, the three outright refusals, both prompt branches and the named app's live focus, and
+  posts nothing. Unseen, and only his screen can say: whether a card that names the *application* rather
+  than a control reads as answerable, whether raising the app before the key lands feels right when he was
+  looking elsewhere, and whether the repeat cadence keeps up inside his editor of choice.
 - **Circle-to-explain works: ⌃⌘D dims the screen and opens the microphone; you draw and speak,
   Return asks.**
   The primary surface is `Sources/Chunks/Annotate/AnnotationOverlay.swift`, imported from

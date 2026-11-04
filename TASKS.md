@@ -686,6 +686,49 @@ path, the diff it would apply, the policy verdict and the card's sentence — an
 
 ### 3.10 Drive VS Code, and any Electron editor, by name rather than by pixel
 
+**Rewidened 2026-11-05 at his ask, and that changed the mechanism.** He does not want VS Code: he
+wants **every IDE on the machine, every app, and the whole keyboard** — backspace, delete, selecting
+lines, space, newline, caps, the lot — and explicitly **not** clipboard tricks. The reason this is not
+a rename is measured: `--probe-fields Qoder` reads 220 elements and publishes **0 fields**, because an
+Electron editor holds no Accessibility tree worth aiming at, while `--probe-fields Terminal` finds its
+`AXTextArea` in 372. Anything that resolves a *control* inside an editor is therefore blind in exactly
+the apps developers use, and would need one resolver per toolkit (Electron, JetBrains Swing, Xcode
+AppKit, Metal-rendered editors like Zed). A keystroke needs none of that: it goes to the focused element
+of the focused app, which is why the scope he asked for is achievable and why the target of a key act is
+**an app plus its focus**, not an element the card can quote.
+
+**Slice 1 — BUILT 2026-11-05, inert: nothing calls it yet.** `Action/KeyAction.swift` in ChunksKit, pure
+and tested by 12 cases. The key table was printed out of this machine's `Carbon.HIToolbox` rather than
+typed from memory (K is 40, I is 34, the digits are scattered — a remembered table presses the wrong key
+silently, which is invariant 1's failure with a keystroke instead of a coordinate). It parses
+`cmd+s`, `shift+down x3`, `backspace`, `ctrl+option+delete`, folds the names a person says onto the SDK's
+(`backspace`→Delete 51, `del`→ForwardDelete 117, `enter`→Return), marks the function-row keys so the
+driver holds `fn`, caps repetition at 200, and refuses to guess: a bare `cmd`, `cmd++`, `excel` and
+`backspace x0` all fail to parse rather than posting something close. The judgement is the part with
+teeth: plain editing is **routine**, any `⌘` combination and any `⌃` combination is **asked whatever the
+switch says** (⌘S writes to disk, ⌘P opens a palette that runs anything, ⌃C stops a build), `⌘Q`,
+`⌘⌥esc` and caps lock are **refused** — quitting already has an always-asked verb and a toggle on his
+keyboard is not an edit — and `return` is asked about when the focused role is single-line **or
+unknown**, because the unknown case is the common one here and PolicyGate's rule is that unreadable
+metadata fails toward asking.
+
+**Slice 2 — the driver.** `AXTDriver.keys(_:)`: post keyDown/keyUp with the modifier flags, hold `fn` for
+the function-row keys, and refuse to post a single event until the app's `AXFocusedUIElement` is the one
+the card named — the same `focusRefused` rule that already guards `[TYPE:]`, because keystrokes land
+wherever the caret is and a card about one window must not type into another.
+
+**Slice 3 — the grammar, the gate and the teaching.** `[KEY:app=Qoder|cmd+s]` and
+`[KEY:app=Terminal name="shell"|ctrl+c]` parsed into an act, `PolicyGate` taking the classification above
+as its key table, the prompt told the vocabulary exists and told what it cannot do (no pointer movement,
+no clipboard, no key refused), and `--probe-keys` printing the classification and *which element holds
+the focus in a named app right now* without pressing anything — the read-only door he can be sent to
+when a key went somewhere he did not expect.
+
+**Still his call, and it is the one that decides whether this is safe to leave on:** with asking off,
+routine keys type into whatever has the focus, which includes his chat composer and his terminal. The
+default should probably stay asking-on for the key verbs even when the switch is off. Say so and I will
+build it that way.
+
 **The failure today:** VS Code is Electron, so `AXManualAccessibility` gets its tree and typing works —
 but a *file* edit through the UI means finding the explorer row, opening it, aiming the cursor at a
 line, and every one of those is a pixel aim against a screen that changes when the file opens.

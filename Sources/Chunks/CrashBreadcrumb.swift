@@ -58,6 +58,9 @@ enum CrashBreadcrumb {
             return event
         }
         writeLine("breadcrumb: installed — the last mouse event will be named if this process faults")
+        // And in the log, where it can actually be read after a GUI launch: without this line there is
+        // no way to tell "the handler is armed" from "this build predates the handler".
+        Log.write("breadcrumb: armed — a fault will name the last mouse event and its surface")
     }
 
     private static func note(_ event: NSEvent) {
@@ -100,10 +103,13 @@ enum CrashBreadcrumb {
         let surface = surfaceName(lastEventSurface)
         let seconds = Int32(lastEventAt)
         let line = "chunks faulted on \(name) — last mouse event: \(event) on \(surface) "
-            + "at uptime \(seconds)s\n"
+            + "at uptime \(seconds)s"
         line.withCString { pointer in
             _ = write(STDERR_FILENO, pointer, strlen(pointer))
         }
+        // stderr from an app started by `open` is unreadable — the rule this project already writes
+        // probes against — so the sentence has to reach the log file he pastes from, synchronously.
+        Log.appendEmergency(line)
         // The buffered log lines of the last seconds are the other half of the story, and a fault
         // never gets to flush them normally.
         Log.flush()

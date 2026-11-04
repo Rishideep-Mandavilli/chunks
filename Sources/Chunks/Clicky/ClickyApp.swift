@@ -233,6 +233,21 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The first thing installed, before anything that could raise.
+        //
+        // An Objective-C exception thrown on the main thread inside a Swift Concurrency frame does not
+        // crash there: AppKit swallows it and resumes, and the thread's current-executor slot is left
+        // holding garbage — which is what makes the *next* `MainActor.assumeIsolated` SwiftUI performs
+        // die in `swift_getObjectType`, tens of seconds later, in a frame with nothing wrong with it.
+        // Every real crash report on 2026-11-04 carries AppKit's own marker for a swallowed exception;
+        // none of the deliberate probe crashes does. This handler is the field instrument for the
+        // hypothesis: if a second raise site exists, it now names itself in the log instead of killing
+        // the app twenty seconds later somewhere else.
+        NSSetUncaughtExceptionHandler { exception in
+            Log.write("uncaught ObjC exception: \(exception.name.rawValue) — "
+                      + (exception.reason ?? "no reason"))
+            Log.flush()
+        }
         Log.write("launch (chunks shell)")
         // Which bundle this actually is. TCC keys Screen Recording and Accessibility on the
         // app's signature, and this project has left several differently-signed copies of

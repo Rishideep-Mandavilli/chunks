@@ -53,6 +53,28 @@ enum UIRenderProbe {
     @MainActor
     static func runCaption(to path: String) -> Never {
         setvbuf(stdout, nil, _IONBF, 0)
+        // The contract, measured on the live panel rather than grepped out of the file. This is the
+        // check that would have caught the call that threw `NSUnknownKeyException` instead of setting
+        // `_setPreventsActivation`: the gate read the line, saw the string, and passed for every
+        // session in which the property was in fact never applied — and the throw is now the leading
+        // suspect for the SIGSEGVs, because an Objective-C exception unwound through a Swift task
+        // frame leaves the thread's current-executor slot holding garbage.
+        let captions = CaptionPanelManager()
+        // `NSApp` is nil on this path — the CLI probe never builds the application object, and reading
+        // the implicitly unwrapped one traps. Asking for `.shared` is the same question, answerable.
+        let activeBefore = NSApplication.shared.isActive
+        captions.show("Pressed Send.")
+        let prevented = captions.measuredPreventsActivation
+        let clickThrough = captions.measuredIgnoresMouseEvents
+        let canBeKey = captions.measuredCanBecomeKey
+        let activeAfter = NSApplication.shared.isActive
+        captions.hide()
+        print("render-caption: contract measured — prevents-activation=\(prevented.map(String.init) ?? "nil") "
+              + "ignoresMouseEvents=\(clickThrough.map(String.init) ?? "nil") "
+              + "canBecomeKey=\(canBeKey.map(String.init) ?? "nil") "
+              + "app-active \(activeBefore)→\(activeAfter)")
+        let contractPassed = prevented == true && clickThrough == true && canBeKey == false
+            && !activeAfter
         let lines = [
             "Pressed Send.",
             CaptionLine.shaped("I opened the invoice, read the total, and found it is later than the "
@@ -106,7 +128,8 @@ enum UIRenderProbe {
             print("render-caption: could not write \(url.path): \(error.localizedDescription)")
             exit(1)
         }
-        exit(0)
+        print("render-caption: caption-contract \(contractPassed ? "PASS" : "FAIL")")
+        exit(contractPassed ? 0 : 1)
     }
 
     private static func flagPath(after flag: String, fallback: String) -> String {

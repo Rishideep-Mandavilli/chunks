@@ -55,6 +55,33 @@ final class CaptionPanelManager {
     /// Whether a caption is on screen. Used by the render probe and by the safety contract.
     var isShowing: Bool { panel?.isVisible == true }
 
+    /// The measured state of the private flag on the live panel.
+    ///
+    /// Read back rather than trusted, because this app's own safety contract asserted a property that
+    /// the code setting it had in fact never applied — the call threw an `NSUnknownKeyException` first,
+    /// AppKit swallowed it, and the gate's grep passed either way. A property this load-bearing is only
+    /// worth having if something runs the surface and asks it.
+    var measuredPreventsActivation: Bool? {
+        guard let panel else { return nil }
+        return Self.preventsActivationFlag(panel)
+    }
+
+    /// The other three properties of this surface, read off the live panel rather than off the file.
+    var measuredIgnoresMouseEvents: Bool? { panel?.ignoresMouseEvents }
+    var measuredCanBecomeKey: Bool? { (panel as? CaptionPanel)?.canBecomeKey }
+
+    /// Asking a private getter for a `Bool` without letting `perform` reinterpret a scalar as a
+    /// pointer. `perform(_:)` hands back an `Unmanaged` wrapping the *value*, and taking that
+    /// unretained faults — measured here with exit 139 — so the IMP is called through its real C
+    /// signature instead.
+    static func preventsActivationFlag(_ panel: NSPanel) -> Bool? {
+        let selector = NSSelectorFromString("_preventsActivation")
+        guard panel.responds(to: selector),
+              let imp = class_getMethodImplementation(type(of: panel), selector) else { return nil }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+        return unsafeBitCast(imp, to: Getter.self)(panel, selector)
+    }
+
     private func ensurePanel() -> NSPanel {
         if let panel { return panel }
         let panel = CaptionPanel(
@@ -74,7 +101,30 @@ final class CaptionPanelManager {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         // The one line that keeps this app's menu bar from changing hands. Not public API, and the
         // only reason the overlay works at all — see `AGENTS.md`.
-        panel.setValue(true, forKey: "_setPreventsActivation")
+        //
+        // It used to be `panel.setValue(true, forKey: "_setPreventsActivation")`, and that call
+        // **raises `NSUnknownKeyException`** — measured on this machine: KVC looks for a key, and
+        // `_setPreventsActivation` is a setter name, so `-[NSObject setValue:forKey:]` falls through
+        // to `setValue:forUndefinedKey:` and throws. Two things followed, and both were invisible:
+        // the value never landed, so this surface's central property has never actually been set;
+        // and the throw unwound through the Swift Concurrency frames of the job that called it
+        // (`speakCaptioned` → `captions.show`), where AppKit's run loop swallowed it and resumed.
+        // That is the poison behind the SIGSEGVs: the thread-local "current executor" slot is left
+        // holding garbage, and the next `MainActor.assumeIsolated` SwiftUI performs — in a hit test,
+        // a hover dispatch or a button gesture — dereferences it and dies in `swift_getObjectType`.
+        // Every one of the four real crash reports on 2026-11-04 carries AppKit's own marker for a
+        // swallowed exception, and none of the deliberate `--probe-crash` reports does.
+        let preventsActivation = NSSelectorFromString("_setPreventsActivation:")
+        if panel.responds(to: preventsActivation) {
+            panel.perform(preventsActivation, with: NSNumber(value: true))
+        }
+        // Said out loud once per process, because the last time this line was wrong the only evidence
+        // was four crash reports and a green gate.
+        if Self.preventsActivationFlag(panel) != true {
+            Log.write("caption: prevents-activation did NOT land on the panel — this surface can "
+                      + "take the menu bar, and the call that sets it may have thrown")
+            Log.flush()
+        }
         self.panel = panel
         return panel
     }

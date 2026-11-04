@@ -525,7 +525,8 @@ fi
 # way this could take something from the app he is in — focus, a click, the menu bar, or his screen
 # real estate after the voice has stopped.
 if grep -q 'ignoresMouseEvents = true' Sources/Chunks/HUD/CaptionPanelManager.swift \
-   && grep -q '_setPreventsActivation' Sources/Chunks/HUD/CaptionPanelManager.swift \
+   && grep -q 'panel.perform(preventsActivation' Sources/Chunks/HUD/CaptionPanelManager.swift \
+   && ! grep -vE '^\s*//' Sources/Chunks/HUD/CaptionPanelManager.swift | grep -q 'setValue(true, forKey: "_setPreventsActivation")' \
    && grep -q 'canBecomeKey: Bool { false }' Sources/Chunks/HUD/CaptionPanelManager.swift \
    && ! grep -q 'NSApp\.activate(' Sources/Chunks/HUD/CaptionPanelManager.swift; then
   printf '  \033[32mPASS\033[0m  the caption takes nothing: no focus, no clicks, no activation\n'
@@ -539,12 +540,14 @@ fi
 cap_out="$("$BIN" --render-caption /tmp/chunks-caption.png 2>&1)"; cap_status=$?
 cap_bytes=$(stat -f%z /tmp/chunks-caption.png 2>/dev/null || echo 0)
 if [[ $cap_status -eq 0 ]] && printf '%s' "$cap_out" | grep -q "wrote 3 caption rows" \
+   && printf '%s' "$cap_out" | grep -q "caption-contract PASS" \
    && [[ $cap_bytes -gt 60000 ]]; then
   printf '  \033[32mPASS\033[0m  render: caption rows, cut at a word boundary  (%s KB)\n' \
     "$((cap_bytes / 1024))"
+  printf '        %s\n' "$(printf '%s' "$cap_out" | grep 'contract measured')"
   pass=$((pass + 1))
 else
-  printf '  \033[31mFAIL\033[0m  render: the caption did not draw (%s bytes, exit %s)\n' \
+  printf '  \033[31mFAIL\033[0m  render: the caption did not draw or its contract was not measured (%s bytes, exit %s)\n' \
     "$cap_bytes" "$cap_status"
   printf '        %s\n' "$(printf '%s' "$cap_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
   fail=$((fail + 1)); failures+=("caption render")

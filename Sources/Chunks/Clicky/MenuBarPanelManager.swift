@@ -176,7 +176,9 @@ final class MenuBarPanelManager: NSObject {
         let companionPanelView = CompanionPanelView(companionManager: companionManager)
             .frame(width: panelWidth)
 
-        let hostingView = NSHostingView(rootView: companionPanelView)
+        // Shielded: this is the surface the crash breadcrumb named twice. A hover tint on a panel
+        // he opens with the pointer already over it is not worth a SIGSEGV in Apple's hover dispatch.
+        let hostingView = HoverShieldHostingView(rootView: companionPanelView)
         hostingView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = .clear

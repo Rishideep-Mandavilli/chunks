@@ -96,6 +96,22 @@ enum InkProbe {
         writePNG(before, to: "/tmp/chunks-ink-before.png")
         print("capture with no ink: \(before.width)x\(before.height)px, \(baseline) ink-coloured pixel(s)")
 
+        // The measurement is a pixel-count difference over a photograph of his live desktop, so it is
+        // only meaningful while that photograph is still. A window scrolling red text under the region
+        // moves the count by thousands and reads exactly like ink that never left — two gate runs on
+        // 2026-11-04 failed that way while he was working at the machine. Two baselines that disagree
+        // is a desktop in motion, not a broken layer: skipped and named, never failed and never
+        // silently passed.
+        guard let again = await capture(region) else {
+            skip("the second stability capture could not be taken")
+        }
+        let drift = abs(inkPixels(in: again) - baseline)
+        print("desktop stability: \(drift) ink-coloured pixel(s) of drift between two captures")
+        if drift > 40 {
+            skip("his desktop is changing under the measured region (\(drift) px of drift), so a "
+                 + "pixel-count difference cannot be trusted this run")
+        }
+
         expect(ink.show(shapes, on: display, limitSeconds: 30),
                "the ink layer opened on the display it was drawn on")
         expect(ink.isShowing, "the layer reports itself on screen")

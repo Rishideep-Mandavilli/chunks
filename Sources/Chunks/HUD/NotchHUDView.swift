@@ -26,8 +26,6 @@ struct NotchHUDView: View {
         max(0, lineHeight - font.pointSize)
     }
 
-    @State private var chipHovered: Int?
-
     /// Whether *this* draft has been copied.
     ///
     /// Local, and reset when a new draft arrives: the button is the only proof that the tap did
@@ -418,7 +416,7 @@ struct NotchHUDView: View {
         // inset visible; past that the words truncate, as they do everywhere else on this surface.
         .frame(maxWidth: 240, alignment: .leading)
         .frame(height: AnswerPanelLayout.chipHeight - 4)
-        .physical(chipHovered == chip.id && pressable ? DS.Colors.hover : DS.Colors.raised,
+        .physical(DS.Colors.raised,
                   radius: DS.CornerRadius.small,
                   elevation: .raised,
                   // `raised` on the card's ground is a 1.05:1 difference, which is a shadow, not an
@@ -427,10 +425,6 @@ struct NotchHUDView: View {
                   edge: pressable ? DS.Colors.lineControl : DS.Colors.line)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .onHover { inside in
-            guard pressable else { return }
-            chipHovered = inside ? chip.id : (chipHovered == chip.id ? nil : chipHovered)
-        }
     }
 
     /// The width any wrapped line on this card actually gets. One number, because the view and
@@ -527,8 +521,6 @@ private struct NotchHaloShape: Shape {
 private struct ConfirmButtonStyle: ButtonStyle {
     var filled: Bool
 
-    @State private var isHovered = false
-
     func makeBody(configuration: Configuration) -> some View {
         let pressed = configuration.isPressed
         return configuration.label
@@ -536,18 +528,20 @@ private struct ConfirmButtonStyle: ButtonStyle {
             .foregroundColor(filled ? DS.Colors.onInk : DS.Colors.ink)
             .frame(maxWidth: .infinity)
             .frame(height: AnswerPanelLayout.confirmButtonRowHeight)
+            // No hover state on this surface, deliberately. SwiftUI's hover dispatch is where the
+            // app has faulted: NSHostingView.mouseEntered → HoverEventDispatcher → its own
+            // MainActor.assumeIsolated → SIGSEGV, three times, named by the crash breadcrumb. The
+            // press sink and the 1 pt drop are the feedback; a tint that needs the pointer tracked
+            // is not worth a crash on the one tap that can change his machine.
             .physical(filled
                       ? (pressed ? DS.Colors.actionHover : DS.Colors.action)
-                      : (pressed ? DS.Colors.pressed
-                                 : (isHovered ? DS.Colors.hover : DS.Colors.raised)),
+                      : (pressed ? DS.Colors.pressed : DS.Colors.raised),
                       radius: DS.CornerRadius.small,
                       elevation: pressed ? .pressed : .raised,
                       edge: filled ? DS.Colors.ink : DS.Colors.line)
             .offset(y: pressed ? 1 : 0)
             .contentShape(Rectangle())
             .animation(DS.Motion.tap, value: pressed)
-            .animation(DS.Motion.tap, value: isHovered)
-            .onHover { isHovered = $0 }
     }
 }
 

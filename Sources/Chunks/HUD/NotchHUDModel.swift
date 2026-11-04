@@ -194,6 +194,12 @@ final class NotchHUDModel: ObservableObject {
     /// ended without an answer.
     var onRetry: (() -> Void)?
 
+    /// Where an outcome line goes to be said aloud, when it answered a live question.
+    ///
+    /// The model knows only that a question was on the card and is now a record line; saying it is
+    /// the manager's, which owns the voice.
+    var onReported: ((String) -> Void)?
+
     /// Whether the card is showing a failure, which is the one state that offers a retry.
     var isFailed: Bool {
         if case .failed = phase { return true }
@@ -465,6 +471,7 @@ final class NotchHUDModel: ObservableObject {
     }
 
     func fail(_ message: String) {
+        Log.writeCritical("hud: failed — \(message)")
         clearContent()
         stopClock()
                 // Not `.answered`, which is what this line used to be. A turn that died is the one thing
@@ -588,6 +595,8 @@ final class NotchHUDModel: ObservableObject {
     /// The wording names the control the *hit test* found, not the one the model described, so
     /// the user is approving what is about to be pressed.
     func askConfirm(_ question: String, step: Int? = nil, of total: Int? = nil) {
+        Log.writeCritical("hud: asking — \(question.prefix(80))"
+                          + (step.map { " (step \($0) of \(total ?? 0))" } ?? ""))
         confirmQuestion = question
         confirmStep = step
         confirmStepTotal = total
@@ -625,6 +634,11 @@ final class NotchHUDModel: ObservableObject {
     /// one-step one. The card is capped, so the view folds anything past
     /// `AnswerPanelLayout.maxVisibleTimelineRows` into "+N earlier".
     func reportConfirm(_ line: String) {
+        // Whether this line is the answer to a question he just tapped on. That is the only case
+        // where the line is spoken from here: with asking switched off the same sentence rides the
+        // turn's own utterance, and saying it twice is a stutter. With asking on it used to reach the
+        // card and never his ears — an act he approved and watched happen, in silence.
+        let answeredALiveQuestion = confirmQuestion != nil
         clearConfirm()
         let bounded = AnswerPanelLayout.boundedDetail(line,
                                                       budget: AnswerPanelLayout.noteCharacterBudget)
@@ -633,6 +647,7 @@ final class NotchHUDModel: ObservableObject {
         currentStep = nil
         stage = .acting
         if phase == .idle { phase = .result }
+        if answeredALiveQuestion { onReported?(bounded) }
     }
 
     private var hintTask: Task<Void, Never>?
@@ -664,7 +679,21 @@ final class NotchHUDModel: ObservableObject {
     private func refreshClock() {
         guard let turnStart else { return }
         elapsed = Date().timeIntervalSince(turnStart)
+        // A hung turn used to be invisible in the record: the log went quiet at "turn: start" and
+        // stayed quiet for an hour while the card counted. One durable line every five seconds while
+        // the card is still thinking is the difference between a report that ends mid-turn and one
+        // that shows the turn never moved.
+        guard case .thinking = phase else {
+            heartbeatTicks = 0
+            return
+        }
+        heartbeatTicks += 1
+        if heartbeatTicks % 10 == 0 {
+            Log.writeCritical("hud: turn still thinking at \(Int(elapsed))s")
+        }
     }
+
+    private var heartbeatTicks = 0
 
     /// Stop ticking but keep the final figure, so "Answered · 4.2s" is the time it actually took.
     private func stopClock() {

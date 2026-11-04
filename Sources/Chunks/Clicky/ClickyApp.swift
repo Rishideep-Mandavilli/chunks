@@ -344,6 +344,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         companionManager.stop()
+        // A clean quit must be distinguishable from a fault in the record: without this line and this
+        // flush, both look like a log that simply stops.
+        Log.writeCritical("app: terminating cleanly")
+        Log.flush()
     }
 
     /// Put the notch HUD on screen and connect its taps back to the pipeline.

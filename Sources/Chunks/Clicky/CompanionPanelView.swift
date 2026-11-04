@@ -18,9 +18,6 @@ struct CompanionPanelView: View {
     @State private var keyMessage: String?
     @State private var backupInput: String = ""
     @State private var backupMessage: String?
-    @State private var removeHovering: UUID?
-    /// Fact ids are strings, so the memory row cannot share the routine row's hover state.
-    @State private var forgetHovering: String?
     @State private var isAddingRoutine = false
     @State private var routineTitle = ""
     @State private var routinePrompt = ""
@@ -598,15 +595,9 @@ struct CompanionPanelView: View {
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(rowHovered == row.id ? C.hover : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: DS.CornerRadius.small, style: .continuous))
         .contentShape(Rectangle())
-        .onHover { inside in
-            rowHovered = inside ? row.id : (rowHovered == row.id ? nil : rowHovered)
-        }
     }
-
-    @State private var rowHovered: PermissionRow.Kind?
 
     /// The small action pill. Ink for the one thing to do, paper for the alternatives — the same
     /// pair of weights the card's Allow and Not now use, so a user who learned one reads the other.
@@ -625,7 +616,10 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
-        .help(help)
+        // A hint, not a tooltip: `.help` makes SwiftUI track the pointer for the delay before the
+        // bubble appears, and pointer tracking on this surface is the crash family the breadcrumb
+        // named. The words still reach VoiceOver.
+        .accessibilityHint(help)
     }
 
     /// What each button actually does — the same switch the setup window's buttons run, so the
@@ -1066,14 +1060,12 @@ struct CompanionPanelView: View {
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(fact.id == forgetHovering
-                                     ? C.destructive : C.textTertiary)
+                    .foregroundColor(C.textTertiary)
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Forget \"\(fact.text)\"")
-            .onHover { inside in forgetHovering = inside ? fact.id : nil }
         }
         .padding(.vertical, 2)
     }
@@ -1105,14 +1097,12 @@ struct CompanionPanelView: View {
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(removeHovering == routine.id
-                                     ? C.destructive : C.textTertiary)
+                    .foregroundColor(C.textTertiary)
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Remove \"\(routine.title)\"")
-            .onHover { removeHovering = $0 ? routine.id : nil }
         }
         .padding(.vertical, 3)
     }
@@ -1141,14 +1131,12 @@ struct CompanionPanelView: View {
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(removeHovering == reminder.id
-                                     ? C.destructive : C.textTertiary)
+                    .foregroundColor(C.textTertiary)
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Cancel reminder \"\(reminder.text)\"")
-            .onHover { removeHovering = $0 ? reminder.id : nil }
         }
         .padding(.vertical, 3)
     }
@@ -1373,7 +1361,7 @@ struct CompanionPanelView: View {
                     }
                     .buttonStyle(.plain)
                     .pointerCursor()
-                    .help("Re-open the three-step setup: permissions, brain, keep-alive.")
+                    .accessibilityHint("Re-open the three-step setup: permissions, brain, keep-alive.")
                 }
             }
         }

@@ -28,7 +28,7 @@ final class NotchPanelManager {
 
     private let model: NotchHUDModel
     private var panel: NSPanel?
-    private var hostingView: NSHostingView<NotchHUDView>?
+    private var hostingView: HoverShieldHostingView<NotchHUDView>?
     private var screen: NSScreen?
     private var geometry: NotchGeometry?
     private var screenChangeObserver: NSObjectProtocol?
@@ -125,7 +125,7 @@ final class NotchPanelManager {
         let view = NotchHUDView(model: model, onSelectAction: { [weak self] action in
             self?.onSelectAction?(action)
         })
-        let hosting = NSHostingView(rootView: view)
+        let hosting = HoverShieldHostingView(rootView: view)
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = .clear
         hosting.autoresizingMask = [.width, .height]

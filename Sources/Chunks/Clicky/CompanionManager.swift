@@ -338,8 +338,25 @@ final class CompanionManager: ObservableObject {
     /// next step is otherwise a loop with a voice.
     static let maxPlanRounds = 4
 
+    /// The longest a turn may sit with nothing on the card before the card says so.
+    ///
+    /// The 60 s model budget bounds only the chain. A stalled window-server capture, a file read that
+    /// never returns and an Accessibility call parked inside the driver hop all happen before or
+    /// beside it, and each of them left the card counting seconds for an hour on 2026-11-04 with no
+    /// failure, no speech and no way back. Seventy is the budget plus the slack a slow first chunk
+    /// gets, and the watchdog fires only while the card is still *thinking* — a turn with an answer on
+    /// it is not stuck, it is being read.
+    static let turnWatchdogSeconds: Double = 70
+
     /// The round of the current plan, and whether this turn is one of its own continuations.
     private var planRound = 0
+
+    /// Which turn owns the card right now.
+    ///
+    /// Bumped by every ask and by the watchdog. A turn task parked on a call that never returns
+    /// cannot be cancelled into returning, so when it finally wakes it compares this against the
+    /// number it started with and walks away instead of writing over the card a newer turn owns.
+    private var turnEpoch = 0
     private var isContinuingPlan = false
 
     /// The plan round waiting out its recapture delay, if there is one.
@@ -845,6 +862,14 @@ final class CompanionManager: ObservableObject {
         // which surface or which event. A fault does not flush, so the evidence was being lost with
         // the process.
         CrashBreadcrumb.install()
+        // An outcome line that answered a live question is said aloud from here. The card shows it
+        // either way, but with asking switched on nothing else in the app ever speaks it — and an act
+        // he approved, watched happen and never heard is the "not speaking out" he has reported.
+        hud.onReported = { [weak self] line in
+            Task { [weak self] in
+                try? await self?.speakCaptioned(line)
+            }
+        }
         refreshAllPermissions()
         // A process start is a conversation start. This is the boundary that covers a relaunch, a
         // reboot and a login all at once, because from the app's point of view they are the same
@@ -3548,6 +3573,7 @@ final class CompanionManager: ObservableObject {
         // continuation round deliberately does not come through here, because it is the same turn
         // about the same marks.
         turnSequence += 1
+        turnEpoch += 1
         lastTranscript = question
         sendTranscriptToBrainWithScreenshot(transcript: question, source: source)
     }
@@ -3560,12 +3586,59 @@ final class CompanionManager: ObservableObject {
     /// prompt is nobody waiting for an answer, and "Ask again" on a card for something that fired at
     /// 07:00 would run it now.
     private func failTurn(_ message: String) {
+        Log.writeCritical("turn: failed — \(message)")
         hud.fail(message)
         guard let ask = lastAsk, ask.source != .routine else { return }
         hud.onRetry = { [weak self] in
             self?.ask(text: ask.text, source: ask.source)
         }
     }
+
+    /// The watchdog's whole job: a card that has been thinking for seventy seconds with nothing on it
+    /// is not slow, it is abandoned by whatever it is waiting on.
+    ///
+    /// The parked call is not killed — a detached Accessibility read or a window-server capture
+    /// cannot be — so the turn's ownership is taken away instead: the epoch moves on, and the task
+    /// still parked on that call finds, when it wakes, that its card belongs to somebody else. What
+    /// he gets is the honest half this surface owes him: a named failure, a spoken line, and Ask
+    /// again.
+    private func turnStalled(epoch: Int) {
+        guard epoch == turnEpoch else { return }
+        guard case .thinking = hud.phase else { return }
+        turnEpoch += 1
+        Log.writeCritical("turn: watchdog — \(Int(Self.turnWatchdogSeconds))s with nothing on the "
+                          + "card; failing it and letting the parked call finish alone")
+        continuationTask?.cancel()
+        continuationTask = nil
+        isContinuingPlan = false
+        voiceState = .idle
+        failTurn("Chunks waited \(Int(Self.turnWatchdogSeconds)) seconds and nothing landed. "
+                 + "Ask again and it will look once more.")
+        speakCreditsErrorFallback()
+    }
+
+    /// Race a call against a deadline and take whichever finishes first.
+    ///
+    /// The window server, the disk and Accessibility are not ours: each has been photographed
+    /// not returning, and an `await` with no deadline is a card that counts seconds forever. The
+    /// losing side is cancelled rather than awaited, and the caller decides what the timeout means —
+    /// a capture that never came is a failed turn, a file read that never came is a turn without the
+    /// file.
+    private func withDeadline<T: Sendable>(_ seconds: Double,
+                                           _ work: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await work() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw DeadlineExpired()
+            }
+            guard let first = try await group.next() else { throw DeadlineExpired() }
+            group.cancelAll()
+            return first
+        }
+    }
+
+    private struct DeadlineExpired: Error {}
 
     /// Runs one turn: capture the screens, ask the model, stream the answer onto the notch
     /// HUD, point the cursor at whatever the reply names, and read the completion line aloud.
@@ -3581,6 +3654,10 @@ final class CompanionManager: ObservableObject {
         // re-ask needs the way the words arrived too, because a scheduled prompt is nobody waiting for
         // an answer and gets no button.
         lastAsk = (transcript, source)
+        // Critical, because this is the line a crash report needs and never had: every fault on
+        // 2026-11-04 left a log with no turn-start in it, so nobody could say which question died.
+        Log.writeCritical("turn: start — \(source.phrase), \(transcript.count) chars: "
+                          + "\(transcript.prefix(80))")
         // A request from the user restarts the plan budget; a continuation of the plan already
         // running spends it. Recognised by the flag rather than by the words, so a user who says
         // "continue" still gets a fresh four rounds.
@@ -3628,7 +3705,19 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         ttsClient.stopPlayback()
 
+        // The watchdog is a sibling, not a deadline inside the work: nothing below can be trusted to
+        // honour a cancellation, and a turn that cannot be interrupted must still be *reported*.
+        let epoch = turnEpoch
+        let watchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.turnWatchdogSeconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.turnStalled(epoch: epoch)
+        }
+
         currentResponseTask = Task {
+            // Every exit path of a turn stops the watchdog, including the guards that bail early:
+            // a watchdog outliving its turn would fail the *next* one at seventy seconds.
+            defer { watchdog.cancel() }
             voiceState = .processing
             hud.beginThinking()
 
@@ -3668,14 +3757,23 @@ final class CompanionManager: ObservableObject {
                 if let regionCapture {
                     screenCaptures = [regionCapture]
                 } else {
-                    // Capture all connected screens so the AI has full context
-                    screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    // Capture all connected screens so the AI has full context. Raced, because the
+                    // window server is the one participant in a turn that has never promised to
+                    // answer, and an unraced capture is the card counting seconds for an hour.
+                    screenCaptures = try await withDeadline(10) {
+                        try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    }
                 }
 
-                // The disk and the display are both done with; the request needs both.
-                await fileRead.value
+                // The disk and the display are both done with; the request needs both. Raced too: a
+                // document that never finishes slicing must cost the turn its file, not its voice.
+                do {
+                    try await withDeadline(20) { await fileRead.value }
+                } catch {
+                    Log.write("turn: the file read did not finish in 20s — the turn goes without it")
+                }
 
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, turnEpoch == epoch else { return }
 
                 // Each image is labelled with its own size *and* the grid to aim in, because the
                 // space a reply comes back in is decided at the picture, not in a prompt the model
@@ -3727,7 +3825,7 @@ final class CompanionManager: ObservableObject {
                     }
                 )
 
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, turnEpoch == epoch else { return }
 
                 streamer.finish()
                 if streamer.retractUnbackedPromises() {
@@ -4079,10 +4177,22 @@ final class CompanionManager: ObservableObject {
 
         transientHideTask?.cancel()
         transientHideTask = Task {
+            // Capped, like the caption's wait: a synthesizer that reports "still playing" forever used
+            // to make this loop the thing that never ended, and an overlay that never hides is a
+            // screen he cannot use.
+            let started = Date()
+            func gaveUpWaiting() -> Bool {
+                Date().timeIntervalSince(started) > Self.captionCeilingSeconds
+            }
             // Wait for TTS audio to finish playing
             while ttsClient.isPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
+                if gaveUpWaiting() {
+                    Log.write("overlay: transient hide stopped waiting for playback after "
+                              + "\(Int(Self.captionCeilingSeconds))s")
+                    break
+                }
             }
 
             // Wait for pointing animation to finish (location is cleared
@@ -4090,6 +4200,11 @@ final class CompanionManager: ObservableObject {
             while detectedElementScreenLocation != nil {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
+                if gaveUpWaiting() {
+                    Log.write("overlay: transient hide stopped waiting for the pointer after "
+                              + "\(Int(Self.captionCeilingSeconds))s")
+                    break
+                }
             }
 
             // Pause 1s after everything finishes, then fade out
@@ -4140,6 +4255,21 @@ final class CompanionManager: ObservableObject {
             Log.write("voice: refused after \(String(format: "%.1f", Date().timeIntervalSince(started)))s "
                 + "(\(text.count) chars) — \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
             throw error
+        }
+        // A synthesizer that never starts reports `isPlaying` false from the very first poll, and the
+        // wait loop below then exits instantly and logs "spoke N chars" about silence — which is
+        // exactly the 2026-11-04 report: an answer on the card, a log claiming speech, and no sound.
+        // Two seconds to begin; if it does not, the sentence was never said and the record says so.
+        var began = false
+        for _ in 0..<8 {
+            if ttsClient.isPlaying { began = true; break }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        guard began else {
+            captions.hide()
+            Log.writeCritical("voice: the synthesizer never started — \(text.count) chars were never "
+                              + "said; the answer is on the card only")
+            return
         }
         var waited = 0.0
         while ttsClient.isPlaying, waited < Self.captionCeilingSeconds {

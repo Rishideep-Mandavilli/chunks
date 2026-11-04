@@ -566,6 +566,29 @@ else
   printf '  \033[31mFAIL\033[0m  a probe will draw on his desktop (missing parkOffscreen in):%s\n' "$probe_offenders"
   fail=$((fail + 1)); failures+=("probe windows offscreen")
 fi
+# SwiftUI's hover dispatch has faulted three times — NSHostingView.mouseEntered into
+# HoverEventDispatcher into Apple's own MainActor.assumeIsolated — and the breadcrumb named the
+# menu-bar panel twice. The assertion is Apple's, so the only thing this repo owns is whether a
+# mouseEntered can arrive: the two floating surfaces carry no .onHover at all and host their SwiftUI
+# in HoverShieldHostingView, which strips enter/exit tracking areas as fast as they are installed.
+# A hover tint creeping back onto either surface is a crash coming back, so both halves are static
+# checks and the runtime half (zero enter/exit areas on a laid-out card) is in --probe-hover.
+hover_offenders=""
+for sf in Sources/Chunks/HUD/NotchHUDView.swift Sources/Chunks/Clicky/CompanionPanelView.swift; do
+  if grep -q '\.onHover' "$sf"; then hover_offenders="$hover_offenders $sf"; fi
+done
+shield_offenders=""
+for mf in Sources/Chunks/HUD/NotchPanelManager.swift Sources/Chunks/Clicky/MenuBarPanelManager.swift; do
+  if ! grep -q 'HoverShieldHostingView(rootView:' "$mf"; then shield_offenders="$shield_offenders $mf"; fi
+done
+if [[ -z "$hover_offenders" && -z "$shield_offenders" ]]; then
+  printf '  \033[32mPASS\033[0m  the floating surfaces carry no SwiftUI hover and both are shield-hosted\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  hover is back on a crash surface (onHover in:%s shield missing in:%s)\n' \
+    "$hover_offenders" "$shield_offenders"
+  fail=$((fail + 1)); failures+=("hover on the floating surfaces")
+fi
 hover_out="$("$BIN" --probe-hover 2>&1)"
 if printf '%s' "$hover_out" | grep -q "off every display"; then
   printf '  \033[32mPASS\033[0m  the hover probe parked its card outside every display before showing it\n'

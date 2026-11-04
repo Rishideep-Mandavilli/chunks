@@ -213,6 +213,41 @@ enum HoverProbe {
         NSApp.sendEvent(up)
         captions?.hide()
         ink?.clear(reason: "the probe finished")
+
+        // The shield, asserted against a laid-out card. The two floating surfaces host their SwiftUI
+        // in a view that strips enter/exit tracking areas the moment SwiftUI installs them, because
+        // `mouseEntered` is the message whose dispatch has faulted three times and been named twice by
+        // the breadcrumb. Zero areas is the proof: with none, AppKit has nothing to fire and
+        // HoverEventDispatcher is never entered. (No synthetic enter event is delivered here on
+        // purpose — on an unshielded host that call hangs the process, which is the probe's own call
+        // going somewhere AppKit never intends, not evidence about the app.)
+        let shieldModel = NotchHUDModel()
+        let shieldStream = AnswerStreamer()
+        shieldStream.push("<SAY>The send button is at the bottom right.</SAY>")
+        shieldStream.push("[ACT:955,975:Send]")
+        shieldModel.apply(shieldStream)
+        shieldModel.askConfirm("Press Send?")
+        let shield = HoverShieldHostingView(rootView: AnyView(
+            NotchHUDView(model: shieldModel).frame(width: size.width, height: size.height)))
+        shield.frame = NSRect(origin: .zero, size: size)
+        let shieldWindow = NSWindow(contentRect: shield.frame, styleMask: [.borderless],
+                                    backing: .buffered, defer: false)
+        shieldWindow.contentView = shield
+        guard ProbeWindow.parkOffscreen(shieldWindow, size: size) else {
+            print("SKIP: the shield's card could not be parked off every display")
+            Log.flush()
+            exit(3)
+        }
+        shieldWindow.orderFrontRegardless()
+        shield.layoutSubtreeIfNeeded()
+        let hoverAreas = enterExitAreas(in: shield)
+        print("  shield: \(hoverAreas) enter/exit tracking area(s) on a laid-out card")
+        if hoverAreas != 0 {
+            print("  FAIL  the hover shield let SwiftUI keep \(hoverAreas) enter/exit area(s)")
+            Log.flush()
+            exit(1)
+        }
+
         print("  PASS  the click was dispatched and the process is still here — \(surface) is safe")
         Log.write("probe-hover: survived a dispatched click over \(surface)")
         Log.flush()
@@ -224,6 +259,13 @@ enum HoverProbe {
     private static func trackingAreas(in view: NSView) -> Int {
         var total = view.trackingAreas.count
         for sub in view.subviews { total += trackingAreas(in: sub) }
+        return total
+    }
+
+    /// The subset that delivers `mouseEntered` — the only subset the shield may not keep.
+    private static func enterExitAreas(in view: NSView) -> Int {
+        var total = view.trackingAreas.filter { $0.options.contains(.mouseEnteredAndExited) }.count
+        for sub in view.subviews { total += enterExitAreas(in: sub) }
         return total
     }
 }

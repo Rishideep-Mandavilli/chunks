@@ -64,17 +64,37 @@ enum Log {
         let line = formatted(message)
         queue.async {
             rotateIfNeeded()
-            guard let data = (line + "\n").data(using: .utf8) else { return }
-            if let handle = try? FileHandle(forWritingTo: fileURL) {
-                defer { try? handle.close() }
-                _ = try? handle.seekToEnd()
-                _ = try? handle.write(contentsOf: data)
-            } else {
-                try? data.write(to: fileURL)
-            }
+            appendLine(line)
         }
         // Also to the unified log, so `log stream` still works for someone who prefers it.
         NSLog("%@", line)
+    }
+
+    /// A line that must survive a fault a moment later.
+    ///
+    /// `write` queues, and a SIGSEGV kills the queue with the line still sitting in it — which is why
+    /// every crash report on 2026-11-04 came with a log that ended *before* the crash, and whole
+    /// process lifetimes left no lines at all. Turn boundaries, failures and the watchdog use this:
+    /// one synchronous open/append/close, sub-millisecond, on paths that run a handful of times per
+    /// turn rather than per key-down.
+    static func writeCritical(_ message: String) {
+        let line = formatted(message)
+        queue.sync {
+            rotateIfNeeded()
+            appendLine(line)
+        }
+        NSLog("%@", line)
+    }
+
+    private static func appendLine(_ line: String) {
+        guard let data = (line + "\n").data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: fileURL) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            _ = try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: fileURL)
+        }
     }
 
     /// Appends one line synchronously, for a process that is about to die.

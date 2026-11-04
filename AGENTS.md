@@ -231,7 +231,45 @@ async-signal-safe line naming the last mouse event and the surface it landed on 
 *identifier*, because the notch card and the menu-bar panel are the same private class and the first
 version said "another window" for a fault on the card — then re-raise so macOS still files its report.
 `--probe-crash` dies on purpose to prove the line arrives, and the gate requires exit 139 plus the
-sentence.
+sentence. **And the breadcrumb earned its keep on the seventh report**: 2026-11-04 22:36, it named
+`mouseEntered` on the menu-bar panel, and the report's own frames confirmed the chain —
+`NSHostingView.mouseEntered` → `sendHoverEvent` → `HoverEventDispatcher` → the hit test → SwiftUI's
+`MainActor.assumeIsolated` → `swift_getObjectType` at 0x220. The assertion is Apple's and the object it
+dereferences is already freed, so nothing in this repo can fix it; the only thing this repo owns is
+whether a `mouseEntered` can arrive at all. It cannot, now: the notch card and the menu-bar panel carry
+no `.onHover` and no `.help` (the panel's hints are `accessibilityHint`, which does not track the
+pointer), and both host their SwiftUI in `HoverShieldHostingView`, which strips every
+`.mouseEnteredAndExited` tracking area the moment SwiftUI installs it and swallows the three
+pointer-tracking messages as a second lock. Clicks, key status and gestures are untouched — a press is
+`mouseDown`, which no tracking area is involved in. Two static gate checks (no `.onHover` on either
+surface, both managers shield-hosted) and a runtime one (`--probe-hover` asserts zero enter/exit areas
+on a laid-out card) hold the line; the main window keeps its hover, because it is an ordinary
+activating window that no breadcrumb has ever named.
+
+**A turn may not outlive its promise, and a log may not end before the crash.** Measured on his
+machine the same evening: a question left the card counting seconds for an hour with no reply, no
+failure and no speech, because the 60 s model budget bounds only the chain — a stalled window-server
+capture, a file read that never returns and an Accessibility call parked inside the driver hop all
+happen before or beside it, and each `await` had no deadline of its own. `turnWatchdogSeconds` (70) is
+a sibling task that fails the card, speaks the fallback and hands it an Ask again, but only while the
+card is still *thinking* — a turn with an answer on it is being read, not stuck; the parked call is not
+killed (it cannot be), the turn's epoch moves on and the task still parked on it walks away when it
+wakes. The capture and the file read are raced against 10 s and 20 s, the transient-hide loop got the
+caption's 40 s ceiling it never had, and `Log.writeCritical` puts turn starts, asks, failures and the
+watchdog on disk synchronously — because `Log.write` queues, and a SIGSEGV kills the queue with the
+line still in it, which is why every earlier report came with a log that ended before the crash. A
+hung turn also writes one durable line every five seconds while the card thinks, so the next report
+shows the turn never moved instead of going quiet at "turn: start".
+
+**An act he approved is said aloud, not only written.** With asking on, the outcome line reached the
+card and never his ears — `reportConfirm` appends to the record and nothing speaks it, while the
+asking-off path rides the turn's own utterance. `NotchHUDModel.onReported` now speaks a line exactly
+when it answered a *live* question, which is the one case nothing else covers, and the double-speak is
+impossible by construction rather than by discipline. And `speakCaptioned` no longer claims success it
+did not verify: a synthesizer that never starts reported `isPlaying` false from the first poll, the
+wait loop exited instantly, and the log said "spoke N chars" about silence — the exact 2026-11-04
+report of an answer on the card with no sound. Two seconds to begin, then a critical line naming that
+the sentence was never said.
 
 **A reply that ends inside `<SAY>` is still spoken.** Measured 2026-11-04 at 15:00: the cloud chain
 served a turn that stopped mid-construct — `reply ends ‣ <SAY>you're looking at qoder, where` — and the
@@ -1223,7 +1261,7 @@ something that never happened.
 ## Current state
 
 **The app runs. 830 of 830 tests green across 46 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 55 checks: 48–51 pass and 4–7 skip,
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 57 checks: 50–53 pass and 4–7 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red

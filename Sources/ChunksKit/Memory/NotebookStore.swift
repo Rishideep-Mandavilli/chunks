@@ -89,6 +89,11 @@ public final class NotebookStore {
     """
 
     public private(set) var entries: [NotebookEntry] = []
+
+    /// `- ` lines he typed by hand without the app's date stamp. Kept verbatim and re-emitted on
+    /// save, for the same reason as `MemoryStore.handLines`: the file is hand-editable, and a
+    /// round trip that deletes his words is data loss (AUDIT.md D-01).
+    public private(set) var handLines: [String] = []
     public private(set) var lastWriteWasRejected: String?
 
     private let fileURL: URL
@@ -293,10 +298,12 @@ public final class NotebookStore {
 
     public func render() -> String {
         var out = NotebookStore.header
-        if entries.isEmpty {
+        if entries.isEmpty && handLines.isEmpty {
             out += "\n\n_(empty)_"
         } else {
-            out += "\n\n" + entries.map(render).joined(separator: "\n")
+            var lines = entries.map(render)
+            lines.append(contentsOf: handLines)
+            out += "\n\n" + lines.joined(separator: "\n")
         }
         return out + "\n"
     }
@@ -313,8 +320,27 @@ public final class NotebookStore {
     }
 
     public func load() {
-        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { entries = []; return }
+        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else {
+            entries = []
+            handLines = []
+            return
+        }
         entries = NotebookStore.parse(text)
+        handLines = NotebookStore.parseHandLines(text)
+    }
+
+    /// The `- ` lines that are not dated entries: his handwriting, kept exactly as typed.
+    public static func parseHandLines(_ text: String) -> [String] {
+        let lineRE = try! NSRegularExpression(pattern: #"^-\s+(.*?)\s*\((\d{4}-\d{2}-\d{2})\)\s*$"#)
+        var out: [String] = []
+        for raw in text.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("- "), line != "- _(empty)_" else { continue }
+            let range = NSRange(line.startIndex..<line.endIndex, in: line)
+            if lineRE.firstMatch(in: line, range: range) != nil { continue }
+            out.append(line)
+        }
+        return out
     }
 
     /// Pure so the round trip is testable and a hand edit cannot be lost by a bad line.

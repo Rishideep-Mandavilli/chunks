@@ -23,6 +23,28 @@ public enum NotebookStoreTests {
     public static func register() {
         TestRunner.currentSuite = "Notebook"
 
+        // AUDIT.md D-01: an undated `- ` line he typed by hand used to vanish on the next save.
+        test("an undated hand line survives a model-driven notebook save verbatim") {
+            let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("chunks-tests-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let url = dir.appendingPathComponent("notebook.md")
+            try! "- the landlord owes me a receipt\n".write(to: url, atomically: true, encoding: .utf8)
+            let s = NotebookStore(fileURL: url, today: "2026-11-02")
+            s.load()
+            expectEqual(s.handLines, ["- the landlord owes me a receipt"],
+                        "his undated line was not kept")
+            _ = s.add("flat 4B, gate code 1984")
+            let onDisk = try! String(contentsOf: url, encoding: .utf8)
+            expect(onDisk.contains("- the landlord owes me a receipt"),
+                   "the save deleted his hand line:\n\(onDisk)")
+            let reloaded = NotebookStore(fileURL: url, today: "2026-11-02")
+            reloaded.load()
+            expectEqual(reloaded.handLines.count, 1, "the hand line did not survive the round trip")
+            expectEqual(reloaded.entries.count, 1, "the model note and the hand line must coexist")
+        }
+
         test("the notebook is unbounded where memory is capped — that is the whole tier") {
             // If someone copies `MemoryStore.byteCap` in here, the second tier collapses into the
             // first and the answer to "note this" becomes a refusal he has already heard.

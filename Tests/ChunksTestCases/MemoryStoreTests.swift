@@ -133,6 +133,39 @@ public enum MemoryStoreTests {
             expect(reloaded.facts.contains { $0.text == "Hand-written addition" })
         }
 
+        // AUDIT.md D-01: the file invites hand-editing, and a line without the app's date stamp used
+        // to be dropped by parse and then deleted by the next save. His words are not parser junk.
+        test("an undated hand line survives a model-driven save verbatim") {
+            let (s, url) = makeTempStore()
+            defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+            try! "## Notes\n- buy milk on the way home\n".write(to: url, atomically: true, encoding: .utf8)
+            s.load()
+            expectEqual(s.handLines.count, 1, "the undated hand line was not kept")
+            expectEqual(s.handLines.first?.line, "- buy milk on the way home",
+                        "his words must survive exactly as typed")
+            _ = s.propose(section: .you, text: "walks every morning")
+            let onDisk = try! String(contentsOf: url, encoding: .utf8)
+            expect(onDisk.contains("- buy milk on the way home"),
+                   "the save deleted his hand line:\n\(onDisk)")
+            let reloaded = MemoryStore(fileURL: url, today: "2026-09-29")
+            expectEqual(reloaded.handLines.count, 1, "the hand line did not survive the round trip")
+            expectEqual(reloaded.facts.count, 1, "the model fact and the hand line must coexist")
+        }
+
+        test("hand lines pay their bytes against the 2 KB cap") {
+            let (s, url) = makeTempStore()
+            defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+            let long = "- " + String(repeating: "x", count: 2020)
+            try! "## Notes\n\(long)\n".write(to: url, atomically: true, encoding: .utf8)
+            s.load()
+            expectEqual(s.byteCount, long.utf8.count,
+                        "a preserved line that is not counted lets the file grow past the cap")
+            let outcome = s.propose(section: .you, text: "one more fact than the file can hold")
+            if case .refusedFull = outcome { } else {
+                expect(false, "the cap must refuse once his hand line has spent the budget: \(outcome)")
+            }
+        }
+
         test("removal works by id and by substring") {
             let (s, url) = makeTempStore()
             defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

@@ -138,7 +138,10 @@ public final class MemoryStore {
 
     // MARK: Capacity
 
-    public var byteCount: Int { facts.map { rendered($0).utf8.count }.reduce(0, +) }
+    public var byteCount: Int {
+        facts.map { rendered($0).utf8.count }.reduce(0, +)
+            + handLines.map { $0.line.utf8.count }.reduce(0, +)
+    }
     public var isFull: Bool { byteCount + MemoryStore.typicalFactReserve > MemoryStore.byteCap }
     public var remainingBytes: Int { max(0, MemoryStore.byteCap - byteCount) }
 
@@ -250,6 +253,7 @@ public final class MemoryStore {
         // 6. Capacity. Ask, never truncate.
         let working = replaced == nil ? facts : facts.filter { $0.id != replaced!.id }
         let used = working.map { rendered($0).utf8.count }.reduce(0, +)
+            + handLines.map { $0.line.utf8.count }.reduce(0, +)
         let cost = rendered(candidate).utf8.count
         if used + cost > MemoryStore.byteCap {
             return .refusedFull(remainingBytes: max(0, MemoryStore.byteCap - used))
@@ -366,6 +370,16 @@ public final class MemoryStore {
 
     // MARK: Serialisation
 
+    /// A line he typed by hand that is not in the app's dated format. Kept verbatim and re-emitted
+    /// on save: the file's header invites hand-editing, and a load/save round trip that deletes his
+    /// words is data loss wearing a parser's clothes (AUDIT.md D-01). It is not a fact — no trust
+    /// marker, no model provenance — and it pays its bytes against the same cap as everything else.
+    public struct HandLine: Equatable, Sendable {
+        public let section: Section
+        public let line: String
+    }
+    public private(set) var handLines: [HandLine] = []
+
     /// The one line a fact occupies on disk: `- the words (date · he said)`.
     ///
     /// The provenance rides *inside* the date parentheses rather than as a prefix or a comment, so
@@ -382,10 +396,12 @@ public final class MemoryStore {
         for section in Section.writable {
             out += "\n\n## \(section.rawValue)"
             let inSection = facts.filter { $0.section == section }
-            if inSection.isEmpty {
+            let hand = handLines.filter { $0.section == section }
+            if inSection.isEmpty && hand.isEmpty {
                 out += "\n_(empty)_"
             } else {
                 for f in inSection { out += "\n" + rendered(f) }
+                for h in hand { out += "\n" + h.line }
             }
         }
         out += "\n"
@@ -402,11 +418,38 @@ public final class MemoryStore {
 
     /// Parse the on-disk file. Unknown sections are ignored and their lines preserved
     /// nowhere — we prefer a clean model over silently keeping junk. Hand edits to known
-    /// sections always survive a load/save round trip.
+    /// sections always survive a load/save round trip: dated lines become facts, undated
+    /// `- ` lines become `handLines` and are re-emitted verbatim.
     public func load() {
         facts = []
+        handLines = []
         guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
         facts = MemoryStore.parse(text, today: today)
+        handLines = MemoryStore.parseHandLines(text)
+    }
+
+    /// The `- ` lines under a known section that are not facts: his handwriting, kept exactly as
+    /// typed. Pure, like `parse`, so the round trip is a unit case rather than a hope.
+    public static func parseHandLines(_ text: String) -> [HandLine] {
+        var current: Section?
+        var out: [HandLine] = []
+        let lineRE = try! NSRegularExpression(
+            pattern: #"^-\s+(.*?)\s*\((\d{4}-\d{2}-\d{2})(\s+·\s*([^)]+))?\)\s*$"#)
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("## ") {
+                let name = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                current = Section(rawValue: name)
+                continue
+            }
+            guard line.hasPrefix("- "), let section = current, line != "- _(empty)_" else { continue }
+            let ns = line as NSString
+            if lineRE.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) != nil {
+                continue
+            }
+            out.append(HandLine(section: section, line: line))
+        }
+        return out
     }
 
     /// Pure function so it is trivially testable and round-trip safe.

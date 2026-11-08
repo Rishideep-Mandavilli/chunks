@@ -93,7 +93,14 @@ public enum SecretSweeper {
         let hasUpper = s.contains { $0.isUppercase }
         let hasLower = s.contains { $0.isLowercase }
         let hasDigit = s.contains { $0.isNumber }
-        return hasUpper && hasLower && hasDigit
+        if hasUpper && hasLower && hasDigit { return true }
+        // A lowercase-hex credential — Discord client_secret, Slack signing secret, a webhook
+        // secret, a session token — has no uppercase at all, so the class test above reads it as
+        // an ordinary identifier and writes it into plaintext forever (AUDIT.md D-02). A long
+        // unbroken run of hex carrying both digits and letters is not a word anybody typed.
+        let hex = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
+        return s.unicodeScalars.allSatisfy { hex.contains($0) }
+            && hasDigit && s.contains { $0.isLetter }
     }
 
     /// Mask a string for logging: keeps a short prefix so the user can identify which

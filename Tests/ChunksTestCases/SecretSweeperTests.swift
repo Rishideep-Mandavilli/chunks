@@ -57,6 +57,22 @@ public enum SecretSweeperTests {
             expect(v.isAcceptable, "wrongly rejected a filename: \(v)")
         }
 
+        // AUDIT.md D-02: the class test needed an uppercase letter, so an all-lowercase hex
+        // credential walked into plaintext memory.md. The bias is toward rejection.
+        test("rejects an all-lowercase hex credential") {
+            let v = SecretSweeper.inspect("client secret is 4f8a2b9c1d6e3f7a0b5c8d2e9f4a6b1c")
+            expect(!v.isAcceptable, "a lowercase hex secret was accepted: \(v)")
+        }
+
+        test("rejects mixed-case hex and still allows prose and long digits") {
+            expect(!SecretSweeper.inspect("token 4F8a2B9c1D6e3F7a0B5c8D2e9F4a6B1c").isAcceptable,
+                   "mixed-case hex is a credential too")
+            expect(SecretSweeper.inspect("the order number is 1234567890123456789012345678901234567890")
+                .isAcceptable, "a long run of digits with no letters is not a credential")
+            expect(SecretSweeper.inspect("the deadline is september twenty twenty six")
+                .isAcceptable, "ordinary words must stay acceptable")
+        }
+
         test("warns, but does not block, when a fact is about credentials") {
             let v = SecretSweeper.inspect("keep my api key in 1Password")
             if case .warned = v { } else {

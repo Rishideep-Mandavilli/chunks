@@ -665,6 +665,21 @@ else
   printf '  \033[31mFAIL\033[0m  continuation: a launch can end the turn with the rest of the ask unattempted\n'
   fail=$((fail + 1)); failures+=("continuation survives its launch")
 fi
+# A displaced question is a denial, and its held steps must die with it: before this check existed,
+# `pendingProgram` survived displacement and ran when the *next* card was allowed (AUDIT.md A-01).
+# Both card doors log the displacement; both must drop the remainder within the same branch.
+if awk '
+  /replaced an unanswered question/ { watching = 8; seen++ }
+  watching > 0 && /dropHeldRemainder\(/ { satisfied++ }
+  watching > 0 { watching-- }
+  END { exit (seen == 2 && satisfied == 2 ? 0 : 1) }
+' Sources/Chunks/Clicky/CompanionManager.swift; then
+  printf '  \033[32mPASS\033[0m  consent: a displaced question drops its held steps in both card doors\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  consent: a displaced plan can resume on a later, unrelated Allow\n'
+  fail=$((fail + 1)); failures+=("displacement drops the held plan")
+fi
 # A crash that says nothing is a crash that teaches nothing. Four reports in eighteen hours all
 # faulted inside SwiftUI's event dispatch and none of them named the surface or the event, because a
 # fault does not flush the log — so the app installs a signal handler that writes one line first, and

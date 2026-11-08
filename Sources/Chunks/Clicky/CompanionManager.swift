@@ -2312,6 +2312,10 @@ final class CompanionManager: ObservableObject {
             Log.write("\(logPrefix): replaced an unanswered question — \(unanswered)")
             consentGate.cancel()
             hud.reportConfirm("Not answered: \(unanswered)")
+            // The displaced question's remainder dies with it. A plan held behind a card he never
+            // answered must not resume when he allows the *next* card: displacement is a denial,
+            // and denied steps that run later are steps nobody approved (AUDIT.md A-01).
+            dropHeldRemainder(logPrefix)
         } else {
             consentGate.cancel()
         }
@@ -2451,7 +2455,9 @@ final class CompanionManager: ObservableObject {
                                     source: ConversationTurn.Source) async
         -> (line: String, resumes: Bool) {
         guard !askBeforeActing, !ToolLayer.alwaysAsks(plan.tool) else {
-            heldBehindLaunch = HeldBehindLaunch(instruction: plan.instruction, source: source)
+            // The card first, the hold second: `offerTool` drops any remainder belonging to a
+            // question it displaces, and a hold armed before that call would be wiped by its own
+            // card (AUDIT.md A-01).
             offerTool(plan.tool)
             guard consentGate.isPending else {
                 // `offerTool` refuses some tools before it asks — a shortcut that is not installed, a
@@ -2463,6 +2469,7 @@ final class CompanionManager: ObservableObject {
                     + "\(plan.heldSteps.count) held step(s) not run")
                 return ("", false)
             }
+            heldBehindLaunch = HeldBehindLaunch(instruction: plan.instruction, source: source)
             Log.write("plan: held \(plan.heldSteps.count) step(s) behind a card — \(plan.instruction)")
             return ("", false)
         }
@@ -2474,6 +2481,19 @@ final class CompanionManager: ObservableObject {
         Log.write("plan: launched, \(plan.heldSteps.count) step(s) held for a fresh look — "
             + plan.instruction)
         return (line, true)
+    }
+
+    /// A displaced question takes its remainder with it. Displacement is a denial (`ConsentGate`),
+    /// and denied steps left sitting in a slot resume when he answers the *next* card — steps nobody
+    /// approved (AUDIT.md A-01). Called only from the two card doors' displacement branches, so a
+    /// hold armed for the card being raised now is never wiped by its own door.
+    private func dropHeldRemainder(_ logPrefix: String) {
+        guard pendingProgram != nil || heldBehindLaunch != nil || continuationBehindTool != nil
+        else { return }
+        Log.write("\(logPrefix): displaced question — its held steps and continuation dropped")
+        pendingProgram = nil
+        heldBehindLaunch = nil
+        continuationBehindTool = nil
     }
 
     /// The user answered the card. Act on an approval, do nothing on a denial.
@@ -2884,6 +2904,7 @@ final class CompanionManager: ObservableObject {
             Log.write("tool: replaced an unanswered question — \(unanswered)")
             consentGate.cancel()
             hud.reportConfirm("Not answered: \(unanswered)")
+            dropHeldRemainder("tool")
         } else {
             consentGate.cancel()
         }

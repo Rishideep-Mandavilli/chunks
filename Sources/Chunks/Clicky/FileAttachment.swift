@@ -66,6 +66,7 @@ enum FileAttachment {
 
     static func isAutomaticCandidate(_ name: String) -> Bool {
         !name.hasPrefix(".") && !neverAutomatic.contains(name)
+            && !ReadRequest.isCredentialFileName(name)
     }
 
     /// Every readable file in those roots, as candidates.

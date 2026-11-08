@@ -112,6 +112,21 @@ public struct ReadRequest: Equatable, Sendable {
         "pem", "key", "p12", "pfx", "kdbx", "asc", "jks", "keystore", "mobileprovision",
     ]
 
+    /// Names that are credentials whatever folder they sit in, including the shapes that are not
+    /// exact names: a recovery-code export or an OAuth client secret carries its purpose in the
+    /// middle of a longer file name (AUDIT.md D-03 — `Recovery Key.pdf` and
+    /// `client_secret_….json` matched neither list above and auto-attached to a cloud model).
+    public static func isCredentialFileName(_ name: String) -> Bool {
+        if deniedFileNames.contains(name) { return true }
+        if name.hasPrefix("id_") && name != "id" { return true }
+        if secretExtensions.contains((name as NSString).pathExtension.lowercased()) { return true }
+        let lowered = name.lowercased()
+        let shapes = ["recovery-code", "recovery code", "recovery key", "recovery_key",
+                      "client_secret", "client-secret", "service-account", "service_account",
+                      "seed phrase", "seed-phrase"]
+        return shapes.contains { lowered.contains($0) }
+    }
+
     /// Extensions that are never readable, as text or as a picture.
     ///
     /// The images are *not* on this list any more, and neither is the PDF above it. Both used to be
@@ -235,13 +250,7 @@ public struct ReadRequest: Equatable, Sendable {
         if ReadRequest.deniedPathFragments.contains(where: { wrapped.contains($0) }) {
             return .failure(.secretStore)
         }
-        if ReadRequest.deniedFileNames.contains(fileName) { return .failure(.secretStore) }
-        if fileName.hasPrefix("id_") && fileName != "id" { return .failure(.secretStore) }
-        if ReadRequest.secretExtensions.contains((fileName as NSString).pathExtension.lowercased()) {
-            // `certs/server.key` inside an allowed folder is still a private key. The file's purpose
-            // is readable and its content is not.
-            return .failure(.secretStore)
-        }
+        if ReadRequest.isCredentialFileName(fileName) { return .failure(.secretStore) }
 
         // Dropping the `~` and keeping the slash, because `homeDirectory + path.dropFirst(2)` builds
         // `/Users/rishiDocuments` — a root that matches nothing. That bug was invisible for exactly

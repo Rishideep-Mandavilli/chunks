@@ -53,6 +53,21 @@ public enum SecretSweeper {
         "otp", "2fa code", "recovery code", "seed phrase", "mnemonic",
     ]
 
+    /// Only the provider token shapes, for sweeping *file contents* before they reach a model
+    /// (AUDIT.md D-03). The entropy heuristic is deliberately not used here: a build log full of
+    /// sha256 sums is exactly the kind of long hex run it rejects, and refusing his logs would
+    /// trade a real leak for a broken headline capability.
+    public static func inspectTokens(_ text: String) -> Verdict {
+        let ns = text as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        for pattern in hardPatterns {
+            if pattern.regex.firstMatch(in: text, range: full) != nil {
+                return .rejected(reason: "contains a \(pattern.name)")
+            }
+        }
+        return .clean
+    }
+
     public static func inspect(_ text: String) -> Verdict {
         let ns = text as NSString
         let full = NSRange(location: 0, length: ns.length)

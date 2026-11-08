@@ -70,6 +70,19 @@ public enum ReadRequestTests {
                    "a folder *called* keys holding a markdown note is not a credential")
         }
 
+        test("recovery-code and client-secret exports are credentials whatever their extension") {
+            // AUDIT.md D-03: these matched neither deny list and auto-attached to a cloud model on
+            // a two-word name match — proven by --probe-find against his real Downloads.
+            expect(refusal("~/Downloads/vercel-recovery-codes-rishideep15@gmail.com.txt") == .secretStore,
+                   "a recovery-code export is a credential in a .txt coat")
+            expect(refusal("~/Documents/Recovery Key.pdf") == .secretStore,
+                   "a photographed key is still a key")
+            expect(refusal("~/Downloads/client_secret_123.apps.googleusercontent.com.json") == .secretStore,
+                   "an OAuth client secret is not a config file")
+            expect(allow("~/Downloads/recovery-notes.md"),
+                   "a note *about* recovery is not the codes themselves")
+        }
+
         test("credential stores are refused whatever the rest of the path says") {
             for path in ["~/.ssh/id_rsa", "~/.aws/credentials", "~/Library/Keychains/login.keychain-db",
                          "~/.gnupg/secring.gpg", "~/.docker/config.json"] {

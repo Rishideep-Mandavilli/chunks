@@ -81,6 +81,16 @@ public enum SecretSweeperTests {
             expect(v.isAcceptable, "warnings must not block the write")
         }
 
+        test("the content sweep refuses real tokens but not a log of checksums") {
+            // AUDIT.md D-03: file contents are swept with the hard patterns only, because the
+            // entropy heuristic would refuse his build logs full of sha256 sums.
+            expect(!SecretSweeper.inspectTokens("key sk-abcdefghijklmnopqrstuvwx").isAcceptable,
+                   "a provider token in a file must not reach a model")
+            let log = "sha256  " + String(repeating: "a1", count: 32) + "  build/output.ipa"
+            expect(SecretSweeper.inspectTokens(log).isAcceptable,
+                   "a checksum log is the headline capability, not a credential")
+        }
+
         test("masking never leaks the middle of a secret") {
             let secret = "sk-abc123def456ghi789jkl012"
             let m = SecretSweeper.mask(secret)

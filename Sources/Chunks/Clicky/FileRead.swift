@@ -50,6 +50,21 @@ enum FileRead {
 
     static func perform(_ request: ReadRequest,
                         home: String = NSHomeDirectory()) -> Result<Content, Failure> {
+        let result = performUnchecked(request, home: home)
+        // A name can look ordinary while the content is a key: sweep the extracted words for real
+        // provider token shapes before they enter a model request (AUDIT.md D-03). Only the hard
+        // patterns — the entropy heuristic would refuse his build logs full of sha256 sums. Pixels
+        // are not swept here; a photographed key is refused by the name rule, not by OCR we do not do.
+        guard case .success(let content) = result, !content.text.isEmpty else { return result }
+        if case .rejected(let reason) = SecretSweeper.inspectTokens(content.text) {
+            Log.write("read: content refused — \(reason)")
+            return .failure(.refused(.secretStore))
+        }
+        return result
+    }
+
+    private static func performUnchecked(_ request: ReadRequest,
+                                         home: String = NSHomeDirectory()) -> Result<Content, Failure> {
         // First pass: the typed path, standardised. This is what the allow-list is checked against.
         guard case .success(let candidate) = request.resolved(homeDirectory: home) else {
             return .failure(.refused(refusal(of: request, home: home)))

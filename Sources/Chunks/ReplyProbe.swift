@@ -36,6 +36,9 @@ enum ReplyProbe {
         let held: Int?
         /// Whether the launch is allowed to lead the plan itself — true only when every step is named.
         let leads: Bool
+        /// Whether the reply must arm the next round, or nil when this fixture is not about that.
+        /// The empty-body case counts as armed: the shell carries his own question for it.
+        var continues: Bool? = nil
     }
 
     static let fixtures: [Fixture] = [
@@ -64,7 +67,7 @@ enum ReplyProbe {
             reply: "<SAY>Typing it in, and turning you down a little.</SAY>\n"
                 + "[DO:set_volume:40]\n"
                 + "[TYPE:368,497:search box|hi]",
-            malformed: 0, held: nil, leads: false),
+            malformed: 0, held: nil, leads: false, continues: false),
         Fixture(
             name: "a scroll that lost its direction",
             reply: "<SAY>Looking further down.</SAY>\n[SCROLL:500,500:the list]",
@@ -82,6 +85,18 @@ enum ReplyProbe {
             name: "an empty notebook search is shown, not run",
             reply: "<SAY>Hmm.</SAY>\n[NOTES:]",
             malformed: 1, held: nil, leads: false),
+        Fixture(
+            // His turn of 2026-11-07, verbatim from the log: the local brain opened WhatsApp and
+            // ended with `[CONTINUE>` — wrong bracket, no closing tag, nothing after it. The card
+            // showed the markup and the search never happened. The round must arm with an empty
+            // body (the shell supplies his question) and the tag must not reach the card.
+            name: "the continuation a small model writes with the wrong bracket (2026-11-07)",
+            reply: "<SAY>Opening whatsapp now so i can check for any unread messages.</SAY>\n"
+                + "[DO:open_app:WhatsApp]\n"
+                + "<DONE_TITLE>Found app open</DONE_TITLE>\n"
+                + "<SUMMARY>Waiting for whatsapp to load before searching.</SUMMARY>\n"
+                + "[CONTINUE>",
+            malformed: 0, held: nil, leads: false, continues: true),
     ]
 
     // MARK: - Entry
@@ -180,10 +195,28 @@ enum ReplyProbe {
                 failures.append("\(fixture.name): the audit disagrees with unreadActTags="
                     + "\(audit.unreadActTags)")
             }
+            if let expected = fixture.continues {
+                // The live streamer, not the audit's opinion: the round either arms or it does not,
+                // and the markup either reaches the card or it does not. Both halves are the bug
+                // his screenshot showed — raw `[CONTINUE>` on the card and no second look.
+                let streamer = AnswerStreamer()
+                streamer.push(fixture.reply)
+                streamer.finish()
+                if (streamer.continuation != nil) != expected {
+                    failures.append("\(fixture.name): continuation armed="
+                        + "\(streamer.continuation != nil), expected \(expected)")
+                }
+                if streamer.displayable.detail.contains("CONTINUE") {
+                    failures.append("\(fixture.name): the continuation tag reached the card: "
+                        + streamer.displayable.detail)
+                }
+            }
         }
         // A fixture set that silently measures nothing is the failure mode this repo has been bitten
         // by twice, so the count of assertions is itself asserted.
-        let asserted = fixtures.reduce(0) { $0 + 3 + ($1.held != nil ? 1 : 0) }
+        let asserted = fixtures.reduce(0) {
+            $0 + 3 + ($1.held != nil ? 1 : 0) + ($1.continues != nil ? 2 : 0)
+        }
         out("reply: \(fixtures.count) fixture(s), \(asserted) assertion(s), "
             + "\(failures.count) failure(s)")
         for failure in failures { out("  FAIL \(failure)") }

@@ -1071,7 +1071,19 @@ session down with it, and a stale bundle that does not know the flag launches th
    stopped plan, or a card still waiting for an answer, does not continue, because pressing on from
    a screen that is not the one the plan expected is how an assistant types into the wrong window.
    The tag is consumed: it is an instruction to the app, and it must never reach the card or the
-   voice. With asking switched on, the first card ends the round and the user says the word.
+   voice. **And a continuation the model wrote with the wrong bracket is still that instruction.**
+   Measured 2026-11-07 on his screen: "open WhatsApp and search for any new messages" was served by
+   the local brain ending `… [DO:open_app:WhatsApp] … [CONTINUE>` — square open, angle close, no
+   closing tag — so the parser released it as prose, the card showed raw markup, and the second round
+   never ran: WhatsApp sat open with nothing searched. The parser now consumes `[CONTINUE>…]` and
+   `[CONTINUE]…` like the taught shape, `AnswerStreamer.finish` consumes an unclosed opener of any of
+   the four shapes (the same rule the unclosed `<SAY>` already follows), and **an empty body means
+   "carry on with what he asked"** — the shell supplies his own question, because a continuation that
+   parses to nothing must not read as "the turn is finished". `--probe-reply` carries his exact reply
+   as a fixture and asserts both halves: the round arms and the markup never reaches the card.
+   With asking switched on, a *lone tool's* card carries its promised round in `continuationBehindTool`
+   and takes it on his Allow — a tool that did not happen earns no round; a plan of several steps still
+   ends the round at its first card, because its remainder travels as `pendingProgram`, not as a sentence.
 
    `[TYPE:x,y:label|text]` is the same invariant with the cursor instead of the pointer, and it is
    the one act whose target is *not* a pressable control: `AXTDriver.typeTarget` looks for an
@@ -1299,8 +1311,8 @@ session down with it, and a stale bundle that does not know the flag launches th
 
 ## Current state
 
-**The app runs. 841 of 841 tests green across 47 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 53 checks: 51–52 pass and 1–2 skip,
+**The app runs. 847 of 847 tests green across 47 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 55 checks: 54 pass and 1 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red

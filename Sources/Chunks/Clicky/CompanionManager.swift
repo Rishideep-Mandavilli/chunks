@@ -310,6 +310,13 @@ final class CompanionManager: ObservableObject {
     }
     private var heldBehindLaunch: HeldBehindLaunch?
 
+    /// The model's continuation sentence while a *lone tool* card is outstanding. With asking on the
+    /// turn ends at the question, so the round it promised waits for his Allow exactly like a held
+    /// plan does. Without this slot, "open WhatsApp and search" on an asking-on machine opened the
+    /// app and stopped at the card's outcome line — the same dead end a malformed tag caused with
+    /// asking off, reached by a different door. Cleared by a denial and by a new request from him.
+    private var continuationBehindTool: HeldBehindLaunch?
+
     /// How long to let the screen settle between two steps of a plan.
     ///
     /// A press that opens a chat and the type that follows it are aimed at the same screenshot, and
@@ -2477,6 +2484,7 @@ final class CompanionManager: ObservableObject {
             // A denial, or a card answered twice. `resolve` hands back nothing for either, and a plan
             // that resumed here would be resuming past a question he did not answer.
             heldBehindLaunch = nil
+            continuationBehindTool = nil
             return
         }
         switch request {
@@ -2543,6 +2551,20 @@ final class CompanionManager: ObservableObject {
                     }
                     self.continuePlanIfNeeded(remaining: held.instruction, stepCompleted: true,
                                               source: held.source)
+                    return
+                }
+                // A lone tool with a continuation behind it: his Allow is what earns the next look,
+                // and a tool that did not happen earns nothing — the round would be aimed at a
+                // screen the refused open never produced.
+                if let next = self.continuationBehindTool {
+                    self.continuationBehindTool = nil
+                    guard succeeded else {
+                        Log.write("plan: the tool did not happen — continuation not started: "
+                            + next.instruction)
+                        return
+                    }
+                    self.continuePlanIfNeeded(remaining: next.instruction, stepCompleted: true,
+                                              source: next.source)
                     return
                 }
                 guard succeeded, let program, !program.steps.isEmpty else { return }
@@ -3707,6 +3729,7 @@ final class CompanionManager: ObservableObject {
                 Log.write("plan: a new request from him — the steps held behind a launch were dropped")
             }
             heldBehindLaunch = nil
+            continuationBehindTool = nil
         }
 
         // "New session" is answered by the shell, not by the model, for two reasons. The state lives
@@ -4036,6 +4059,12 @@ final class CompanionManager: ObservableObject {
                     notebookStaged = staged != nil
                     notebookContinuation = staged
                 }
+                // An empty continuation body is the model saying "carry on" without writing the
+                // sentence — measured 2026-11-07, when `[CONTINUE>` ended the reply with nothing
+                // after it. His own question is that sentence: the next look sees the window the
+                // launch just opened and finishes what he asked, instead of the turn ending at
+                // "Opened WhatsApp." with the search never attempted.
+                let saidNext = streamer.continuation.map { $0.isEmpty ? transcript : $0 }
                 if let read = streamer.fileRead {
                     let staged = offerFileRead(read)
                     // A file that arrived *is* a completed step. Without this the round that asked
@@ -4044,16 +4073,24 @@ final class CompanionManager: ObservableObject {
                     // looked like from the outside.
                     fileReadStaged = staged != nil
                     pendingContinuation = heldAfterLaunch ?? notebookContinuation
-                        ?? windowsContinuation ?? staged ?? streamer.continuation
+                        ?? windowsContinuation ?? staged ?? saidNext
                 } else {
                     pendingContinuation = heldAfterLaunch ?? notebookContinuation
-                        ?? windowsContinuation ?? streamer.continuation
+                        ?? windowsContinuation ?? saidNext
                 }
                 // A held plan wins the one continuation slot because it names the steps that
                 // verifiably did not run; the model's own sentence about what comes next may have
                 // been written for the screen the launch just covered. Logged, never silently dropped.
-                if let held = heldAfterLaunch, let said = streamer.continuation, said != held {
+                if let held = heldAfterLaunch, let said = saidNext, said != held {
                     Log.write("plan: held steps took the round, not the model's <CONTINUE> — \(said)")
+                }
+                // With asking on the turn ends at the tool's card, so the round the reply promised
+                // waits behind his Allow in the same kind of slot a held plan uses. Only a lone
+                // tool: a plan of steps carries its own remainder through `pendingProgram`, and a
+                // launch with held steps already owns `heldBehindLaunch`.
+                if consentGate.isPending, heldAfterLaunch == nil, pendingProgram == nil,
+                   let next = pendingContinuation, !next.isEmpty {
+                    continuationBehindTool = HeldBehindLaunch(instruction: next, source: source)
                 }
                 // A round that asked for nothing to happen is not a failed step — it is a look that
                 // found nothing yet. Once a plan is genuinely under way, that deserves another look

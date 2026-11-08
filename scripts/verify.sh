@@ -651,6 +651,20 @@ else
   printf '  \033[31mFAIL\033[0m  keyboard: a key act could reach the driver with asking switched off\n'
   fail=$((fail + 1)); failures+=("keyboard is gated by the asking switch")
 fi
+# The round his 2026-11-07 screenshot lost. The parse half is measured by `--probe-reply`'s fixture;
+# these two shell halves cannot be reached by a probe without running a live turn, so the wiring is
+# asserted where it lives: an empty continuation body carries his own question, and a lone tool's
+# card carries its promised round through to his Allow instead of ending the turn at "Opened".
+if grep -q 'let saidNext = streamer.continuation.map { $0.isEmpty ? transcript : $0 }' \
+     Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'continuationBehindTool = HeldBehindLaunch' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'if let next = self.continuationBehindTool' Sources/Chunks/Clicky/CompanionManager.swift; then
+  printf '  \033[32mPASS\033[0m  continuation: an empty body carries his question, and a card carries its round\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  continuation: a launch can end the turn with the rest of the ask unattempted\n'
+  fail=$((fail + 1)); failures+=("continuation survives its launch")
+fi
 # A crash that says nothing is a crash that teaches nothing. Four reports in eighteen hours all
 # faulted inside SwiftUI's event dispatch and none of them named the surface or the event, because a
 # fault does not flush the log — so the app installs a signal handler that writes one line first, and

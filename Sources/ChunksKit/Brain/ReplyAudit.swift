@@ -218,6 +218,11 @@ public struct ReplyAudit: Sendable {
         ("SAY", "<SAY>"), ("MEMORY", "<MEMORY>"), ("SUMMARY", "<SUMMARY>"),
         ("DONE_TITLE", "<DONE_TITLE>"), ("NEXT_ACTIONS", "<NEXT_ACTIONS>"),
         ("CONTINUE", "<CONTINUE>"), ("DRAFT", "<DRAFT>"), ("NOTE", "<NOTE>"),
+        // The bracket mistakes a small model makes with the one tag that carries the turn onward.
+        // Photographed 2026-11-07: `[CONTINUE>` ended a reply, sat on the card as prose, and the
+        // second round never ran. The audit has to witness these shapes too, or a regression that
+        // puts the markup back on the card reads as a clean reply here.
+        ("CONTINUE", "[CONTINUE>"), ("CONTINUE", "[CONTINUE]"), ("CONTINUE", "<CONTINUE]"),
     ]
 
     static func angleBlocks(in text: String) -> [(name: String, opener: String)] {

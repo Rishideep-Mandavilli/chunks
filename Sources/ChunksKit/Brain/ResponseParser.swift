@@ -236,6 +236,14 @@ public final class ResponseParser {
         // Not `<NEXT>`, which would be a prefix of `<NEXT_ACTIONS>` and get eaten by whichever
         // construct is tried first.
         Construct(start: "<CONTINUE>", end: "</CONTINUE>", kind: .continuation),
+        // The same instruction with the wrong bracket. Measured 2026-11-07 on his machine: the local
+        // brain ended "open WhatsApp and search" with `[CONTINUE>` — square open, angle close, no
+        // closing tag — so it reached the card as prose and the second round never ran, and WhatsApp
+        // sat open with nothing searched. A continuation is an instruction to the app, never words
+        // for him to read, so the shapes a small model actually writes are consumed like the taught
+        // one; the unterminated case is caught at flush by `AnswerStreamer`.
+        Construct(start: "[CONTINUE>", end: "]", kind: .continuation),
+        Construct(start: "[CONTINUE]", end: "]", kind: .continuation),
         // A file the model needs in front of it to answer at all: `[READ:~/Downloads/build.log|why
         // did it fail]`. Its own tag rather than a `[DO:]` because reading is not an act on the
         // user's behalf — it changes nothing on screen — and because the answer comes back in the
@@ -412,7 +420,10 @@ public final class ResponseParser {
                 let actions = ResponseParser.parseActions(hit.inner ?? "")
                 if !actions.isEmpty { events.append(.nextActions(actions)) }
             case .continuation:
-                if let line = ResponseParser.singleLine(hit.inner) { events.append(.continuation(line)) }
+                // An empty body is still the instruction — "carry on with what he asked" — and the
+                // shell supplies his own sentence for it. Emitting nothing here would consume the
+                // tag and lose the round, which is the same dead end as not recognising it at all.
+                events.append(.continuation(ResponseParser.continuationBody(hit.inner ?? "")))
             case .read:
                 if let request = ReadRequest.parse(hit.inner ?? "") {
                     events.append(.fileRead(request))
@@ -737,6 +748,19 @@ public final class ResponseParser {
             return String(cut[..<lastSpace]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
         }
         return cut + "…"
+    }
+
+    /// The words of a continuation, with any closing tag the bracket shapes leave inside the body
+    /// removed: `[CONTINUE]search[/CONTINUE]` closes at the first `]`, which is inside its own
+    /// closing tag, so the residue is markup and not part of the sentence he asked for next.
+    /// An empty result is meaningful — the shell carries his own question for it — so this returns
+    /// a string rather than an optional.
+    static func continuationBody(_ raw: String) -> String {
+        var body = raw
+        for closer in ["</CONTINUE>", "[/CONTINUE]", "</CONTINUE", "[/CONTINUE"] {
+            if let range = body.range(of: closer) { body = String(body[..<range.lowerBound]) }
+        }
+        return singleLine(body) ?? ""
     }
 
     /// `<NEXT_ACTIONS>` bodies are bullet lists: "- Add a dark theme". Parse into items.

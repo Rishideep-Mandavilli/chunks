@@ -135,9 +135,37 @@ public final class AnswerStreamer {
                 endedMidConstruct = true
                 continue
             }
+            // The same rule for the instruction that carries the turn onward. Measured 2026-11-07:
+            // the reply ended `[CONTINUE>` — wrong bracket, no closing tag — and because the parser
+            // released it as prose the card showed raw markup and the second round never ran, so
+            // "open WhatsApp and search" opened the app and stopped there. A continuation is never
+            // words for him to read, so an unclosed one is consumed as the instruction it is; an
+            // empty body means "carry on with what he asked", which the shell supplies.
+            if case .text(let text) = event, let split = Self.unclosedContinuation(text) {
+                if !split.before.isEmpty { consume([.text(split.before)]) }
+                continuation = split.body
+                endedMidConstruct = true
+                continue
+            }
             consume([event])
         }
         return (speech, detail)
+    }
+
+    /// An opening continuation tag with no closing tag anywhere after it, and the prose before it.
+    /// nil when this text is not one. The four openers are the taught one plus the three bracket
+    /// mistakes a small model makes; a *closed* tag of any shape never reaches here, because the
+    /// parser consumes those while streaming.
+    static func unclosedContinuation(_ text: String) -> (before: String, body: String)? {
+        let openers = ["<CONTINUE>", "[CONTINUE>", "[CONTINUE]", "<CONTINUE]"]
+        guard let opening = openers.compactMap({ text.range(of: $0) })
+            .min(by: { $0.lowerBound < $1.lowerBound }) else { return nil }
+        let after = String(text[opening.upperBound...])
+        guard !after.contains("</CONTINUE>"), !after.contains("[/CONTINUE]") else { return nil }
+        let before = String(text[..<opening.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = after.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (before, body)
     }
 
     /// The words inside a `<SAY>` that never closed, or nil when this text is not one.

@@ -189,6 +189,73 @@ public enum AnswerPanelTests {
                    "an absent tag must not schedule another turn and burn a plan round")
         }
 
+        // Measured 2026-11-07 on his machine: "Open WhatsApp and search for any new messages" was
+        // served by the local brain ending `… [DO:open_app:WhatsApp] … [CONTINUE>` — square open,
+        // angle close, no closing tag. The old parser released it as prose, the card showed raw
+        // markup, and the second round never ran: WhatsApp sat open with nothing searched.
+        test("the bracket-shaped CONTINUE a small model writes still carries the round") {
+            let streamer = AnswerStreamer()
+            streamer.push("<SAY>opening whatsapp now.</SAY> [DO:open_app:WhatsApp] "
+                + "<DONE_TITLE>Found app open</DONE_TITLE> [CONTINUE>")
+            let result = streamer.finish()
+            expectEqual(streamer.continuation, "",
+                        "an empty body is 'carry on with what he asked', not 'the turn is finished'")
+            expect(streamer.endedMidConstruct,
+                   "a reply that stopped inside its own instruction must say so in the log")
+            expect(!result.detail.contains("CONTINUE"),
+                   "the instruction leaked onto the card as prose: \(result.detail)")
+            expectEqual(streamer.toolRequests.count, 1,
+                        "the launch before the malformed tag must still parse")
+        }
+
+        test("a closed bracket CONTINUE is consumed while streaming, not at flush") {
+            let streamer = AnswerStreamer()
+            streamer.push("[CONTINUE>search for new messages] and that is all")
+            let result = streamer.finish()
+            expectEqual(streamer.continuation, "search for new messages",
+                        "the hybrid bracket shape must carry the same sentence as the taught one")
+            expect(!result.detail.contains("CONTINUE"),
+                   "the tag leaked: \(result.detail)")
+            expect(result.detail.contains("and that is all"),
+                   "prose after a closed tag is still his answer")
+        }
+
+        test("a square-bracket CONTINUE does not keep its own closing tag in the sentence") {
+            let streamer = AnswerStreamer()
+            streamer.push("[CONTINUE]search for new messages[/CONTINUE]")
+            streamer.finish()
+            expectEqual(streamer.continuation, "search for new messages",
+                        "the first ] is inside the closing tag; the markup is not the sentence")
+        }
+
+        test("an unclosed taught CONTINUE keeps the words it had") {
+            let streamer = AnswerStreamer()
+            streamer.push("<SAY>one moment.</SAY> <CONTINUE>search the chat list for unread messages")
+            let result = streamer.finish()
+            expectEqual(streamer.continuation, "search the chat list for unread messages",
+                        "the stream stopped mid-instruction; the instruction is still the instruction")
+            expect(!result.detail.contains("CONTINUE"),
+                   "raw markup on the card: \(result.detail)")
+        }
+
+        test("prose before an unclosed CONTINUE stays on the card, the tag does not") {
+            let streamer = AnswerStreamer()
+            streamer.push("the window is open now\n[CONTINUE>")
+            let result = streamer.finish()
+            expect(result.detail.contains("the window is open now"),
+                   "his answer must not vanish with the tag: \(result.detail)")
+            expectEqual(streamer.continuation, "",
+                        "the empty body still asks for the next look")
+        }
+
+        test("an empty taught CONTINUE is a carry-on, not an absent one") {
+            let streamer = AnswerStreamer()
+            streamer.push("<CONTINUE></CONTINUE>")
+            streamer.finish()
+            expectEqual(streamer.continuation, "",
+                        "nil here would end the turn at the launch, which is the bug being fixed")
+        }
+
         test("READ puts a file request on the streamer and stays off the card") {
             let streamer = AnswerStreamer()
             streamer.push("<SAY>let me look at that log.</SAY> "

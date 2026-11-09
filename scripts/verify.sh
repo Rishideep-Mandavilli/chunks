@@ -104,6 +104,10 @@ for candidate_app in Terminal WhatsApp Notes TextEdit Safari "Google Chrome" Fin
   field_name="$(printf '%s' "$fields_out" | grep -m1 -o 'name="[^"]*"' | cut -d'"' -f2)"
   field_point="$(printf '%s' "$fields_out" | grep -m1 -o 'at ([0-9.]*, [0-9.]*)' | sed 's/at (//; s/)//; s/, /,/')"
   [[ -n "$field_name" && -n "$field_point" ]] || continue
+  # A field can exist in a window that is behind another app: the fields probe reads the tree, the
+  # hit test reads the topmost window. Accept only a candidate whose centre actually resolves on
+  # this screen right now, or the fixture measures occlusion instead of the code (AUDIT.md F-15).
+  "$BIN" --probe-ax "$field_point" >/dev/null 2>&1 || continue
   field_app="$candidate_app"
   printf '  \033[32mPASS\033[0m  fields: what an app publishes to the typist (%s)\n' "$field_app"
   pass=$((pass + 1))

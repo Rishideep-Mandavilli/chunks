@@ -755,6 +755,11 @@ Nothing in this document has been fixed.
 - **A-02 / A-03 / A-04 / A-06 / B-05** — `d3c4e26` (+ test-only `149fa9b`): interpreters/launchers
   denied; quit picks the regular app and refuses two; uninstalled named browser refuses; the Catalyst
   focus hatch reachable; fourth CONTINUE shape consumed.
+- **R-01 … R-09** (the re-audit's gaps in the fixes above) — `af3e4a6`: holds/programs arm only behind
+  a card holding that exact tool; stopped/failed last steps mark the turn answered; a cancelled turn's
+  file slice is discarded by epoch; a routine added after its hour waits for tomorrow; the local model
+  loop carries the reset fence; in-stream status reads whole numbers; bounded text cuts at a word; the
+  prompt names the new deny classes. Suite 861/861.
 
 All five P0s and all P1s except **C-15** (the crash class, KNOWN-OPEN, instrumented not fixed) are
 closed. Full gate after the batch: 57 checks, 2 skips (Chrome page-depth candidates and the Shortcuts

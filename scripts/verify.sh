@@ -295,13 +295,22 @@ check "windows: what Chunks can see, and what each verb would ask" "$BIN" --prob
 # landed on an app on another Space, and reported the product as broken for behaving as designed. A
 # check that fails when the code is right is worse than no check: it teaches whoever reads it next to
 # distrust the gate.
-first_window="$("$BIN" --probe-windows 2>&1 | grep -E '^  [A-Za-z]' | grep '"' \
-  | grep -v '"desktop"' | grep -v 'out of reach' | head -1)"
-# The app name is padded with spaces and may itself contain spaces ("Google Chrome"), so it is cut by
-# the position of the first quote rather than by whitespace.
-geom_app="$(printf '%s' "$first_window" \
-  | awk '{i=index($0,"\""); s=substr($0,3,i-3); sub(/[ ]+$/,"",s); print s}')"
-geom_title="$(printf '%s' "$first_window" | sed -E 's/.*"([^"]*)".*/\1/')"
+first_window=""
+geom_app=""; geom_title=""
+# Self-validate the fixture: a window can be listed yet refuse a move (ambiguous title, a relayout
+# between the listing and the probe). Accept the first candidate whose `|left` probe actually passes,
+# so the check measures the placement code, not which window happened to be on top (the same lesson
+# as the hit-test fixture, AUDIT.md F-15).
+while IFS= read -r cand; do
+  c_app="$(printf '%s' "$cand" \
+    | awk '{i=index($0,"\""); s=substr($0,3,i-3); sub(/[ ]+$/,"",s); print s}')"
+  c_title="$(printf '%s' "$cand" | sed -E 's/.*"([^"]*)".*/\1/')"
+  [[ -n "$c_app" && -n "$c_title" && "$c_title" != "desktop" ]] || continue
+  if "$BIN" --probe-geometry "$c_app|$c_title|left" 2>&1 | grep -q "geometry: PASS"; then
+    geom_app="$c_app"; geom_title="$c_title"; break
+  fi
+done < <("$BIN" --probe-windows 2>&1 | grep -E '^  [A-Za-z]' | grep '"' \
+  | grep -v '"desktop"' | grep -v 'out of reach' | head -8)
 if [[ -z "$geom_app" || -z "$geom_title" || "$geom_title" == "desktop" ]]; then
   printf '  \033[33mSKIP\033[0m  geometry: no real window on screen to place (the desktop is not one)\n'
   skip=$((skip + 1))

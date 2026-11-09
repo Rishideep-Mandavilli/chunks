@@ -1698,7 +1698,7 @@ final class CompanionManager: ObservableObject {
     /// own words, and puts the answer in the same turn.
     ///
     /// Skipped on a continuation, which already carries the file the first turn asked for.
-    private func attachFileMentionedIn(_ question: String, continuing: Bool) {
+    private func attachFileMentionedIn(_ question: String, continuing: Bool) async {
         // A continuation must not clear anything. The round that asked for a file staged it here
         // precisely so *this* turn could spend it, and wiping the fields ahead of the guard made
         // `[READ:…]` read the file, throw the contents away, and answer from the screen instead —
@@ -1712,22 +1712,42 @@ final class CompanionManager: ObservableObject {
         pendingNotebookBlock = nil
         // And a list of windows from a minute ago must not arrive as if it described the screen now.
         pendingOpenWindowsBlock = nil
-        let ranked = FileMention.rank(FileAttachment.candidates(for: question),
-                                      question: question)
-        guard FileMention.shouldAttach(top: ranked.first, runnerUp: ranked.dropFirst().first,
-                                       question: question),
-              let top = ranked.first else {
-            // Nothing matched well enough to read on its own. Where there is *some* overlap the
-            // model gets the real names and decides; where there is none, it gets nothing, so an
-            // ordinary question about the screen pays no tokens for his disk.
-            if FileMention.shouldOffer(ranked, question: question) {
-                pendingFileListing = FileMention.listing(ranked, home: NSHomeDirectory())
-                Log.write("attach: nothing matched \"\(question)\" well enough — offered "
-                          + "\(min(ranked.count, FileMention.listingLimit)) names")
+        // The disk and the extractors run off the main actor: a 480-page book costs ~0.8s to slice
+        // and a 12 MB PDF more, and on main that froze the notch and disarmed the watchdog for the
+        // whole call (AUDIT.md C-02). Only the staging below touches the card.
+        enum Outcome {
+            case listing(String?)
+            case loaded(FileMention.Candidate, FileAttachment.Resolved)
+        }
+        let outcome: Outcome = await Task.detached {
+            let ranked = FileMention.rank(FileAttachment.candidates(for: question),
+                                          question: question)
+            guard FileMention.shouldAttach(top: ranked.first, runnerUp: ranked.dropFirst().first,
+                                           question: question),
+                  let top = ranked.first else {
+                // Nothing matched well enough to read on its own. Where there is *some* overlap the
+                // model gets the real names and decides; where there is none, it gets nothing, so an
+                // ordinary question about the screen pays no tokens for his disk.
+                return .listing(FileMention.shouldOffer(ranked, question: question)
+                    ? FileMention.listing(ranked, home: NSHomeDirectory()) : nil)
+            }
+            return .loaded(top, FileAttachment.load(top, question: question))
+        }.value
+        switch outcome {
+        case .listing(let listing):
+            if let listing {
+                pendingFileListing = listing
+                Log.write("attach: nothing matched \"\(question)\" well enough — offered names")
             }
             return
+        case .loaded(let top, let resolved):
+            stageAttachedFile(top, resolved, question: question)
         }
-        let resolved = FileAttachment.load(top, question: question)
+    }
+
+    /// The main-actor half of an attachment: labels, card hint and log, nothing that reads disk.
+    private func stageAttachedFile(_ top: FileMention.Candidate, _ resolved: FileAttachment.Resolved,
+                                   question: String) {
         // Every attachment is labelled a guess, because the alternative is a silent one. The score
         // can tell that his words are in a file's name; only the model can tell that "visual
         // designer images" is a search about a person and "the visual designer resume" is a file.
@@ -1767,8 +1787,11 @@ final class CompanionManager: ObservableObject {
     /// A refusal is said out loud rather than swallowed: the difference between "I won't read
     /// ~/.ssh" and "I asked for the file and nothing happened" is the whole difference between a
     /// policy working and a feature looking broken.
-    private func offerFileRead(_ request: ReadRequest) -> String? {
-        switch FileRead.perform(request) {
+    private func offerFileRead(_ request: ReadRequest) async -> String? {
+        // Off the main actor for the same reason as the attachment: the extractor is the slow part
+        // and the card must keep drawing while it runs (AUDIT.md C-02).
+        let result = await Task.detached { FileRead.perform(request) }.value
+        switch result {
         case .failure(let failure):
             // Footnoted, not failed: `fail()` clears the card, so a model that answered the
             // question and *then* asked for a file it could not read would have watched its own
@@ -3817,7 +3840,7 @@ final class CompanionManager: ObservableObject {
                 // costs 0.79s to slice — serialised ahead of the capture, that was 0.79s added to
                 // every turn that mentioned a big document.
                 let fileRead = Task { @MainActor in
-                    self.attachFileMentionedIn(transcript, continuing: continuingPlan)
+                    await self.attachFileMentionedIn(transcript, continuing: continuingPlan)
                 }
 
                 // A circled region replaces the whole-screen capture for exactly one turn.
@@ -4094,7 +4117,7 @@ final class CompanionManager: ObservableObject {
                 // "Opened WhatsApp." with the search never attempted.
                 let saidNext = streamer.continuation.map { $0.isEmpty ? transcript : $0 }
                 if let read = streamer.fileRead {
-                    let staged = offerFileRead(read)
+                    let staged = await offerFileRead(read)
                     // A file that arrived *is* a completed step. Without this the round that asked
                     // for the log was judged to have done nothing, the continuation never started,
                     // and the read spent a turn that produced no answer — which is exactly what it
@@ -4382,9 +4405,19 @@ final class CompanionManager: ObservableObject {
     /// speaking a word" when he tried again.
     private func speakCreditsErrorFallback() {
         let utterance = "I can't reach the model right now. Ask me again when you want it retried."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
+        // Through the verified path, not a local NSSpeechSynthesizer that deallocs when this
+        // function returns and takes the sentence with it (AUDIT.md C-03). speakCaptioned waits for
+        // playback, captions it, and logs whether it was actually said; and the pill must not sit in
+        // "responding" forever afterwards.
+        Task { @MainActor in
+            voiceState = .responding
+            do {
+                try await speakCaptioned(utterance)
+            } catch {
+                Log.write("voice: the fallback sentence was not said — \(error)")
+            }
+            if voiceState == .responding { voiceState = .idle }
+        }
     }
 
     // MARK: - Point Tag Parsing

@@ -16,7 +16,6 @@ import ImageIO
 /// The search is shallow and bounded on purpose: one level of the folders a person keeps work in, the
 /// newest 60 of each. A recursive walk of `~` would find the file eventually and freeze the notch
 /// meanwhile, and "which file did he mean" is answered by names and dates, not by depth.
-@MainActor
 enum FileAttachment {
 
     /// Entries per root, newest first.

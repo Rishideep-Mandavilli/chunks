@@ -14,7 +14,6 @@ import PDFKit
 /// images here: the card would then be a screenshot of a screenshot, and the vision models answering
 /// in seconds are the small ones. When the file *is* a scan, the honest line says so, and the page on
 /// screen is what he can show instead.
-@MainActor
 enum DocumentRead {
 
     static func perform(_ request: ReadRequest,

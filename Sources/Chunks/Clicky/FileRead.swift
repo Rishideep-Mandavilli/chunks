@@ -6,7 +6,6 @@ import ChunksKit
 /// `ReadRequest` decides *whether*; this decides *what came back*. The split exists so the policy
 /// can be tested without a file system — the cases that matter are a `..` that escapes the root and
 /// a symlink into `~/.ssh`, and neither should need to be created on a real Mac to prove the rule.
-@MainActor
 enum FileRead {
 
     struct Content {
@@ -153,7 +152,6 @@ enum FileRead {
 /// Word file is a zip of XML, so `FileHandle` hands back bytes full of NULs and the honest answer
 /// from a byte reader is "that is not a text file", about a document with nothing but text in it.
 /// What the importer cannot open is *said* as that, rather than as a binary refusal.
-@MainActor
 enum OfficeRead {
 
     static func perform(_ request: ReadRequest,

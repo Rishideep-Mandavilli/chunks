@@ -462,6 +462,9 @@ final class CompanionManager: ObservableObject {
         if !routines.save() {
             Log.write("routines: the file refused to write — the schedule lives until quit")
         }
+        // Every schedule change re-decides the sleep hold: adding the first routine must take it,
+        // removing the last must let go, and neither used to happen (AUDIT.md D-05).
+        refreshSleepAssertion()
     }
 
     // MARK: - Reminders
@@ -634,7 +637,6 @@ final class CompanionManager: ObservableObject {
     /// machine is free.
     private func fireDueRoutines(now: Date) {
         let since = routineClock
-        routineClock = now
         guard !consentGate.isPending else { return }
         switch hud.phase {
         case .listening, .thinking: return
@@ -642,10 +644,21 @@ final class CompanionManager: ObservableObject {
         }
         guard CGDisplayIsAsleep(CGMainDisplayID()) == 0, CGDisplayIsActive(CGMainDisplayID()) != 0
         else { return }
+        // The clock moves only once the tick is actually allowed to fire: a blocked tick used to
+        // advance it past the slot, and the next tick then computed tomorrow (AUDIT.md D-04).
+        routineClock = now
 
         for entry in routines.routines where entry.isEnabled {
-            guard let slot = RoutinesStore.nextFireDate(for: entry, now: since), slot <= now
-            else { continue }
+            // Daily/weekdays ask "has it run for today's slot", so a blocked tick — or a second
+            // routine at the same hour — cannot lose the day. Interval routines keep the clock
+            // arithmetic, which already owes one run after a sleep rather than forty.
+            let slot: Date?
+            if case .every = entry.cadence {
+                slot = RoutinesStore.nextFireDate(for: entry, now: since)
+            } else {
+                slot = RoutinesStore.dueSlot(for: entry, now: now)
+            }
+            guard let slot, slot <= now else { continue }
             Log.write("routines: firing \"\(entry.title)\"")
             routines.markRun(id: entry.id, at: now)
             saveRoutines()

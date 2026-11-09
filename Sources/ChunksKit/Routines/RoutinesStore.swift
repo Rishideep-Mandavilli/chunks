@@ -226,6 +226,27 @@ public struct RoutinesStore: Equatable, Sendable {
         return weekday != 1 && weekday != 7   // Sunday = 1, Saturday = 7
     }
 
+    /// The slot a daily/weekdays routine owes *now*: today's time when it has not already run for
+    /// it, nil otherwise. `nextFireDate` answers "when is the next one", which loses the day whenever
+    /// a firing tick was blocked and the clock moved past the slot (AUDIT.md D-04); this answers
+    /// "has it run for this slot", which a blocked tick cannot erase.
+    public static func dueSlot(for routine: Routine, now: Date,
+                               calendar: Calendar = .current) -> Date? {
+        guard routine.isEnabled else { return nil }
+        switch routine.cadence {
+        case .every:
+            return nextFireDate(for: routine, now: now, calendar: calendar)
+        case .daily(let at), .weekdays(let at):
+            guard let (hour, minute) = timeOfDay(from: at),
+                  let slot = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: now)
+            else { return nil }
+            if case .weekdays = routine.cadence, !isWeekday(slot, calendar: calendar) { return nil }
+            guard slot <= now else { return nil }
+            if let last = routine.lastRunAt, last >= slot { return nil }
+            return slot
+        }
+    }
+
     /// The soonest thing due, among the enabled routines.
     public func nextDue(after now: Date, calendar: Calendar = .current)
         -> (routine: Routine, date: Date)? {

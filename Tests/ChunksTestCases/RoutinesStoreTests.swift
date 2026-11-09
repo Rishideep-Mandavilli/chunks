@@ -36,6 +36,36 @@ public enum RoutinesStoreTests {
     public static func register() {
         TestRunner.currentSuite = "Routines"
 
+        // AUDIT.md D-04: a tick blocked by an open card, a turn in flight or a sleeping display used
+        // to advance the clock past the slot, and the next tick computed tomorrow — the whole day
+        // silently lost. The question is now "has it run for this slot".
+        test("a blocked tick does not lose the day's slot") {
+            let r = routine(lastRun: date(2026, 11, 8, 8, 0))
+            let now = date(2026, 11, 9, 8, 5)   // Monday, five minutes past the slot
+            expectEqual(RoutinesStore.dueSlot(for: r, now: now, calendar: calendar),
+                        date(2026, 11, 9, 8, 0),
+                        "yesterday's run must not retire today's slot")
+        }
+
+        test("a slot already run for is not owed twice, and a second routine at the same hour still is") {
+            let now = date(2026, 11, 9, 8, 5)
+            let done = routine(lastRun: date(2026, 11, 9, 8, 0))
+            expect(RoutinesStore.dueSlot(for: done, now: now, calendar: calendar) == nil,
+                   "a routine that fired at 08:00 must not fire again at 08:05")
+            let never = routine(title: "Second at the same hour")
+            expectEqual(RoutinesStore.dueSlot(for: never, now: now, calendar: calendar),
+                        date(2026, 11, 9, 8, 0),
+                        "the one-per-tick break must not cost the second routine its day")
+        }
+
+        test("nothing is owed before the hour, and weekdays owe nothing on a Saturday") {
+            let r = routine(cadence: .weekdays(at: "08:00"))
+            expect(RoutinesStore.dueSlot(for: r, now: date(2026, 11, 9, 7, 59), calendar: calendar) == nil,
+                   "07:59 is not 08:00")
+            expect(RoutinesStore.dueSlot(for: r, now: date(2026, 11, 14, 8, 5), calendar: calendar) == nil,
+                   "Saturday is not a weekday")
+        }
+
         test("a routine is refused with the sentence a user can act on") {
             let cases: [(String, String, Routine.Cadence, String)] = [
                 ("", "brief the inbox", .daily(at: "08:00"), "needs a name"),

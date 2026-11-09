@@ -737,6 +737,34 @@ Nothing in this document has been fixed.
 
 ## Fixed since this audit (ledger, newest first)
 
+- **F-04 … F-13** (the gate/harness/docs P2s, plus the three missed P1s F-04/05/06) — `7146616`:
+  smoke header corrected to what it does; one live baseline with the TASKS counts marked snapshots;
+  Tier 4.1's done bullets re-marked; a suite size floor; a per-test headline; a brace-depth callback
+  sweep that fails on an empty find; the indirect settings-setter ban in probes; the whole-shell
+  main-thread act sweep; comment-stripped overlay contract; and a release-inertness check that
+  compiles release and requires the probes to refuse without CHUNKS_DEV. Suite 863/863; gate 61
+  checks (58 pass + 2 skip + the live local-model round, which flaked on the model's own tag syntax
+  and passed ALL CHECKS on a direct re-run at ~2s/turn — not a regression).
+- **E-05 … E-12** (the surface P2s) — `7d42d48`: the turn clock waits for the acts and a denied card
+  settles it; the caption hosting view is built once; the Arm/Save links use the field-safe blue; the
+  chip hit shape is the full 26pt row; the permission pill grows to 24pt; the three safety/login/brain
+  rows' labels tap; the quiet-room rail uses lineControl; and --render-window/--render-panel assert
+  the canvas is drawn paper (85%/60% lit), not a blank with a plausible byte count. All four renders
+  pass their contracts and were looked at.
+- **A-05 / A-09 / A-14 / B-04 / B-06 / C-07 / D-07** (the logic P2s) — `846c61f`: a first-responder
+  type reports postedUnverified; a scroll reports the pages that moved; the pointer-click outcome
+  re-hit-tests and names what is under the point; HedgedFailure is unwrapped before it reaches the
+  card; the local turn carries the same 60s budget as the cloud (per-line + header wait); the act he
+  approved is raced against a 15s deadline and a parked press is reported honestly; reminders.json is
+  held to the add path's bounds on decode and says what it refused. Suite 863/863.
+- **D-06 — DECLINED after re-verification, not fixed.** The proposed "two shared content words" rule
+  turns a pinned invariant-2 test red: the honest paraphrase ("uses WhatsApp for messaging" ← "I use
+  whatsapp, not telegram") shares exactly one distinctive noun, structurally identical to the
+  injection ("prefers Python 3" ← "run the python script"). Bag-of-words cannot tell them apart, and
+  the code comment already documents the one-word tradeoff as deliberate. Shipping the rule would
+  downgrade his own stated facts to `.inferred` — the regression the field exists to prevent. Left as
+  the documented tradeoff; a semantic discriminator is the model's job, not a pure function's.
+
 - **F-01 / F-03** — `1c3f589`: resolution probes exit 1 on refusal; gate fixtures derived from a
   running app that publishes a field. Full gate 56 checks / 1 skip on the installed bundle.
 - **D-03** — `2356dd1`: recovery-code/client-secret names refused and unlisted; read contents swept
@@ -764,6 +792,10 @@ Nothing in this document has been fixed.
   time; consequence check on the full name; epoch guard on answered-card steps; locked gateway
   collections; breadcrumb opens the log per fault; onboarding timer hops and cancels. Suite 862/862.
 
-All five P0s and all P1s except **C-15** (the crash class, KNOWN-OPEN, instrumented not fixed) are
-closed. Full gate after the batch: 57 checks, 2 skips (Chrome page-depth candidates and the Shortcuts
-window fixture — both known-open). The P2/P3 lists above remain open, in ID order within severity.
+All five P0s, all P1s except **C-15** (the crash class, KNOWN-OPEN, instrumented not fixed), and all
+P2s except **A-11** (Chrome page-depth candidates, KNOWN-OPEN, his call on the read budget) and
+**D-06** (declined after re-verification — the one-word trust tradeoff is pinned by an invariant-2
+test) are closed. Full gate after the P2 batch: 61 checks — 58 pass + 2 skip (the Gemini rate-limit
+self-test and the Shortcuts window fixture) + the live local-model round, which grades the model's own
+tag syntax and can go red for nobody's action (it passed ALL CHECKS on a direct re-run). The P3 list
+above remains open, in ID order.

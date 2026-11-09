@@ -760,6 +760,9 @@ Nothing in this document has been fixed.
   file slice is discarded by epoch; a routine added after its hour waits for tomorrow; the local model
   loop carries the reset fence; in-stream status reads whole numbers; bounded text cuts at a word; the
   prompt names the new deny classes. Suite 861/861.
+- **A-07 / A-08 / A-10 / B-07 / C-04 / C-05** (first P2 batch) — `42f38bc`: frontmost re-check at post
+  time; consequence check on the full name; epoch guard on answered-card steps; locked gateway
+  collections; breadcrumb opens the log per fault; onboarding timer hops and cancels. Suite 862/862.
 
 All five P0s and all P1s except **C-15** (the crash class, KNOWN-OPEN, instrumented not fixed) are
 closed. Full gate after the batch: 57 checks, 2 skips (Chrome page-depth candidates and the Shortcuts

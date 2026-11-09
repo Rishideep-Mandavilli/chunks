@@ -3891,6 +3891,13 @@ final class CompanionManager: ObservableObject {
                     onTextChunk: { delta in
                         streamer.push(delta)
                         self.hud.apply(streamer)
+                    },
+                    onFreshAttempt: {
+                        // A failover after a mid-stream drop must replace the half reply, not append
+                        // a second model's words and act tags to it (AUDIT.md B-03). The card assigns
+                        // what the streamer reports, so the next push redraws it from empty.
+                        streamer.reset()
+                        self.hud.apply(streamer)
                     }
                 )
 

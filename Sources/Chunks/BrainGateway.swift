@@ -31,6 +31,17 @@ struct LabelledImage {
     let label: String
 }
 
+/// Whether any attempt of a turn has already put words on the card. Read at each attempt start to
+/// decide whether the shell's streamer must be reset before a new model writes (AUDIT.md B-03).
+/// Locked: the chunk callback runs on the main actor while the chain loop runs beside it.
+private final class EmittedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var any: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
+    func reset() { lock.lock(); value = false; lock.unlock() }
+}
+
 enum BrainError: Error, CustomStringConvertible {
     case missingKey
     case noCapableModel(String)
@@ -175,12 +186,18 @@ final class BrainGateway {
         systemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
-        onTextChunk: @escaping @MainActor @Sendable (String) -> Void
+        onTextChunk: @escaping @MainActor @Sendable (String) -> Void,
+        onFreshAttempt: (@MainActor @Sendable () -> Void)? = nil
     ) async throws -> (text: String, duration: TimeInterval) {
+        // Stamped per turn, not at gateway init: the gateway lives as long as the app, so an
+        // init-time stamp made the backup-key retry unreachable after the first minute of every
+        // session (AUDIT.md B-01). The bound is still the turn's own promise, never a fresh minute.
+        let turnStarted = Date()
         do {
             return try await turn(images: images, systemPrompt: systemPrompt,
                                   history: conversationHistory, userPrompt: userPrompt,
-                                  backupKey: false, onTextChunk: onTextChunk)
+                                  backupKey: false, onTextChunk: onTextChunk,
+                                  onFreshAttempt: onFreshAttempt)
         } catch {
             guard (error as? BrainError)?.worthBackupRetry == true,
                   let backup = KeychainStore.backupGeminiKey(),
@@ -188,18 +205,18 @@ final class BrainGateway {
                   // spend another thirty seconds proving it.
                   backup != (try? KeychainStore.geminiKey()),
                   // The turn budget is the user's wait, not the chain's; a retry would double it.
-                  Date().timeIntervalSince(backupRetryStarted) < Self.turnBudgetSeconds
+                  Date().timeIntervalSince(turnStarted) < Self.turnBudgetSeconds
             else { throw error }
             Log.write("turn: primary key refused for quota — asking the same chain with the backup key")
+            // The first walk may already have put half a reply on the card; the second walk must
+            // replace it, not append to it (AUDIT.md B-03).
+            await onFreshAttempt?()
             return try await turn(images: images, systemPrompt: systemPrompt,
                                   history: conversationHistory, userPrompt: userPrompt,
-                                  backupKey: true, onTextChunk: onTextChunk)
+                                  backupKey: true, onTextChunk: onTextChunk,
+                                  onFreshAttempt: onFreshAttempt)
         }
     }
-
-    /// When this gateway began answering, so a backup retry is bounded by the same promise the chain
-    /// already makes rather than starting a fresh minute.
-    private let backupRetryStarted = Date()
 
     private func turn(
         images: [(data: Data, label: String)],
@@ -207,7 +224,8 @@ final class BrainGateway {
         history: [(userPlaceholder: String, assistantResponse: String)],
         userPrompt: String,
         backupKey: Bool,
-        onTextChunk: @escaping @MainActor @Sendable (String) -> Void
+        onTextChunk: @escaping @MainActor @Sendable (String) -> Void,
+        onFreshAttempt: (@MainActor @Sendable () -> Void)? = nil
     ) async throws -> (text: String, duration: TimeInterval) {
 
         let started = Date()
@@ -269,6 +287,15 @@ final class BrainGateway {
         }
         /// Every model this turn has already been answered by, or refused by.
         var asked = Set<String>()
+        // Whether any attempt has put words on the card. A failover after a mid-stream drop must
+        // reset the shell's streamer before the next model writes, or two models share one card and
+        // one plan (AUDIT.md B-03). Locked because the chunk callback runs on the main actor while
+        // this loop runs beside it.
+        let emitted = EmittedFlag()
+        let chunk: @MainActor @Sendable (String) -> Void = { delta in
+            emitted.set()
+            onTextChunk(delta)
+        }
         Log.write("turn: chain \(chain.map(\.id).joined(separator: " > "))"
             + " · \(images.count) image(s), \(images.reduce(0) { $0 + $1.data.count } / 1024) KB"
             + " · text \(userPrompt.count + systemPrompt.count) chars")
@@ -339,6 +366,12 @@ final class BrainGateway {
                     throw BrainError.turnBudgetExceeded(used: spent, models: index)
                 }
                 let attemptDeadline = tryStarted.addingTimeInterval(slice)
+                if emitted.any {
+                    Log.write("turn: a previous attempt wrote part of this reply — resetting the card "
+                        + "before \(candidate.id) writes")
+                    await onFreshAttempt?()
+                    emitted.reset()
+                }
                 do {
                     // The first model is asked alongside its successor if it goes quiet, because
                     // the wait to *discover* a contended model is serial today. Later hops keep
@@ -359,7 +392,7 @@ final class BrainGateway {
                                                 asksForThinking: thinkingLevelAccepted,
                                                 markAsked: { asked.insert($0) },
                         isAsked: { asked.contains($0) },
-                                                onTextChunk: onTextChunk)
+                                                onTextChunk: chunk)
                     } else {
                         asked.insert(candidate.id)
                         text = try await stream(
@@ -371,7 +404,7 @@ final class BrainGateway {
                             images: images,
                             deadline: attemptDeadline,
                             asksForThinking: thinkingLevelAccepted,
-                            onTextChunk: onTextChunk)
+                            onTextChunk: chunk)
                     }
                     let total = Date().timeIntervalSince(started)
                     Log.write("turn: served by \(candidate.id) in \(String(format: "%.1f", total))s"
@@ -908,6 +941,10 @@ final class BrainGateway {
         }
 
         var accumulated = ""
+        // An SSE `.error` inside a 200 used to be dropped here, so a quota or safety refusal read as
+        // a served turn: empty card, no failover, no backup key (AUDIT.md B-02). The local loop has
+        // always kept this; the cloud loop now keeps it too.
+        var streamFailure: String?
         for try await line in bytes.lines {
             // A hedged turn cancels the loser, and `AsyncBytes` does not notice on its own: without
             // this the model that lost the race keeps streaming a whole reply into a callback that
@@ -921,13 +958,39 @@ final class BrainGateway {
             // models — and both models' act tags ran as one plan.
             if accumulated.isEmpty, Date() >= deadline { throw URLError(.timedOut) }
             for event in GeminiStreamParser.parse(line: String(line)) {
-                if case .textDelta(let delta) = event {
+                switch event {
+                case .textDelta(let delta):
                     accumulated += delta
                     await onTextChunk(delta)
+                case .error(let message):
+                    streamFailure = message
+                case .completed:
+                    break
                 }
             }
         }
+        if let streamFailure {
+            Log.write("brain: cloud stream ended early — \(streamFailure)")
+            if accumulated.isEmpty {
+                throw BrainError.http(statusCode: Self.statusInStreamMessage(streamFailure) ?? 500,
+                                      body: streamFailure)
+            }
+        }
         return accumulated
+    }
+
+    /// An in-stream error carries the server's own words. When they name a quota refusal, classify
+    /// it as the 429 it is, so the chain walks to the next model and the backup key earns its retry
+    /// exactly as an HTTP 429 would.
+    private static func statusInStreamMessage(_ message: String) -> Int? {
+        let lowered = message.lowercased()
+        if lowered.contains("resource_exhausted") || lowered.contains("quota") || message.contains("429") {
+            return 429
+        }
+        if lowered.contains("unavailable") || lowered.contains("high demand") || message.contains("503") {
+            return 503
+        }
+        return nil
     }
 
     /// The live capture path encodes JPEG and `--self-test` encodes PNG, and the tuple carrying

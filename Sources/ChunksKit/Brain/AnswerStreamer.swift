@@ -101,6 +101,31 @@ public final class AnswerStreamer {
 
     public init() {}
 
+    /// Forget everything this reply has accumulated, so a *new* model attempt starts from an empty
+    /// card instead of appending to a half answer (AUDIT.md B-03). The panel assigns rather than
+    /// appends what the streamer reports, so a reset replaces the half sentence cleanly; without it,
+    /// a mid-stream drop made two models write one card and run both their act tags as one plan.
+    public func reset() {
+        parser = ResponseParser()
+        speech = ""
+        detail = ""
+        points = []
+        proposal = nil
+        summary = nil
+        doneTitle = nil
+        nextActions = []
+        continuation = nil
+        fileRead = nil
+        actionRequests = []
+        unreadActTags = 0
+        toolRequests = []
+        draftText = nil
+        noteLines = []
+        noteSearch = nil
+        pendingSpeechEcho = nil
+        endedMidConstruct = false
+    }
+
     /// Feed one raw delta. Returns the text that is safe to display right now.
     ///
     /// The parser holds back the ambiguous tail of a split tag, so the returned strings

@@ -713,6 +713,19 @@ else
   printf '  \033[31mFAIL\033[0m  consent: a displaced plan can resume on a later, unrelated Allow\n'
   fail=$((fail + 1)); failures+=("displacement drops the held plan")
 fi
+# The three brain promises the audit found broken (AUDIT.md B-01/B-02/B-03): the backup-key bound is
+# stamped per turn, an in-stream SSE error is kept and classified, and a failover after a mid-stream
+# drop resets the card instead of letting two models write one reply and one plan.
+if grep -q 'let turnStarted = Date()' Sources/Chunks/BrainGateway.swift \
+   && grep -q 'var streamFailure: String?' Sources/Chunks/BrainGateway.swift \
+   && grep -q 'await onFreshAttempt?()' Sources/Chunks/BrainGateway.swift \
+   && grep -q 'streamer.reset()' Sources/Chunks/Clicky/CompanionManager.swift; then
+  printf '  \033[32mPASS\033[0m  brain: per-turn backup bound, in-stream errors kept, failover resets the card\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  brain: a quota retry, an in-stream error or a failover regressed\n'
+  fail=$((fail + 1)); failures+=("brain retry and stream fencing")
+fi
 # A crash that says nothing is a crash that teaches nothing. Four reports in eighteen hours all
 # faulted inside SwiftUI's event dispatch and none of them named the surface or the event, because a
 # fault does not flush the log — so the app installs a signal handler that writes one line first, and

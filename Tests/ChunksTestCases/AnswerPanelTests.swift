@@ -189,6 +189,24 @@ public enum AnswerPanelTests {
                    "an absent tag must not schedule another turn and burn a plan round")
         }
 
+        // AUDIT.md B-03: a failover after a mid-stream drop must replace the half reply. The panel
+        // assigns what the streamer reports, so reset is what keeps two models off one card.
+        test("reset forgets the half reply so the next model starts from an empty card") {
+            let streamer = AnswerStreamer()
+            streamer.push("<SAY>half a sentence from the first model</SAY> [ACT:100,200:Send]")
+            streamer.reset()
+            expect(streamer.speech.isEmpty && streamer.detail.isEmpty,
+                   "reset left the first model's words on the card")
+            expect(streamer.actionRequests.isEmpty,
+                   "reset left the first model's act request in the plan")
+            streamer.push("<SAY>the whole answer from the second model</SAY>")
+            streamer.finish()
+            expectEqual(streamer.speech, "the whole answer from the second model",
+                        "the second model appended to the first instead of replacing it")
+            expect(streamer.actionRequests.isEmpty,
+                   "the dropped model's press must not run as part of the new reply")
+        }
+
         // Measured 2026-11-07 on his machine: "Open WhatsApp and search for any new messages" was
         // served by the local brain ending `… [DO:open_app:WhatsApp] … [CONTINUE>` — square open,
         // angle close, no closing tag. The old parser released it as prose, the card showed raw

@@ -159,6 +159,10 @@ public enum ReplyEvent: Equatable, Sendable {
     ///
     /// One line, and it is never shown or spoken: it is an instruction to the app, not content.
     case continuation(String)
+    /// The model's ordered checklist for a multi-part request: `<PLAN>open WhatsApp; find Dad; …
+    /// </PLAN>`. Kept outside the message history and re-injected each continuation so a weak model
+    /// keeps the whole task in view (plan-and-execute). Never shown or spoken; it is the app's plan.
+    case plan(String)
     /// The model is asking to act on a control. A proposal only — `PolicyGate` decides
     /// whether it happens, and the user says yes.
     case act(ActionRequest)
@@ -205,7 +209,7 @@ public final class ResponseParser {
         let end: String?         // literal that closes it, nil if self-closing (e.g. [POINT:…])
         let kind: Kind
         enum Kind { case say, memory, point, act, type, scroll, tool, summary,
-                   doneTitle, nextActions, continuation, read, draft, note, noteSearch }
+                   doneTitle, nextActions, continuation, plan, read, draft, note, noteSearch }
     }
 
     private static let constructs: [Construct] = [
@@ -245,6 +249,9 @@ public final class ResponseParser {
         Construct(start: "[CONTINUE>", end: "]", kind: .continuation),
         Construct(start: "[CONTINUE]", end: "]", kind: .continuation),
         Construct(start: "<CONTINUE]", end: "]", kind: .continuation),
+        // The externalized checklist for a multi-part request. Its own tag so the whole plan survives
+        // across continuations instead of decaying into a one-line "what still has to happen".
+        Construct(start: "<PLAN>", end: "</PLAN>", kind: .plan),
         // A file the model needs in front of it to answer at all: `[READ:~/Downloads/build.log|why
         // did it fail]`. Its own tag rather than a `[DO:]` because reading is not an act on the
         // user's behalf — it changes nothing on screen — and because the answer comes back in the
@@ -425,6 +432,11 @@ public final class ResponseParser {
                 // shell supplies his own sentence for it. Emitting nothing here would consume the
                 // tag and lose the round, which is the same dead end as not recognising it at all.
                 events.append(.continuation(ResponseParser.continuationBody(hit.inner ?? "")))
+            case .plan:
+                // Consumed, never shown: the checklist is the app's plan, not words for him to read.
+                // An empty plan emits nothing rather than an empty checklist block.
+                let body = (hit.inner ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !body.isEmpty { events.append(.plan(body)) }
             case .read:
                 if let request = ReadRequest.parse(hit.inner ?? "") {
                     events.append(.fileRead(request))

@@ -35,6 +35,10 @@ public final class AnswerStreamer {
     /// open yet — so the caller takes a fresh look and continues the same request unasked.
     public private(set) var continuation: String?
 
+    /// The model's `<PLAN>` checklist, parsed into steps. Kept by the shell outside the message
+    /// history and re-injected on each continuation so the whole task stays in view (plan-and-execute).
+    public private(set) var planSteps: [String] = []
+
     /// The file the model asked to read, if it asked. One per reply: a turn that wants three
     /// files is a turn that should be asked again after the first is in.
     public private(set) var fileRead: ReadRequest?
@@ -115,6 +119,7 @@ public final class AnswerStreamer {
         doneTitle = nil
         nextActions = []
         continuation = nil
+        planSteps = []
         fileRead = nil
         actionRequests = []
         unreadActTags = 0
@@ -281,6 +286,10 @@ public final class AnswerStreamer {
                 // Last one wins, for the same reason as the chips: a repeated block is the model
                 // correcting itself, not a plan that grew.
                 continuation = line
+
+            case .plan(let body):
+                // Last plan wins: a re-emitted checklist is the model replanning, not a second plan.
+                planSteps = TaskPlan.parse(body)
 
             case .note(let line):
                 noteLines.append(line)

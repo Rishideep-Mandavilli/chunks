@@ -741,6 +741,19 @@ else
   printf '  \033[31mFAIL\033[0m  continuation: a launch can end the turn with the rest of the ask unattempted\n'
   fail=$((fail + 1)); failures+=("continuation survives its launch")
 fi
+# The state-grounded pipeline: the model gets the app's published names (observation) and an
+# externalized checklist re-injected each continuation (plan). Both halves are wiring a probe cannot
+# reach without a live turn, so they are asserted where they live.
+if grep -q 'Construct(start: "<PLAN>"' Sources/ChunksKit/Brain/ResponseParser.swift \
+   && grep -q 'currentPlanSteps = streamer.planSteps' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'TaskPlan.block(steps: currentPlanSteps' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'stateDigest: stateDigest' Sources/Chunks/Clicky/CompanionManager.swift; then
+  printf '  \033[32mPASS\033[0m  pipeline: published-state observation and an externalized plan reach the prompt\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  pipeline: the state digest or the plan checklist no longer reaches the model\n'
+  fail=$((fail + 1)); failures+=("state-grounded observe + plan wiring")
+fi
 # A displaced question is a denial, and its held steps must die with it: before this check existed,
 # `pendingProgram` survived displacement and ran when the *next* card was allowed (AUDIT.md A-01).
 # Both card doors log the displacement; both must drop the remainder within the same branch.

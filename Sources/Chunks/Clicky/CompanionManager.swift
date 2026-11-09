@@ -310,6 +310,12 @@ final class CompanionManager: ObservableObject {
     }
     private var heldBehindLaunch: HeldBehindLaunch?
 
+    /// The model's externalized `<PLAN>` checklist for the task in flight, kept outside the message
+    /// history and re-injected on every continuation so a weak model keeps the whole request in view
+    /// instead of re-deriving it from a fresh screenshot (plan-and-execute). Cleared by a new question
+    /// from him and by a turn that ends with nothing left to do.
+    private var currentPlanSteps: [String] = []
+
     /// The model's continuation sentence while a *lone tool* card is outstanding. With asking on the
     /// turn ends at the question, so the round it promised waits for his Allow exactly like a held
     /// plan does. Without this slot, "open WhatsApp and search" on an asking-on machine opened the
@@ -1543,6 +1549,7 @@ final class CompanionManager: ObservableObject {
         let known = memoryStore.injectedBlock()
         var prompt = Self.companionVoiceResponseSystemPrompt
             + "\n\n" + Self.actingRules(askBeforeActing: askBeforeActing)
+            + "\n\n" + Self.planningRules
             + "\n\nwhat i know about this user (from earlier turns):\n"
             + (known.isEmpty ? "(nothing yet)" : known)
         if showingARegion {
@@ -1593,6 +1600,11 @@ final class CompanionManager: ObservableObject {
         // acting, so a stale name is a refusal, never a wrong press.
         if let stateDigest {
             prompt += "\n\n" + stateDigest.text
+        }
+        // The externalized plan, re-injected so a continuation keeps the whole task in view. What has
+        // already happened is in the replay above; the checklist tells the model where to pick up.
+        if let planBlock = TaskPlan.block(steps: currentPlanSteps, done: []) {
+            prompt += "\n\n" + planBlock
         }
         return prompt
     }
@@ -1912,6 +1924,25 @@ final class CompanionManager: ObservableObject {
             one class is still asked about even with this switch off: a control the *app* calls Send, Submit, Pay, Purchase, Delete, Transfer or Confirm. That is a commitment, not navigation, and Chunks puts a card in front of it whatever you were told about asking. So do not end a plan with a send you expect to fire quietly, and never say something was sent, paid or deleted — put the words in the field, say they are ready, and let the user answer the card or ask you again.
             """
     }
+
+    /// How to carry a multi-part request: plan it once, keep the plan in view, do one step per look.
+    ///
+    /// The state digest (when present) lists the exact names the frontmost app answers to, so a step
+    /// should name a control rather than aim at a pixel. The `<PLAN>` checklist is stored outside the
+    /// conversation and re-injected on every continuation, so the model picks up where it left off
+    /// instead of re-deriving the task from a fresh screenshot — the plan-and-execute pattern that
+    /// lets a weak model finish long tasks.
+    static let planningRules = """
+    when a request has several dependent steps, plan before acting: write <PLAN>one line per step, in \
+    order</PLAN>, then do the FIRST step now and carry the rest in <CONTINUE>. Chunks keeps that plan \
+    and shows it back to you on every next look, with what already happened, so continue from the first \
+    step not yet done and never repeat a finished one. Keep each step to a single action you can aim at \
+    the screen you will see next; a step that needs a window that is not open yet goes in <CONTINUE>, \
+    not in this reply.
+    when a block listing what the frontmost app publishes is present, prefer those exact names with \
+    [ACT:app=… name=…] or [TYPE:app=… name=…|…] over pixel coordinates — a name survives a relayout, a \
+    coordinate does not. Use the picture and the 0–1000 grid only for what that list does not contain.
+    """
 
     /// Merge the model's proposed memory change and show what actually happened.
     ///
@@ -3891,6 +3922,8 @@ final class CompanionManager: ObservableObject {
             continuationTask?.cancel()
             continuationTask = nil
             planRound = 0
+            // His new question is a new task: the old checklist must not steer it.
+            currentPlanSteps = []
             // The same rule for a plan still waiting behind a launch card: his new sentence is the
             // end of what the old one was about to do, and a hold that outlives the question it was
             // armed for would resume a plan onto a screen he has just changed the subject of.
@@ -4262,6 +4295,11 @@ final class CompanionManager: ObservableObject {
                 // launch just opened and finishes what he asked, instead of the turn ending at
                 // "Opened WhatsApp." with the search never attempted.
                 let saidNext = streamer.continuation.map { $0.isEmpty ? transcript : $0 }
+                // The externalized checklist: keep the model's whole plan outside the message history
+                // so each continuation re-reads it instead of re-deriving the task from pixels.
+                if !streamer.planSteps.isEmpty {
+                    currentPlanSteps = streamer.planSteps
+                }
                 if let read = streamer.fileRead {
                     let staged = await offerFileRead(read)
                     // A file that arrived *is* a completed step. Without this the round that asked
@@ -4288,6 +4326,12 @@ final class CompanionManager: ObservableObject {
                 if consentGate.isPending, heldAfterLaunch == nil, pendingProgram == nil,
                    let next = pendingContinuation, !next.isEmpty {
                     continuationBehindTool = HeldBehindLaunch(instruction: next, source: source)
+                }
+                // A turn with nothing left to do ends the task: the checklist must not leak into his
+                // next, unrelated question. A pending card, program or hold means it is still live.
+                if pendingContinuation == nil, pendingProgram == nil, heldBehindLaunch == nil,
+                   !consentGate.isPending {
+                    currentPlanSteps = []
                 }
                 // A round that asked for nothing to happen is not a failed step — it is a look that
                 // found nothing yet. Once a plan is genuinely under way, that deserves another look

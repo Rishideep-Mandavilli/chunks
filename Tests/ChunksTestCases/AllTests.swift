@@ -52,5 +52,6 @@ public func runAllChunksTests() -> Bool {
     CaptionLineTests.register()
     KeyActionTests.register()
     ScreenStateDigestTests.register()
+    TaskPlanTests.register()
     return TestRunner.run()
 }

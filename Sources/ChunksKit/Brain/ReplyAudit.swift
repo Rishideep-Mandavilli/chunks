@@ -218,6 +218,7 @@ public struct ReplyAudit: Sendable {
         ("SAY", "<SAY>"), ("MEMORY", "<MEMORY>"), ("SUMMARY", "<SUMMARY>"),
         ("DONE_TITLE", "<DONE_TITLE>"), ("NEXT_ACTIONS", "<NEXT_ACTIONS>"),
         ("CONTINUE", "<CONTINUE>"), ("DRAFT", "<DRAFT>"), ("NOTE", "<NOTE>"),
+        ("PLAN", "<PLAN>"),
         // The bracket mistakes a small model makes with the one tag that carries the turn onward.
         // Photographed 2026-11-07: `[CONTINUE>` ended a reply, sat on the card as prose, and the
         // second round never ran. The audit has to witness these shapes too, or a regression that
@@ -243,6 +244,7 @@ public struct ReplyAudit: Sendable {
         case "DONE_TITLE": field = streamer.doneTitle == nil ? "" : "the card's label"
         case "NEXT_ACTIONS": field = streamer.nextActions.isEmpty ? "" : "the chips"
         case "CONTINUE": field = streamer.continuation == nil ? "" : "the next round"
+        case "PLAN": field = streamer.planSteps.isEmpty ? "" : "the externalized plan"
         case "DRAFT": field = streamer.draftText == nil ? "" : "the copy well"
         case "NOTE": field = streamer.noteLines.isEmpty ? ""
             : "\(streamer.noteLines.count) note(s) for the notebook"

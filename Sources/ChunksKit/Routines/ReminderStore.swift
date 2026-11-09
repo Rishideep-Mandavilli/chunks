@@ -325,12 +325,40 @@ public struct ReminderStore: Equatable, Sendable {
     // MARK: - The file
 
     public static func decode(_ data: Data) -> [Reminder] {
+        bounded(data).kept
+    }
+
+    /// What a hand-edited file asked for that the store will not honour, in the same words the add
+    /// path uses. The reader is held to `validate`'s bounds (AUDIT.md D-07): a file edited to fifty
+    /// overdue lines would otherwise take fifty minutes to drain at one fire a minute, and a line
+    /// longer than the card can show is a promise nobody finished reading.
+    public static func decodeRefusals(_ data: Data) -> [String] {
+        bounded(data).refused
+    }
+
+    private static func bounded(_ data: Data) -> (kept: [Reminder], refused: [String]) {
         guard let decoded = try? JSONDecoder.reminders().decode([Reminder].self, from: data)
-        else { return [] }
-        // A hand-edited line that says nothing is dropped rather than firing an empty card; a line
-        // whose time has gone is kept, because "it was due at 09:00 and arrives when the Mac wakes"
-        // is a truer report than losing the promise without a word.
-        return decoded.filter { !$0.text.isEmpty }.sorted { $0.fireAt < $1.fireAt }
+        else { return ([], []) }
+        var kept: [Reminder] = []
+        var refused: [String] = []
+        // A line whose time has gone is kept, because "it was due at 09:00 and arrives when the Mac
+        // wakes" is a truer report than losing the promise without a word.
+        for reminder in decoded.sorted(by: { $0.fireAt < $1.fireAt }) {
+            let clean = reminder.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if clean.isEmpty {
+                refused.append("a reminder with no words")
+            } else if clean.count > maxTextCharacters {
+                refused.append("a reminder longer than \(maxTextCharacters) characters")
+            } else if !SecretSweeper.inspect(clean).isAcceptable {
+                refused.append("a reminder that holds a credential")
+            } else if kept.count >= maxReminders {
+                refused.append("more than \(maxReminders) reminders")
+            } else {
+                kept.append(Reminder(id: reminder.id, text: clean,
+                                     fireAt: reminder.fireAt, createdAt: reminder.createdAt))
+            }
+        }
+        return (kept, refused)
     }
 
     public func encoded() -> Data? {

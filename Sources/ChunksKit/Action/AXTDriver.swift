@@ -2270,7 +2270,9 @@ public enum AXTDriver {
         // Catalyst at all, and the keystrokes still go to UIKit's own first responder.
         if target.viaFirstResponder {
             post(text)
-            return .typed(element: target.info, characters: text.count)
+            // No witness exists here by construction — the app cannot name its own cursor — so the
+            // report must say posted-and-unconfirmed, not typed (AUDIT.md A-05).
+            return .postedUnverified(appName: target.info.appName, characters: text.count)
         }
         // `focusedFieldMatches` is the escape hatch for an app that cannot name its own cursor.
         // WhatsApp answers `AXFocusedUIElement` with a content group the size of the window, so
@@ -2785,7 +2787,10 @@ public enum AXTDriver {
             return .refusedByElement(element: target.info, action: target.action,
                                      code: refusal ?? Int(AXError.failure.rawValue))
         }
-        return .scrolled(element: target.info, direction: direction, pages: pages,
+        // Report what moved, not what was asked: a scroller that refused after one page must not
+        // read "Scrolled … by 3 pages" (AUDIT.md A-09).
+        let reported = target.movesPages ? completed : max(1, completed / linesPerPage)
+        return .scrolled(element: target.info, direction: direction, pages: reported,
                          action: target.action)
     }
 }

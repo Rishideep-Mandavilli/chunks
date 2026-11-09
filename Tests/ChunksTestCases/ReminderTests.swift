@@ -215,6 +215,36 @@ public enum ReminderTests {
                         "a corrupt file must read as no reminders, not as a crash")
         }
 
+        test("a hand-edited file is held to the add path's bounds, and says what it refused") {
+            // The init sorts but does not validate, so this is how a file edited past the limits
+            // looks on disk: ten lines, one over-long, one carrying a key.
+            var crafted: [Reminder] = (0..<10).map {
+                Reminder(text: "reminder \($0)", fireAt: noon.addingTimeInterval(Double($0) * 60))
+            }
+            crafted.append(Reminder(text: String(repeating: "x", count: 70),
+                                    fireAt: noon.addingTimeInterval(3_600)))
+            crafted.append(Reminder(text: "sk-abcdefghijklmnopqrst",
+                                    fireAt: noon.addingTimeInterval(7_200)))
+            guard let data = ReminderStore(reminders: crafted).encoded() else {
+                expect(false, "encoding failed, so the reader cannot be tested")
+                return
+            }
+            let kept = ReminderStore.decode(data)
+            expectEqual(kept.count, ReminderStore.maxReminders,
+                        "an unbounded file would drain one a minute for far longer than the store allows")
+            expect(kept.allSatisfy { $0.text.count <= ReminderStore.maxTextCharacters },
+                   "an over-long line survived and would be clipped on the card he approved")
+            expect(!kept.contains { $0.text.hasPrefix("sk-") },
+                   "a credential reached the fire path from a hand-edited file")
+            let refused = ReminderStore.decodeRefusals(data)
+            expect(refused.contains { $0.contains("more than") },
+                   "the count cap was enforced but never reported: \(refused)")
+            expect(refused.contains { $0.contains("longer than") },
+                   "the over-long line was dropped without a word: \(refused)")
+            expect(refused.contains { $0.contains("credential") },
+                   "the secret was dropped without a word: \(refused)")
+        }
+
         // MARK: - The tag
 
         test("the remind tag parses one command and refuses every other shape") {

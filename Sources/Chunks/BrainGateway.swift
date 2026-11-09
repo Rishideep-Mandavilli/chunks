@@ -449,7 +449,6 @@ final class BrainGateway {
                             + " — not retried")
                         throw error
                     }
-                    lastError = error
                     let waited = Date().timeIntervalSince(attemptStarted)
                     // The hedge asks two models at once, so the error arriving here may belong to
                     // neither of the ones this loop is nominally standing on. Unwrap it once: the
@@ -463,6 +462,11 @@ final class BrainGateway {
                     } else {
                         refused = (candidate.id, error)
                     }
+                    // The wrapper never escapes the chain: it exists to attribute a hedge refusal,
+                    // and a card that reads "HedgedFailure error 1" is the same lie as an
+                    // unattributed log line (AUDIT.md B-04). What the user is told is the failure
+                    // underneath, in the words of the type that knows how to say it.
+                    lastError = refused.error
                     let kind = classify(refused.error)
                     if case .badRequest(let detail) = kind,
                        RetryPolicy.rejectsThinkingLevel(detail), thinkingLevelAccepted {
@@ -507,7 +511,7 @@ final class BrainGateway {
                         Log.write("turn: switching away from \(candidate.id) to \(next)")
                         continue modelLoop
                     case .fail:
-                        throw error
+                        throw refused.error
                     }
                 }
             }
@@ -560,6 +564,10 @@ final class BrainGateway {
         var candidates: [BrainModel] = [chosen]
         candidates += resolution.provider.models.filter { model in model.id != chosen.id }
         var lastFailure: Error?
+        // The same ceiling the cloud chain carries, measured from the moment he asked. Offline used
+        // to allow 75s per model with no total, so a cold model followed by a slow one could hold the
+        // turn for minutes while the 60s promise was Gemini-only (AUDIT.md B-06).
+        let deadline = started.addingTimeInterval(Self.turnBudgetSeconds)
         // The same fence as the cloud chain: a local model that emitted half a reply and then
         // stalled must not have the next model's words and act tags appended to it (AUDIT.md R-06).
         let emitted = EmittedFlag()
@@ -568,6 +576,13 @@ final class BrainGateway {
             onTextChunk(delta)
         }
         for candidate in candidates {
+            // A spent budget is not another model's turn: starting one would only prove the same
+            // expiry again, the way the cloud loop's floor-once-spent bug spent three 8s slices.
+            if Date() >= deadline {
+                Log.write("brain: local turn budget spent after "
+                    + "\(String(format: "%.1f", Date().timeIntervalSince(started)))s — failing honestly")
+                break
+            }
             if emitted.any {
                 Log.write("brain: a local model wrote part of this reply — resetting the card "
                     + "before \(candidate.id) writes")
@@ -579,7 +594,7 @@ final class BrainGateway {
                                               systemPrompt: systemPrompt, history: history,
                                               userPrompt: userPrompt, images: images,
                                               silenceIsRetryable: true,
-                                              started: started, onTextChunk: chunk)
+                                              started: started, deadline: deadline, onTextChunk: chunk)
             } catch {
                 lastFailure = error
                 // One model refusing is not the server failing: `qwen3-vl:8b` here has a
@@ -611,6 +626,7 @@ final class BrainGateway {
         images: [(data: Data, label: String)],
         silenceIsRetryable: Bool,
         started: Date,
+        deadline: Date,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval) {
         let isOllama = provider.id == "ollama"
@@ -641,9 +657,11 @@ final class BrainGateway {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         // Generous, because a local model evicted from RAM spends the first minute loading
-        // weights — but bounded, because a model slower than this is not the answer the user is
-        // waiting for and the next local model gets its turn instead.
-        request.timeoutInterval = 75
+        // weights — but never longer than the turn has left. The header wait is part of the wait
+        // the user is paying, so it is bounded by the same deadline as the stream (AUDIT.md B-06);
+        // a flat 75 here let one cold model hold the whole turn past the promise before the next
+        // model was even asked.
+        request.timeoutInterval = min(75, max(1, deadline.timeIntervalSinceNow))
 
         Log.write("brain: local turn → \(provider.displayName)/\(model.id)"
             + " · \(images.count) image(s), \(images.reduce(0) { $0 + $1.data.count } / 1024) KB")
@@ -676,6 +694,14 @@ final class BrainGateway {
         var accumulated = ""
         var streamFailure: String?
         for try await line in bytes.lines {
+            // The idle timeout resets on every byte, so a trickling local stream could otherwise
+            // run forever. The turn's own expiry is checked here, exactly as the cloud chain does,
+            // and a spent budget is this model's slowness — the next one gets whatever is left.
+            if Date() > deadline {
+                Log.write("brain: local turn spent its \(Int(Self.turnBudgetSeconds))s budget on "
+                    + "\(model.id) — stopping the stream")
+                throw URLError(.timedOut)
+            }
             let events = isOllama
                 ? OllamaTransport.parse(line: String(line))
                 : OpenAIStreamParser.parse(line: String(line))

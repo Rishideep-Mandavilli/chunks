@@ -355,6 +355,16 @@ final class CompanionManager: ObservableObject {
     /// it is not stuck, it is being read.
     static let turnWatchdogSeconds: Double = 70
 
+    /// The longest an act he already approved may sit with no outcome before the card says so.
+    ///
+    /// The turn watchdog above stands down once the card has an answer on it, and the press that
+    /// runs *after* Allow is a fresh task with no deadline of its own — an Accessibility call that
+    /// parks there left the answered card stale forever (AUDIT.md C-07). Fifteen clears the longest
+    /// honest act (a chunked six-thousand-character type, a press waiting 2.5 s to see if it landed)
+    /// with room, and is far under the turn's own ceiling. It can only correct the report: the parked
+    /// call is not killed, so the line says to look rather than claiming the press did not happen.
+    static let actWatchdogSeconds: Double = 15
+
     /// The round of the current plan, and whether this turn is one of its own continuations.
     private var planRound = 0
 
@@ -892,6 +902,14 @@ final class CompanionManager: ObservableObject {
         startNewSession(starting: .launch)
         startSleepObservation()
         startRoutineScheduler()
+        // A hand-edited reminders file is held to the add path's own bounds; say what was refused
+        // rather than silently draining fifty overdue lines one a minute (AUDIT.md D-07).
+        if let data = try? Data(contentsOf: ReminderStore.defaultURL) {
+            let refused = ReminderStore.decodeRefusals(data)
+            if !refused.isEmpty {
+                Log.write("reminders: refused on load — " + refused.joined(separator: "; "))
+            }
+        }
         // The notch draws a Copy button over a drafted message; the pasteboard is shell work, so the
         // card is told where the tap goes rather than reaching for one itself.
         hud.onCopyDraft = { [weak self] in self?.copyDraftToClipboard() }
@@ -2594,7 +2612,25 @@ final class CompanionManager: ObservableObject {
             // new turn's acts in an order nobody approved (AUDIT.md A-10).
             let epoch = turnEpoch
             Task {
-                let result = await runAct(act, at: pending.axPoint, approved: pending.element)
+                let result: (line: String, happened: Bool)
+                do {
+                    result = try await withDeadline(Self.actWatchdogSeconds) {
+                        await self.runAct(act, at: pending.axPoint, approved: pending.element)
+                    }
+                } catch {
+                    // The approved act parked. The turn watchdog no longer covers this card, so the
+                    // deadline is armed here (AUDIT.md C-07). The epoch moves on so the call, if it
+                    // ever wakes, walks away instead of reporting over the line below — the same
+                    // "let the parked call finish alone" the turn watchdog uses.
+                    guard self.turnEpoch == epoch else { return }
+                    self.turnEpoch += 1
+                    Log.writeCritical("act: watchdog — \(Int(Self.actWatchdogSeconds))s with no outcome "
+                                      + "on the approved act; letting the parked call finish alone")
+                    self.hud.noteActsDone()
+                    self.hud.reportConfirm("Chunks acted, but the app did not answer in time — "
+                                           + "look at it to be sure.")
+                    return
+                }
                 guard self.turnEpoch == epoch else { return }
                 guard result.happened else {
                     self.hud.noteActsDone()
@@ -2832,13 +2868,18 @@ final class CompanionManager: ObservableObject {
                           approved: AXElementInfo) async -> (line: String, happened: Bool) {
         if let point = act.pointerClickPoint {
             // No re-read-and-compare here, because there is no element to compare — what he approved
-            // is the place, and the place is what is clicked.
+            // is the place, and the place is what is clicked. But a window can move between the card
+            // and the answer, so the outcome names what was actually under the point (AUDIT.md A-14).
+            let under = await driver({ AXTDriver.elementAt(point) })
             let clicked = await driver({ AXTDriver.click(at: point) })
-            let line = clicked ? "Clicked the area at (\(Int(point.x)),\(Int(point.y)))."
+            let what = under.map { "\($0.appName ?? "pid \($0.pid)") \($0.role ?? "-")" }
+                ?? "nothing the hit test can see"
+            let line = clicked ? "Clicked the area at (\(Int(point.x)),\(Int(point.y))) — \(what)."
                                : "The click could not be posted."
             hud.reportConfirm(line)
             Log.write("act: pointer click at (\(point.x), \(point.y)) — "
-                + (clicked ? "both events posted" : "event source refused"))
+                + (clicked ? "both events posted" : "event source refused")
+                + " under=\(what)")
             return (line, clicked)
         }
         guard let now = await pressTargetNow(act, at: axPoint) else {

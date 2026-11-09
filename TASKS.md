@@ -24,6 +24,9 @@ sees when it is missing, you do not understand the item yet.
   and `--probe-reply --local`. What stays fixed is the bug those probes had (they wrote the app's real
   brain settings; now `BrainSettings.processOverride`, asserted by a contract check). The one skip is the
   standing Shortcuts-window one; the Chrome-candidate check came back PASS, which is window geometry.
+  *(These counts are a dated snapshot, not the live baseline — that lives in AGENTS.md › Current state
+  and is whatever `swift run chunks-test` and `./scripts/verify.sh` print today. Earlier revisions of
+  this header and of §3.18 carried different numbers; they were snapshots too, not claims about now.)*
 - **`--probe-local` is a live-model check and it can go red for nobody's action.** Measured the same
   day: one gate run returned 37 passed / 1 FAILED on it, and the next direct run of the same binary
   passed all five of its turns. It grades what a local model answers in that second — an `[ACT:]` or
@@ -399,15 +402,15 @@ None of it needs a policy decision and all of it is prerequisite to everything e
 
 - **Enrol in the Apple Developer Program** — US$99/year, and it needs a Mac-app-store-free
   individual/team account. Until that exists, nothing below can be tested.
-- **Universal binary.** `.build` is `arm64` only (`lipo -archs` confirms). Intel buyers are still a
-  real population on macOS 15; build `arm64 + x86_64` or state plainly that Intel is unsupported.
-- **Fix the version lie.** `Package.swift` declares `.macOS("15.2")` while the generated plist promises
-  `LSMinimumSystemVersion 14.2` — the bundle claims it runs on a system the code was not built for.
-  Pick one number and make both say it. This is free and it is a bug.
-- **Hardened runtime + entitlements.** There is **no entitlements file at all** today
-  (`codesign -dv` reports `flags=0x0`, `TeamIdentifier not set`). Add one with exactly what the app
-  uses — screen capture, accessibility, microphone, Keychain access groups, and the network client —
-  and sign with `--options runtime`.
+- **Universal binary. — DONE.** `make-app.sh` builds arm64 + x86_64 in separate scratch paths and
+  joins them with `lipo`; `verify.sh` asserts both arches per run. (This bullet predated that work.)
+- **Fix the version lie. — DONE.** `LSMinimumSystemVersion` is derived from `Package.swift` (15.2),
+  and `verify.sh` asserts the plist, each arch's `minos` and the package target are one number.
+- **Hardened runtime + entitlements. — DONE.** `scripts/Chunks.entitlements` exists and holds only
+  `com.apple.security.device.audio-input` (screen capture / Accessibility / Input Monitoring are TCC
+  grants, not entitlements; the Keychain/network sandbox keys do not apply to a non-sandboxed app).
+  The seal is `--options runtime` and `verify.sh` asserts the signed entitlements equal that file
+  exactly, per architecture.
 - **Developer ID + notarisation.** Replace the self-signed "Chunks Local" identity with a real
   Developer ID, then `notarytool submit --wait` and `stapler staple`. **This is the step that changes
   the product's behaviour on other people's machines**: the whole signing story in `AGENTS.md` exists
@@ -1156,7 +1159,7 @@ multi-agent layer he scoped out on day one, and the thing that would make this a
 app. Connectors and hosted speech models — a proxy is the one architecture that triggers Google's CASA
 assessment and puts the sellability argument at risk. Documents beside the chat — an artifact, on the ❌
 list. **Where Chunks is ahead, measured against the same list:** BYOK with no account, no billing and no
-quota emails; an offline tier they do not have; 818 tests and a 48-check gate they do not publish; memory
+quota emails; an offline tier they do not have; 863 tests and a 61-check gate they do not publish; memory
 with provenance and a secret sweeper, where their changelog says "remembers"; it never moves his pointer,
 where their drive does; and every claim about an act derived from the effect on screen rather than from a
 return code — which is the difference between the two features above and the three bugs his screenshots

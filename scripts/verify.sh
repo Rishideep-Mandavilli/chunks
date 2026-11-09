@@ -28,6 +28,12 @@ printf 'render artifacts: %s\n' "$RENDER_DIR"
 pass=0; fail=0; skip=0
 declare -a failures=()
 
+# The suite must actually contain the suite. `0/0 passed` exits 0 and used to PASS this gate, so an
+# empty or gutted registry read as green (AUDIT.md F-07). The floor sits far under the real count
+# (863 at the time of writing) and far over zero; raise it as the suite grows, never to match a
+# shrink that was not deliberate.
+SUITE_FLOOR=800
+
 # check <label> <command…> — a step passes when it exits 0 and wrote something to stdout.
 # Exit 3 means "this machine is fine, the service is not" — the self-test uses it when the free
 # tier is refusing requests. Counted as a skip, because a red line for something nobody changed
@@ -80,12 +86,17 @@ echo
 echo "unit tests"
 out="$(swift run chunks-test 2>&1)"; status=$?
 line="$(printf '%s' "$out" | grep -E '^[0-9]+/[0-9]+ passed' | tail -1)"
-if [[ $status -eq 0 && -n "$line" ]]; then
+passed_count="${line%%/*}"
+if [[ $status -eq 0 && -n "$line" && "$passed_count" =~ ^[0-9]+$ && passed_count -ge SUITE_FLOOR ]]; then
   printf '  \033[32mPASS\033[0m  %s\n' "$line"
   printf '%s\n' "$out" | grep '⊘' || true
   pass=$((pass + 1))
 else
   printf '  \033[31mFAIL\033[0m  %s\n' "${line:-the suite failed}"
+  if [[ -n "$line" && "$passed_count" =~ ^[0-9]+$ && passed_count -lt SUITE_FLOOR ]]; then
+    printf '        only %s passed — the floor is %s, so the registry is empty or gutted\n' \
+      "$passed_count" "$SUITE_FLOOR"
+  fi
   printf '%s\n' "$out" | grep '✗' | head -10 | sed 's/^/        /'
   fail=$((fail + 1)); failures+=("unit tests")
 fi
@@ -549,7 +560,9 @@ echo "the safety contract, asserted not assumed"
 # `driver { }` hop is a 150 ms wait on the main thread again, which is the ground a later callback
 # crashes on. The type names and the pure helpers are listed because they read nothing from another
 # process; `fieldLabel` and `isTrusted` are one attribute each and stay where they are.
-ax_unhopped="$(grep -n 'AXTDriver\.' Sources/Chunks/Clicky/CompanionManager.swift \
+# The sweep covers the whole shell, not one file: a new shell file calling AXTDriver synchronously
+# used to pass this gate untouched (AUDIT.md F-11). Probes are exempt — they run before any run loop.
+ax_unhopped="$(grep -n 'AXTDriver\.' $(find Sources/Chunks -name '*.swift' ! -name '*Probe*') \
   | grep -v 'driver({' \
   | grep -vE 'AXTDriver\.(PressResult|TypeResult|ScrollResult|SemanticMiss|RankedPress|PressTarget|TypeTarget|ScrollTarget|PressSnapshot|isTrusted|fieldLabel|appNamesMatch|isAmbiguousFailure|waitForLanding)' \
   | grep -vE ':[[:space:]]*(///|//)' || true)"
@@ -592,8 +605,10 @@ PY
 # The overlay that locked his Mac is the one regression that must never come back: a full-screen
 # surface that takes the mouse without a way out.
 # `NSApp.activate` is allowed to appear in that file's *comments* — it explains why the call is
-# absent — so the check looks for a call site, not the string.
-if grep -q "_setPreventsActivation" Sources/Chunks/Annotate/AnnotationOverlay.swift \
+# absent — so the check looks for a call site, not the string. Both halves strip comment lines: a
+# comment containing `_setPreventsActivation` used to satisfy the first half even with the real call
+# deleted (AUDIT.md F-12).
+if grep -vE '^\s*//' Sources/Chunks/Annotate/AnnotationOverlay.swift | grep -q "_setPreventsActivation" \
    && ! grep -vE '^\s*//' Sources/Chunks/Annotate/AnnotationOverlay.swift | grep -q "NSApp\.activate("; then
   printf '  \033[32mPASS\033[0m  the annotation overlay still never activates the app\n'
   pass=$((pass + 1))
@@ -647,15 +662,24 @@ fi
 # *thread* but not inside the main actor's executor, which is exactly what a run-loop timer is. Every
 # callback this app does not own must hop with `Task { @MainActor in … }` instead. Probe files are
 # exempt: they run before any run loop exists and exit without returning.
-if awk '
+# The watch tracks the callback's brace depth, not a fixed line window: a four-line window missed an
+# assertion on the sixth line of a longer closure, and an empty `find` passed silently (F-09).
+callback_files="$(find Sources/Chunks Sources/ChunksKit -name '*.swift' ! -name '*Probe*')"
+if [[ -z "$callback_files" ]]; then
+  printf '  \033[31mFAIL\033[0m  the callback sweep found no source files — it checked nothing\n'
+  fail=$((fail + 1)); failures+=("main-actor assertion in a callback")
+elif awk '
   /^[[:space:]]*(\/\/|\*)/ { next }   # comments describe the rule; they are not instances of it
-  /Timer\(timeInterval|addObserver\(forName|scheduledTimer\(/ { watching = 4 }
-  watching > 0 && /MainActor\.assumeIsolated/ {
-    print FILENAME ":" FNR ": " $0; bad++
+  /Timer\(timeInterval|addObserver\(forName|scheduledTimer\(/ { watching = 1; depth = 0; entered = 0 }
+  watching > 0 {
+    opens = gsub(/{/, "{"); closes = gsub(/}/, "}")
+    depth += opens - closes
+    if (opens > 0) entered = 1
+    if (/MainActor\.assumeIsolated/) { print FILENAME ":" FNR ": " $0; bad++ }
+    if (entered && depth <= 0) watching = 0
   }
-  watching > 0 { watching-- }
   END { exit (bad ? 1 : 0) }
-' $(find Sources/Chunks Sources/ChunksKit -name '*.swift' ! -name '*Probe*') 2>/dev/null; then
+' $callback_files 2>/dev/null; then
   printf '  \033[32mPASS\033[0m  no timer or observer asserts the main actor — they hop it\n'
   pass=$((pass + 1))
 else
@@ -667,7 +691,11 @@ fi
 # gate run left his stored brain on Ollama and `--probe-protocol` then graded the production prompt
 # against a 2B model and reported three tag families lost. The probes use `BrainSettings
 # .processOverride` now, and this check fails if anyone puts the persistence back.
+# The direct-write grep alone missed the same regression through a computed setter (F-10): assigning
+# `BrainSettings.preferredModel`/`.voiceOutput`, storing a key, or flipping the login item all persist
+# without ever naming `UserDefaults.standard.set` in the probe file. Those doors are banned too.
 if ! grep -qE 'UserDefaults\.standard\.(set|removeObject)' Sources/Chunks/*Probe*.swift \
+   && ! grep -qE 'BrainSettings\.(preferredModel|voiceOutput)[[:space:]]*=|BrainSettings\.set(Gemini|BackupGemini)Key|LoginItem\.set\(' Sources/Chunks/*Probe*.swift \
    && grep -q 'processOverride' Sources/Chunks/LocalBrainProbe.swift; then
   printf '  \033[32mPASS\033[0m  no probe writes the settings it only means to read\n'
   pass=$((pass + 1))
@@ -785,6 +813,27 @@ else
     "$crash_status"
   printf '        %s\n' "$(printf '%s' "$crash_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
   fail=$((fail + 1)); failures+=("crash breadcrumb")
+fi
+# The flagship sharing-safety property, exercised in its denied state (AUDIT.md F-13). The whole gate
+# runs with CHUNKS_DEV=1, so every probe above is enabled; nothing ever asked whether a *release*
+# build without that env actually refuses. It must: a copied .app ships no door. Only a release
+# compile exercises the `#else` of `developmentToolsAllowed`, so this builds the executable in release
+# and requires the development-only refusal (exit 2) with the env unset. The refusal happens in init,
+# before any TCC, so the bare binary needs no grant to prove it.
+echo "release inertness"
+if swift build -c release --product chunks >/dev/null 2>&1; then
+  rel_out="$(env -u CHUNKS_DEV .build/release/chunks --probe-ax 100,100 2>&1)"; rel_status=$?
+  if [[ $rel_status -eq 2 ]] && printf '%s' "$rel_out" | grep -q "development-only"; then
+    printf '  \033[32mPASS\033[0m  a release build without CHUNKS_DEV refuses the probes (exit 2)\n'
+    pass=$((pass + 1))
+  else
+    printf '  \033[31mFAIL\033[0m  a release build ran a probe without CHUNKS_DEV (exit %s) — sharing ships a door\n' \
+      "$rel_status"
+    fail=$((fail + 1)); failures+=("release probe inertness")
+  fi
+else
+  printf '  \033[31mFAIL\033[0m  the release build did not compile, so inertness was not exercised\n'
+  fail=$((fail + 1)); failures+=("release probe inertness")
 fi
 echo
 

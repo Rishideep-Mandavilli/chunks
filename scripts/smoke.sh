@@ -4,10 +4,15 @@
 # Why this exists separately from `verify.sh`: the crash of 2026-11-03 (SIGSEGV in a routine-timer
 # block) passed the whole gate. The gate runs probes that exit within a second each; the app died on a
 # tick 60 seconds later, while it was running for real. **A check that finishes before the thing it is
-# checking can fail is not a check.** So this one launches the installed bundle, leaves it alive longer
-# than the routine tick, arms a reminder and a routine so the scheduler has work to do, walks every
+# checking can fail is not a check.** So this one launches the installed bundle and leaves it alive
+# longer than the routine tick — the scheduler's timer block runs every 60 s whether or not anything is
+# due, which is the code that crashed — confirms the support folder the schedule lives in, walks every
 # read-only probe against the *same process*, and then asks the two questions a user can ask:
 # is it still running, and did macOS write a crash report.
+#
+# It does not arm a reminder or a routine: writing one would leave a real schedule behind in his app
+# and speak a line at him mid-test, and the tick crash is in the timer block itself, which fires with
+# an empty schedule too. An earlier header claimed it armed fixtures; it never did (AUDIT.md F-04).
 #
 # It also re-checks the claims that are cheap to lie about — that a probe which says it read nothing
 # really changed nothing on disk — because those are the ones that rot quietly.
@@ -52,8 +57,9 @@ if [[ -z "$pid" ]]; then
 fi
 ok "started, pid $pid"
 
-# Arm something so the scheduler has real work on its next tick. A reminder is the safe one: firing it
-# captures no screen, calls no model and presses nothing — it puts a line on the card and speaks it.
+# Confirm the folder the schedule lives in exists. Nothing is armed here on purpose (see the header):
+# the tick's timer block runs with an empty schedule too, and writing a fixture would leave a real
+# reminder behind and speak a line at him mid-test.
 arm_dir="$HOME/Library/Application Support/Chunks"
 if [[ -d "$arm_dir" ]]; then
   ok "the app's own support folder is where the schedule lives"

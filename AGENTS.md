@@ -1311,8 +1311,8 @@ session down with it, and a stale bundle that does not know the flag launches th
 
 ## Current state
 
-**The app runs. 847 of 847 tests green across 47 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 55 checks: 54 pass and 1 skip,
+**The app runs. 863 of 863 tests green across 47 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 61 checks: 59 pass and 2 skip,
 and the ones that move are the live model round and the Chrome candidate sweep, never a check that
 went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red

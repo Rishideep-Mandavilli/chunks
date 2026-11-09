@@ -100,6 +100,7 @@ public final class TestRunner {
         outcomes.removeAll()
         var currentSuite = ""
         var skippedNames: [String] = []
+        var failedTests = 0
         for c in registered {
             if c.suite != currentSuite {
                 currentSuite = c.suite
@@ -120,6 +121,7 @@ public final class TestRunner {
             } else if failures.isEmpty {
                 print("  ✓ \(c.name)")
             } else {
+                failedTests += 1
                 print("  ✗ \(c.name)")
                 for f in failures { print("      \(f)") }
             }
@@ -128,9 +130,10 @@ public final class TestRunner {
             if case .failure(let f) = entry { return f } else { return nil }
         }
         let total = registered.count
-        let failed = Set(failures.map { "\($0.file):\($0.line)" }).count
         let ran = total - skippedNames.count
-        print("\n\(ran - failed)/\(total) passed" + (skippedNames.isEmpty ? "" : ", \(skippedNames.count) SKIPPED"))
+        // Per-test, not per assertion site: one test with three failing expects used to subtract
+        // three from the headline, so "N/M passed" drifted from the suite's real health (F-08).
+        print("\n\(ran - failedTests)/\(total) passed" + (skippedNames.isEmpty ? "" : ", \(skippedNames.count) SKIPPED"))
         if !skippedNames.isEmpty {
             // Printed every time, not hidden behind a flag: a green number that quietly excludes
             // checks is how a suite stops meaning anything.

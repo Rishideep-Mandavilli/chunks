@@ -137,11 +137,30 @@ final class BrainGateway {
     /// next launch, rather than a model that never accepts it being asked forever.
     private var thinkingRejected: Set<String> = []
 
+    // The hedge and the chain loop touch these from beside the main actor; a Dictionary/Set mutated
+    // from two tasks is a crash or a lost update, not a slow path (AUDIT.md B-07). RateLimiter locks
+    // itself; the collections that hold them need the same discipline.
+    private let stateLock = NSLock()
+
     private func limiter(for modelID: String) -> RateLimiter {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         if let existing = rateLimiters[modelID] { return existing }
         let fresh = RateLimiter()
         rateLimiters[modelID] = fresh
         return fresh
+    }
+
+    private func rejectsThinking(_ modelID: String) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return thinkingRejected.contains(modelID)
+    }
+
+    private func noteThinkingRejected(_ modelID: String) {
+        stateLock.lock()
+        thinkingRejected.insert(modelID)
+        stateLock.unlock()
     }
 
     /// Wall-clock ceiling for walking the whole fallback chain. A healthy free-tier turn on this
@@ -315,7 +334,7 @@ final class BrainGateway {
             // so the field this app added to halve latency killed the reply instead. The retry that
             // can clear is the one that changes the request, not the one that changes the model: the
             // first rejection drops the field for this model and asks the same model again.
-            var thinkingLevelAccepted = !thinkingRejected.contains(candidate.id)
+            var thinkingLevelAccepted = !rejectsThinking(candidate.id)
             // Stop before the wait outruns the person waiting. Measured 2026-10-15: a turn spent
             // 281s because one model was allowed to run its full timeout three times, and answered
             // in the last 6 of them. Anything still untried at the budget is a model that was not
@@ -453,7 +472,7 @@ final class BrainGateway {
                         // its own model inside `hedged`, which caches the diet for the one that
                         // actually rejected it. What is left here is the lead's own retry, where the
                         // field is dropped and the same model is asked again within the turn.
-                        if index != 0 { thinkingRejected.insert(refused.model) }
+                        if index != 0 { noteThinkingRejected(refused.model) }
                         // Said out loud, because a turn that succeeds on the second attempt looks like
                         // a slow turn in the log and a model that cannot be told to think less looks
                         // like a contended one.
@@ -864,7 +883,7 @@ final class BrainGateway {
                         + "\(String(format: "%.1f", Date().timeIntervalSince(started)))s — "
                         + kind.logName)
                     if case .badRequest(let detail) = kind, RetryPolicy.rejectsThinkingLevel(detail) {
-                        thinkingRejected.insert(model)
+                        noteThinkingRejected(model)
                     }
                 case .abstained, .none:
                     break

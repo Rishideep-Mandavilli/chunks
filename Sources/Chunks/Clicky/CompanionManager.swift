@@ -2590,8 +2590,12 @@ final class CompanionManager: ObservableObject {
             // outcome line reaches the card and the log from inside `runAct` either way.
             let program = pendingProgram
             pendingProgram = nil
+            // His next question ends this plan: an answered card's steps must not interleave with a
+            // new turn's acts in an order nobody approved (AUDIT.md A-10).
+            let epoch = turnEpoch
             Task {
                 let result = await runAct(act, at: pending.axPoint, approved: pending.element)
+                guard self.turnEpoch == epoch else { return }
                 guard result.happened else {
                     self.hud.noteActsDone()
                     return
@@ -2601,6 +2605,7 @@ final class CompanionManager: ObservableObject {
                     return
                 }
                 try? await Task.sleep(nanoseconds: Self.stepSettleDelay)
+                guard self.turnEpoch == epoch else { return }
                 _ = await self.offerProgram(program.steps,
                                             screenCaptures: program.screenCaptures,
                                             doneCount: program.doneCount,
@@ -2619,11 +2624,14 @@ final class CompanionManager: ObservableObject {
             // the plan as a sentence for the next look, and only a launch that *happened* earns one.
             let held = heldBehindLaunch
             heldBehindLaunch = nil
+            let epoch = turnEpoch
             // Through `runTool`, not `ToolRunner.run`: this is the path every answered card takes,
             // and `ToolRunner.run` never starts a command at all. Until 2026-10-31 that meant the
             // one tool that is *always* asked about — `run_command` — was refused by its own
             // approval, and the card said so with no reason behind it.
             runTool(tool) { _, succeeded in
+                // His next question ends this plan (AUDIT.md A-10).
+                guard self.turnEpoch == epoch else { return }
                 if let held {
                     guard succeeded else {
                         Log.write("plan: the launch did not happen — held steps not started: \(held.instruction)")
@@ -4550,7 +4558,11 @@ final class CompanionManager: ObservableObject {
     func cancelIntro() {
         introTasks.forEach { $0.cancel() }
         introTasks.removeAll()
+        onboardingPromptTimer?.invalidate()
+        onboardingPromptTimer = nil
     }
+
+    private var onboardingPromptTimer: Timer?
 
     /// Streams the "hold the hot key" prompt onto the cursor, then fades itself out.
     ///
@@ -4568,26 +4580,34 @@ final class CompanionManager: ObservableObject {
         }
 
         var currentIndex = 0
-        Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
-            guard currentIndex < message.count else {
-                timer.invalidate()
-                // Auto-dismiss after 10 seconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
-                    guard self.showOnboardingPrompt else { return }
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        self.onboardingPromptOpacity = 0.0
+        onboardingPromptTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
+            // Every Timer body hops: the block runs on the main thread without being inside the
+            // main actor's executor, and mutating actor state from it is the crash class this app
+            // already paid for twice (AUDIT.md C-05).
+            Task { @MainActor in
+                guard currentIndex < message.count else {
+                    timer.invalidate()
+                    self.onboardingPromptTimer = nil
+                    // Auto-dismiss after 10 seconds
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
+                        guard self.showOnboardingPrompt else { return }
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            self.onboardingPromptOpacity = 0.0
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            self.showOnboardingPrompt = false
+                            self.onboardingPromptText = ""
+                        }
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        self.showOnboardingPrompt = false
-                        self.onboardingPromptText = ""
-                    }
+                    return
                 }
-                return
+                let index = message.index(message.startIndex, offsetBy: currentIndex)
+                self.onboardingPromptText.append(message[index])
+                currentIndex += 1
             }
-            let index = message.index(message.startIndex, offsetBy: currentIndex)
-            self.onboardingPromptText.append(message[index])
-            currentIndex += 1
         }
+        onboardingPromptTimer = timer
     }
 
     // MARK: - Onboarding Demo Interaction

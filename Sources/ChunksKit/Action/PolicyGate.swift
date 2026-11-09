@@ -10,13 +10,17 @@ public struct ActionTargetInfo: Equatable, Sendable {
     /// The element's own title or description, when it has one — shown to the user so the
     /// card can say what will actually be pressed rather than what the model guessed.
     public var elementLabel: String?
+    /// The untruncated name, for the consequence check: a commitment word past the display budget
+    /// is still a commitment (AUDIT.md A-08). Nil falls back to the bounded label.
+    public var fullLabel: String?
 
     public init(bundleID: String? = nil, appName: String? = nil,
-                role: String? = nil, elementLabel: String? = nil) {
+                role: String? = nil, elementLabel: String? = nil, fullLabel: String? = nil) {
         self.bundleID = bundleID
         self.appName = appName
         self.role = role
         self.elementLabel = elementLabel
+        self.fullLabel = fullLabel
     }
 }
 
@@ -123,7 +127,7 @@ public enum PolicyGate {
         // Before the two shortcuts below, on purpose: a permanent act is asked about even in an app
         // the user permanently allowed, and even on a machine where the card is switched off. The
         // allowance was about opening things and moving around, never about sending.
-        if isConsequential(label: target.elementLabel) {
+        if isConsequential(label: target.fullLabel ?? target.elementLabel) {
             return .needsConsent
         }
 

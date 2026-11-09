@@ -57,11 +57,22 @@ public struct AXElementInfo: Equatable, Sendable {
         return "that control"
     }
 
+    /// The untruncated name, for decisions that must not miss a word past the display budget: a
+    /// commitment word at character 60 is still a commitment (AUDIT.md A-08). The card keeps the
+    /// bounded label; the policy reads this one.
+    public var fullLabel: String {
+        for candidate in [title, descriptionText, role] {
+            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return "that control"
+    }
+
     /// Everything `PolicyGate` needs. `bundleID` is supplied by the caller, which has
     /// `NSRunningApplication`; this layer only knows pids.
     public func policyTarget(bundleID: String?) -> ActionTargetInfo {
         ActionTargetInfo(bundleID: bundleID, appName: appName,
-                         role: role, elementLabel: elementLabel)
+                         role: role, elementLabel: elementLabel, fullLabel: fullLabel)
     }
 }
 
@@ -2854,6 +2865,12 @@ extension AXTDriver {
 
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             return .focusChanged(reason: "no keyboard event source could be made", focus: focus)
+        }
+        // The poll that raised the app can be stale by the time the first event posts: a dialog or a
+        // Space switch in between would land an asked-for combo in whatever is front (AUDIT.md A-07).
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid_t(pid) else {
+            return .focusChanged(reason: "another app took the front before the key posted",
+                                 focus: focus)
         }
         let flags = CGEventFlags(rawValue: KeyAction.eventFlags(for: combo))
         for index in 0..<combo.times {

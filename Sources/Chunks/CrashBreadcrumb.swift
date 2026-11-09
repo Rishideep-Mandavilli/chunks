@@ -42,16 +42,13 @@ enum CrashBreadcrumb {
     static func install() {
         guard !installed else { return }
         installed = true
-        // The buffer and the descriptor are made here, while the process is healthy, because the
-        // handler that uses them must not allocate or open anything. The path is the log file the
-        // user is asked to paste — the same one `Log` writes to.
+        // The buffer and the words are made here, while the process is healthy, because the handler
+        // that uses them must not allocate. The *path* is kept, not a descriptor: `Log` rotates by
+        // deleting the file, and a descriptor opened at install would then write into a deleted
+        // inode — the next crash after a rotation would report nothing (AUDIT.md C-04). `open` is
+        // async-signal-safe, so the handler opens the current path itself.
         if signalTable.isEmpty { buildTables() }
-        if logDescriptor < 0 {
-            let path = Log.fileURL.path
-            path.withCString { pointer in
-                logDescriptor = open(pointer, O_WRONLY | O_APPEND | O_CREAT, 0o644)
-            }
-        }
+        if logPath == nil { logPath = strdup(Log.fileURL.path) }
         // SIGTRAP is in the set because a Swift runtime trap raises it rather than a signal of the
         // memory kind, and the first run of `--probe-crash` died with a Swift `Fatal error:` and no
         // breadcrumb at all — the handler was listening for the wrong four.
@@ -140,7 +137,15 @@ enum CrashBreadcrumb {
         guard let pointer else { return }
         let length = strlen(pointer)
         _ = write(STDERR_FILENO, pointer, length)
-        if logDescriptor >= 0 { _ = write(logDescriptor, pointer, length) }
+        // Opened per fault, not held from install: rotation must not bury the breadcrumb in a
+        // deleted inode. open/write/close are the three calls POSIX guarantees here.
+        if let path = logPath {
+            let descriptor = open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+            if descriptor >= 0 {
+                _ = write(descriptor, pointer, length)
+                close(descriptor)
+            }
+        }
     }
 
     /// The uptime, filled backwards into a buffer allocated at install. There is no formatter here.
@@ -159,7 +164,7 @@ enum CrashBreadcrumb {
     private static let asciiZero: UInt64 = 48
     private static let digitBufferSize = 24
     private static var digitBuffer: UnsafeMutablePointer<CChar>?
-    private static var logDescriptor: Int32 = -1
+    private static var logPath: UnsafeMutablePointer<CChar>?
     private static var strings: FaultStrings?
 
     /// Every word the fault line needs, built once while the process is still healthy.

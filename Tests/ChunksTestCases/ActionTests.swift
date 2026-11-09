@@ -514,6 +514,18 @@ public enum ActionTests {
             }
         }
 
+        test("a commitment word past the card's 42-character label is still a commitment") {
+            // AUDIT.md A-08: the consequence check read the truncated display label, so a control
+            // whose title puts "Delete" past character 42 escaped the even-with-asking-off card.
+            let long = "Remove every message in this conversation and delete them permanently"
+            let info = AXElementInfo(pid: 1, appName: "WhatsApp", role: "AXButton", title: long)
+            expect(info.elementLabel.count <= 43, "the display label is bounded, as the card needs")
+            let d = PolicyGate.decide(target: info.policyTarget(bundleID: nil),
+                                      askBeforePressing: false)
+            expectEqual(d, .needsConsent,
+                        "the policy reads the full name, not the truncated one")
+        }
+
         test("an app the user always allows is still asked before it sends") {
             let d = PolicyGate.decide(target: ActionTargetInfo(
                 bundleID: "com.apple.mail", appName: "Mail", role: "AXButton",

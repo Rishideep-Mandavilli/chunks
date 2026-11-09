@@ -1469,7 +1469,7 @@ public enum ActionTests {
                         "open bypasses the read policy's credential and root rules")
             expectEqual(DoRequest.parse("run_command:python3 -c hello"), nil,
                         "an interpreter is every denied program at once")
-            expectEqual(DoRequest.parse("run_command:date"), .runCommand(argv: ["date"]),
+            expectEqual(DoRequest.parse("run_command:date -u"), .runCommand(argv: ["date", "-u"]),
                         "an ordinary one-sentence program still parses")
             expectEqual(ToolLayer.question(for: .runCommand(argv: ["caffeinate", "-u"])),
                         "Run caffeinate -u?",

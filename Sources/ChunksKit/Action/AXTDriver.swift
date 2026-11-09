@@ -1352,6 +1352,15 @@ public enum AXTDriver {
             /// text is a child `AXStaticText`, and a name read from the element's own attributes
             /// alone cannot see it.
             public var childLabels: [String]
+
+            /// The name a model should aim by: the element's own published name when it has one,
+            /// otherwise the first child's words. A control whose only label is its role cannot be
+            /// named, so the child's text is the only usable handle.
+            public var publishedName: String {
+                let own = info.fullLabel
+                if own != (info.role ?? "") && own != "that control" { return own }
+                return childLabels.first(where: { !$0.isEmpty }) ?? own
+            }
         }
 
         public var controls: [Control]

@@ -77,6 +77,9 @@ struct leanring_buddyApp: App {
         if let app = AXProbe.requestedControlApp() {
             AXProbe.runControls(app)
         }
+        if let app = AXProbe.requestedStateApp() {
+            AXProbe.runState(app)
+        }
         if let request = AXProbe.requestedCandidates() {
             AXProbe.runCandidates(request.target, aim: request.aim)
         }

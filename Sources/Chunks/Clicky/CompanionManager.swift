@@ -1537,7 +1537,8 @@ final class CompanionManager: ObservableObject {
     /// promise a question the user will never see — which is exactly what happened on the first
     /// Pluralsight turn.
     private func companionPromptWithMemory(recalling question: String? = nil,
-                                           showingARegion: Bool = false) -> String {
+                                           showingARegion: Bool = false,
+                                           stateDigest: ScreenStateDigest? = nil) -> String {
         memoryStore.load()
         let known = memoryStore.injectedBlock()
         var prompt = Self.companionVoiceResponseSystemPrompt
@@ -1585,7 +1586,39 @@ final class CompanionManager: ObservableObject {
         if let windows = consumePendingOpenWindowsBlock() {
             prompt += "\n\n" + windows
         }
+        // The frontmost app's published control/field names, read at the same moment as the capture.
+        // This is the state-grounding channel: the model names a target from the tree instead of
+        // reading pixels, which is what lets a weak model carry a multi-step task (StateAct). It is
+        // framed as data and redacted by the digest itself; the press path still re-resolves before
+        // acting, so a stale name is a refusal, never a wrong press.
+        if let stateDigest {
+            prompt += "\n\n" + stateDigest.text
+        }
         return prompt
+    }
+
+    /// Read the frontmost app's published state off the main thread, concurrent with the capture.
+    ///
+    /// Two bounded sweeps (controls and fields) over the frontmost app only, through the same driver
+    /// hop every other Accessibility read uses, so the notch never freezes on them. Returns nil when
+    /// there is no frontmost app or the turn is a pure region question (the crop's tree is not the
+    /// screen's). The digest does its own redaction and budgeting; this only gathers names.
+    private func screenStateDigest() async -> ScreenStateDigest? {
+        let gathered = await driver { () -> (front: String?, controls: [ScreenStateDigest.Control],
+                                             fields: [ScreenStateDigest.Field]) in
+            guard let front = NSWorkspace.shared.frontmostApplication?.localizedName else {
+                return (nil, [], [])
+            }
+            let controls = AXTDriver.pressableControls(ownedByNamed: front).controls.map {
+                ScreenStateDigest.Control(label: $0.publishedName, role: $0.info.role ?? "control")
+            }
+            let fields = AXTDriver.editableFields(ownedByNamed: front).fields.map {
+                ScreenStateDigest.Field(label: $0.fullLabel, role: $0.role ?? "field")
+            }
+            return (front, controls, fields)
+        }
+        return ScreenStateDigest.block(frontmost: gathered.front, windows: [],
+                                       controls: gathered.controls, fields: gathered.fields)
     }
 
     /// What is already on the schedule, by name and time.
@@ -3938,6 +3971,13 @@ final class CompanionManager: ObservableObject {
 
                 // A circled region replaces the whole-screen capture for exactly one turn.
                 let regionCapture = self.consumePendingRegionCapture()
+                // The published-state digest is gathered while the capture runs, for the same reason
+                // the file read is: neither depends on the other. Skipped for a circled region — the
+                // frontmost app's tree is not the crop's, and naming controls outside the picture
+                // would aim the model out of the region he drew.
+                let stateTask: Task<ScreenStateDigest?, Never>? = regionCapture == nil
+                    ? Task { @MainActor in await self.screenStateDigest() }
+                    : nil
                 let screenCaptures: [CompanionScreenCapture]
                 if let regionCapture {
                     screenCaptures = [regionCapture]
@@ -3956,6 +3996,18 @@ final class CompanionManager: ObservableObject {
                     try await withDeadline(20) { await fileRead.value }
                 } catch {
                     Log.write("turn: the file read did not finish in 20s — the turn goes without it")
+                }
+
+                // The state digest raced too: an app that parks its Accessibility tree must cost the
+                // turn its state channel, not its voice. A nil digest simply leaves the model on the
+                // picture, exactly as before.
+                var stateDigest: ScreenStateDigest?
+                if let stateTask {
+                    do {
+                        stateDigest = try await withDeadline(4) { await stateTask.value }
+                    } catch {
+                        Log.write("turn: the state digest did not finish in 4s — the turn goes without it")
+                    }
                 }
 
                 guard !Task.isCancelled, turnEpoch == epoch else { return }
@@ -4001,7 +4053,8 @@ final class CompanionManager: ObservableObject {
                 _ = try await claudeAPI.analyzeImageStreaming(
                     images: requestImages,
                     systemPrompt: companionPromptWithMemory(recalling: transcript,
-                                                            showingARegion: regionCapture != nil),
+                                                            showingARegion: regionCapture != nil,
+                                                            stateDigest: stateDigest),
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { delta in

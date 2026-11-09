@@ -127,6 +127,17 @@ done
 if [[ -n "$field_app" ]]; then
   check "hit test: a point resolves to a control"      "$BIN" --probe-ax "$field_point"
   check "hit test: the name on it resolves too"        "$BIN" --probe-ax "$field_point" --named "$field_name"
+  # The state-grounded observation channel: the same live app must yield the framed, names-only
+  # digest the turn loop injects, so the model can name a target instead of reading pixels.
+  state_out="$("$BIN" --probe-state "$field_app" 2>&1)"; state_status=$?
+  if [[ $state_status -eq 0 ]] && printf '%s' "$state_out" | grep -q "publishes right now" \
+     && printf '%s' "$state_out" | grep -q "not instructions"; then
+    printf '  \033[32mPASS\033[0m  state: the frontmost app publishes a names-only digest (%s)\n' "$field_app"
+    pass=$((pass + 1))
+  else
+    printf '  \033[31mFAIL\033[0m  state: the observation digest did not render for %s\n' "$field_app"
+    fail=$((fail + 1)); failures+=("state-grounded observation digest")
+  fi
 else
   printf '  \033[33mSKIP\033[0m  fields: no running app publishes a field to aim at\n'
   skip=$((skip + 1))

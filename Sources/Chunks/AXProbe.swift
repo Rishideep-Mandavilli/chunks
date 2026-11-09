@@ -441,6 +441,42 @@ enum AXProbe {
         exit(0)
     }
 
+    /// `--probe-state WhatsApp` — read-only: the exact state-grounded block the turn loop hands the
+    /// model, so the observation channel can be checked at a terminal without running a turn.
+    ///
+    /// The digest is the state-grounding move (StateAct): the model names a control from the tree
+    /// instead of reading pixels. This prints what it would actually be told — names only, redacted,
+    /// budgeted — which is the only way to tell an empty tree from a redacted one from a broken sweep.
+    static func requestedStateApp() -> String? {
+        guard let index = CommandLine.arguments.firstIndex(of: "--probe-state"),
+              index + 1 < CommandLine.arguments.count else { return nil }
+        let app = CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespaces)
+        return app.isEmpty ? nil : app
+    }
+
+    static func runState(_ app: String) -> Never {
+        guard AXTDriver.isTrusted() else {
+            print(AXTDriver.PressResult.permissionMissing.userFacingReason)
+            exit(2)
+        }
+        let controls = AXTDriver.pressableControls(ownedByNamed: app).controls.map {
+            ScreenStateDigest.Control(label: $0.publishedName, role: $0.info.role ?? "control")
+        }
+        let fields = AXTDriver.editableFields(ownedByNamed: app).fields.map {
+            ScreenStateDigest.Field(label: $0.fullLabel, role: $0.role ?? "field")
+        }
+        guard let digest = ScreenStateDigest.block(frontmost: app, windows: [],
+                                                   controls: controls, fields: fields) else {
+            print("probe-state: no block for \(app)")
+            exit(1)
+        }
+        print("probe-state: \(app) — \(digest.listedControls) control(s), \(digest.listedFields) "
+            + "field(s) listed, \(digest.leftOut) left out, \(digest.bytes) bytes")
+        print(digest.text)
+        print("probe-state: stopped here — nothing is pressed and nothing is sent")
+        exit(0)
+    }
+
     /// `--probe-candidates 'app=Chrome name=Run' [820,240]` — read-only: what the *ranking* resolves,
     /// next to what the named search says about the same words.
     ///

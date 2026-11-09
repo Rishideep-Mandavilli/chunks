@@ -723,7 +723,7 @@ struct CompanionPanelView: View {
                 get: { companionManager.askBeforeActing },
                 set: { companionManager.setAskBeforeActing($0) }))
                 .labelsHidden()
-                .accessibilityLabel("Open Chunks at login")
+                .accessibilityLabel("Ask before acting")
                 .toggleStyle(.switch)
                 .tint(DS.Dots.teal)
                 .controlSize(.small)
@@ -1299,7 +1299,7 @@ struct CompanionPanelView: View {
                 get: { companionManager.isOfflineBrainOn },
                 set: { companionManager.setOfflineBrain($0) }))
                 .labelsHidden()
-                .accessibilityLabel("Open Chunks at login")
+                .accessibilityLabel("Think on this Mac")
                 .toggleStyle(.switch)
                 .tint(DS.Dots.teal)
                 .controlSize(.small)

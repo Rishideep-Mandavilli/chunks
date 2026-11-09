@@ -457,7 +457,10 @@ final class NotchHUDModel: ObservableObject {
         apply(streamer)
         if speech.isEmpty && detail.isEmpty {
             let utterance = streamer.utterance
-            speech = utterance
+            // Bounded like every other speech path: an unbounded fallback overflowed the 420 pt
+            // clamp and cut the tail below the window edge (AUDIT.md E-01).
+            speech = AnswerPanelLayout.boundedDetail(
+                utterance, budget: AnswerPanelLayout.speechCharacterBudget)
             if headline.isEmpty { headline = Self.firstLine(utterance) }
         }
         // The clock stops when the *answer* is done, not when the model stops streaming: a reply
@@ -480,8 +483,10 @@ final class NotchHUDModel: ObservableObject {
         stage = .failed
         // The message is the card's body, not its status line: it is the only content, and
         // putting it in the status slot would leave a 96 pt card with one small line at the
-        // top and nothing under it.
-        speech = message
+        // top and nothing under it. Bounded, because a long server error used to push the retry
+        // row — the one way back — below the window edge (AUDIT.md E-02).
+        speech = AnswerPanelLayout.boundedDetail(
+            message, budget: AnswerPanelLayout.speechCharacterBudget)
         phase = .failed(message)
     }
 
@@ -648,6 +653,15 @@ final class NotchHUDModel: ObservableObject {
         stage = .acting
         if phase == .idle { phase = .result }
         if answeredALiveQuestion { onReported?(bounded) }
+    }
+
+    /// The last act of a turn has reported, so the pill must stop claiming work is in flight
+    /// (AUDIT.md E-03). `finish` runs at stream end, before the acts run, so nothing else marks this
+    /// and a finished plan used to read "Doing it" until his next question.
+    func noteActsDone() {
+        guard stage == .acting else { return }
+        stage = .answered
+        stopClock()
     }
 
     private var hintTask: Task<Void, Never>?

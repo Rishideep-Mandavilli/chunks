@@ -726,6 +726,17 @@ else
   printf '  \033[31mFAIL\033[0m  brain: a quota retry, an in-stream error or a failover regressed\n'
   fail=$((fail + 1)); failures+=("brain retry and stream fencing")
 fi
+# The card's honesty fixes (AUDIT.md E-03/E-04): a finished plan must stop saying "Doing it", and the
+# login label belongs to exactly one toggle — it was copy-pasted onto the two safety switches.
+if grep -q 'hud.noteActsDone()' Sources/Chunks/Clicky/CompanionManager.swift \
+   && [[ $(grep -c 'accessibilityLabel("Open Chunks at login")' \
+        Sources/Chunks/Clicky/CompanionPanelView.swift) -eq 1 ]]; then
+  printf '  \033[32mPASS\033[0m  card: a finished plan stops acting, and the login label is on one toggle\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  card: the pill lies after acts, or a safety switch wears the login label\n'
+  fail=$((fail + 1)); failures+=("card stage and toggle labels")
+fi
 # A crash that says nothing is a crash that teaches nothing. Four reports in eighteen hours all
 # faulted inside SwiftUI's event dispatch and none of them named the surface or the event, because a
 # fault does not flush the log — so the app installs a signal handler that writes one line first, and

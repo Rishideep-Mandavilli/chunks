@@ -2452,7 +2452,10 @@ final class CompanionManager: ObservableObject {
                 return .asked
 
             case .done(let line):
-                guard index + 1 < steps.count else { return .done(line: line) }
+                guard index + 1 < steps.count else {
+                    hud.noteActsDone()
+                    return .done(line: line)
+                }
                 // Let the app draw the screen the next step is aimed at before resolving it.
                 try? await Task.sleep(nanoseconds: Self.stepSettleDelay)
 
@@ -2575,7 +2578,11 @@ final class CompanionManager: ObservableObject {
             pendingProgram = nil
             Task {
                 let result = await runAct(act, at: pending.axPoint, approved: pending.element)
-                guard result.happened, let program, !program.steps.isEmpty else { return }
+                guard result.happened else { return }
+                guard let program, !program.steps.isEmpty else {
+                    self.hud.noteActsDone()
+                    return
+                }
                 try? await Task.sleep(nanoseconds: Self.stepSettleDelay)
                 _ = await self.offerProgram(program.steps,
                                             screenCaptures: program.screenCaptures,
@@ -2971,6 +2978,9 @@ final class CompanionManager: ObservableObject {
                          then: (@MainActor (_ line: String, _ succeeded: Bool) -> Void)? = nil) {
         func report(_ line: String, _ succeeded: Bool) {
             reportToolLine(line)
+            // A lone tool with nothing held behind it is the whole turn's work: the pill must not
+            // keep saying "Doing it" after its outcome line (AUDIT.md E-03).
+            if pendingProgram == nil, heldBehindLaunch == nil { hud.noteActsDone() }
             then?(line, succeeded)
         }
         // The single execution point is where his rule about the keyboard has to live. `toolRefusal`

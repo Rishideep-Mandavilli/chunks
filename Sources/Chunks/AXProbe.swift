@@ -56,7 +56,7 @@ enum AXProbe {
         let chosen = SpeechVoices.pick(from: voices)
         print("probe-voice: Chunks would speak with "
             + "\(chosen.map { SpeechVoices.displayName(for: $0) } ?? "nothing")")
-        exit(0)
+        exit(chosen == nil ? 1 : 0)
     }
 
     /// `--probe-ax x,y`, or nil if the flag is absent or malformed.
@@ -123,6 +123,9 @@ enum AXProbe {
             exit(2)
         }
         print("probe-semantic: read as \(named.questionPhrase)")
+        // The exit code is the gate's signal (AUDIT.md F-01/F-03): a refusal used to exit 0, so
+        // "semantic aim: a named control" passed while resolving nothing.
+        var resolved = false
         // Which window the search is standing in, because "no such control" and "I did not look
         // where the control lives" print the same sentence to the user. On 2026-10-18 the desktop
         // icon ask answered a refusal while the pixel route found the same icon, and this line is
@@ -147,6 +150,7 @@ enum AXProbe {
             let decision = PolicyGate.decide(target: info.policyTarget(bundleID: nil),
                                              alwaysAllowedBundleIDs: [])
             print("  policy=\(decision) — the card would ask \"Press \(info.elementLabel)?\"")
+            resolved = true
         }
 
         // Both readings of the same name, because a plan's type step needs a *field* and a field
@@ -163,6 +167,7 @@ enum AXProbe {
                   + "\(info.appName ?? "pid \(info.pid)") at \(center) "
                   + "focusedNow=\(AXTDriver.hasFocus(field.element))")
             print("  the card would ask \"Type … into \(AXTDriver.fieldLabel(for: info))?\"")
+            resolved = true
         }
 
         // And as a list that moves, because a scroll's target is the scroller the name climbs out
@@ -179,9 +184,10 @@ enum AXProbe {
                   + "\(info.appName ?? "pid \(info.pid)") at \(center) verb=\(scroller.action)")
             print("  the card would ask \""
                   + "\(ActionRequest.scrollQuestion(elementLabel: named.name, direction: .down, pages: 1))\"")
+            resolved = true
         }
         print("probe-semantic: stopped here — this mode never presses or types")
-        exit(0)
+        exit(resolved ? 0 : 1)
     }
 
     /// `--probe-fields WhatsApp` — read-only: every field that app publishes, named the way the app
@@ -222,7 +228,7 @@ enum AXProbe {
             }
         }
         print("probe-fields: stopped here — this mode types nothing")
-        exit(0)
+        exit(sweep.fields.isEmpty ? 1 : 0)
     }
 
     /// `--probe-crop "x,y,w,h|aimX,aimY"` — read-only: where an aim inside a circled region lands.
@@ -772,6 +778,9 @@ enum AXProbe {
         }
 
         let candidates = AXTDriver.currentWindowCandidates()
+        // The exit code is the gate's signal (AUDIT.md F-01): a refusal used to exit 0, so the
+        // hit-test check passed while resolving nothing.
+        var resolved = false
         print("probe-ax: \(candidates.count) layer-0 windows owned by other apps")
         for window in candidates.prefix(5) {
             print("  pid=\(window.pid) bounds=\(window.bounds) owner=\(window.ownerName ?? "-")")
@@ -794,6 +803,7 @@ enum AXProbe {
                                                  alwaysAllowedBundleIDs: [])
                 print("  policy=\(decision) — the card would ask "
                       + "\"Press \(info.elementLabel)?\"")
+                resolved = true
             } else {
                 print("  nothing — the aim missed and no name answered it, so the card refuses")
             }
@@ -817,6 +827,7 @@ enum AXProbe {
                 print("  policy=\(decision) — the card would ask \"Type … into "
                       + "\(AXTDriver.fieldLabel(for: info))?\", and nothing is posted until "
                       + "focusedNow is true")
+                resolved = true
             } else {
                 print("  nothing editable there, so a [TYPE:…] would be refused")
             }
@@ -834,6 +845,7 @@ enum AXProbe {
                 let question = ActionRequest.scrollQuestion(elementLabel: info.elementLabel,
                                                             direction: .down, pages: 1)
                 print("  the card would ask \"\(question)\"")
+                resolved = true
             } else {
                 print("  nothing there moves, so a [SCROLL:…] would be refused")
             }
@@ -862,7 +874,12 @@ enum AXProbe {
                   + AXTDriver.PressResult.notPressable(element: element).userFacingReason)
         }
         print("probe-ax: stopped here — this mode never presses")
-        exit(0)
+        // With a name asked for, the exit code says whether the *name* resolved — that is what the
+        // gate's name-fallback check asserts. Without one, a point resolves to a control if it is
+        // pressable or typable; a refusal exits 1 so the check can fail (AUDIT.md F-01).
+        if requestedLabel() != nil { exit(resolved ? 0 : 1) }
+        let typable = AXTDriver.typeTarget(label: element.elementLabel, at: point) != nil
+        exit(element.isPressable || typable ? 0 : 1)
     }
 
     /// `Chunks --probe-desktop` — read-only: what the desktop's own icons publish.

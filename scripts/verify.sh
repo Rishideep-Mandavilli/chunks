@@ -93,8 +93,33 @@ echo
 
 echo "the real machine, read-only"
 check "self-test: what this build can see"           "$BIN" --self-test
-check "hit test: a point resolves to a control"      "$BIN" --probe-ax 900,120
-check "hit test: the name fallback finds it too"     "$BIN" --probe-ax 900,120 --named "address bar"
+# Fixtures derived from his live screen, because a hardcoded point or name resolved nothing on a
+# covered desktop and passed only while the probes exited 0 on refusal (AUDIT.md F-01/F-03/F-15).
+# The first running app that publishes a field gives the hit test, the name fallback and the
+# semantic aim a real target; a machine with none says SKIP instead of agreeing.
+field_app=""; field_name=""; field_point=""
+for candidate_app in Terminal WhatsApp Notes TextEdit Safari "Google Chrome" Finder; do
+  pgrep -x "$candidate_app" >/dev/null 2>&1 || continue
+  fields_out="$("$BIN" --probe-fields "$candidate_app" 2>&1)" || continue
+  field_name="$(printf '%s' "$fields_out" | grep -m1 -o 'name="[^"]*"' | cut -d'"' -f2)"
+  field_point="$(printf '%s' "$fields_out" | grep -m1 -o 'at ([0-9.]*, [0-9.]*)' | sed 's/at (//; s/)//; s/, /,/')"
+  [[ -n "$field_name" && -n "$field_point" ]] || continue
+  field_app="$candidate_app"
+  printf '  \033[32mPASS\033[0m  fields: what an app publishes to the typist (%s)\n' "$field_app"
+  pass=$((pass + 1))
+  break
+done
+if [[ -n "$field_app" ]]; then
+  check "hit test: a point resolves to a control"      "$BIN" --probe-ax "$field_point"
+  check "hit test: the name on it resolves too"        "$BIN" --probe-ax "$field_point" --named "$field_name"
+else
+  printf '  \033[33mSKIP\033[0m  fields: no running app publishes a field to aim at\n'
+  skip=$((skip + 1))
+  printf '  \033[33mSKIP\033[0m  hit test: no live control to aim at\n'
+  skip=$((skip + 1))
+  printf '  \033[33mSKIP\033[0m  hit test: no live name to resolve\n'
+  skip=$((skip + 1))
+fi
 # The draw-and-speak crop aim, checked as arithmetic on the real binary: the region's own rect is
 # flipped into AppKit space, the aim is mapped inside it, and the result is flipped back — so the
 # centre of a region at (0,0 1200x700) must land at (600, 350) whatever the display's height. This
@@ -110,7 +135,14 @@ else
   printf '        %s\n' "$(printf '%s' "$crop_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
   fail=$((fail + 1)); failures+=("crop aim mapping")
 fi
-check "semantic aim: a named control, no pixel"      "$BIN" --probe-semantic 'app=Finder name="Macintosh HD"'
+# The named aim, against the same live field the hit test used: one target, three doors.
+if [[ -n "$field_app" ]]; then
+  check "semantic aim: a named control, no pixel" \
+    "$BIN" --probe-semantic "app=$field_app name=\"$field_name\""
+else
+  printf '  \033[33mSKIP\033[0m  semantic aim: no live field to name\n'
+  skip=$((skip + 1))
+fi
 # The ranking route, which exists because a name search reads what a control publishes about itself
 # and most web controls publish nothing. Which controls are on screen depends on what he has open, so
 # this asserts the two halves that must always hold: a name that cannot exist is refused out loud
@@ -169,7 +201,8 @@ else
   printf '        %s\n' "$(printf '%s\n%s' "$reveal_out" "$secret_out" | grep -vE '^\s*$' | tail -2 | tr '\n' '|')"
   fail=$((fail + 1)); failures+=("reveal tool")
 fi
-check "fields: what an app publishes to the typist"  "$BIN" --probe-fields Finder
+# The fields check lives above, derived from a running app: a hardcoded `Finder` fixture resolved
+# nothing on a covered desktop and passed on the probe's old refusal-exits-0 behaviour.
 
 # Answering the card by voice. The fixture table is the check, and the interesting rows are the ones
 # that must NOT answer: "yes and close the other tab" is a new request with an old card hanging off it,

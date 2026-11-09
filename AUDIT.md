@@ -732,3 +732,30 @@ cross-referenced, not double-counted.
 
 **Totals: 84 distinct findings — 5 P0, 21 P1, 31 P2, 27 P3** (four of them marked KNOWN-OPEN).
 Nothing in this document has been fixed.
+
+---
+
+## Fixed since this audit (ledger, newest first)
+
+- **F-01 / F-03** — `1c3f589`: resolution probes exit 1 on refusal; gate fixtures derived from a
+  running app that publishes a field. Full gate 56 checks / 1 skip on the installed bundle.
+- **D-03** — `2356dd1`: recovery-code/client-secret names refused and unlisted; read contents swept
+  for provider token shapes (hard patterns only, so checksum logs stay readable).
+- **D-02** — `652538a`: lowercase-hex credentials rejected by the sweeper.
+- **D-01** — `0c67e73`: undated hand-typed lines preserved verbatim in both stores, charged to the cap.
+- **A-01** — `f1f77c1`: a displaced question drops its held steps in both card doors; gate asserts it.
+- **B-01 / B-02 / B-03** — `01cb578`: per-turn backup-key bound; in-stream SSE errors kept and
+  classified; a failover after emitted text resets the streamer so one card carries one model.
+- **C-02 / C-03** — `a870647`: file slicing runs off the main actor; the turn-died fallback goes
+  through `speakCaptioned` and clears the responding state.
+- **D-04 / D-05** — `a50593a`: daily/weekdays ask "has it run for today's slot", clock moves only on
+  an allowed tick; every schedule save re-decides the sleep hold.
+- **E-01 / E-02 / E-03 / E-04** — `1d50f57`: both unbounded card texts bounded; last act marks the
+  turn answered; the login label is on one toggle.
+- **A-02 / A-03 / A-04 / A-06 / B-05** — `d3c4e26` (+ test-only `149fa9b`): interpreters/launchers
+  denied; quit picks the regular app and refuses two; uninstalled named browser refuses; the Catalyst
+  focus hatch reachable; fourth CONTINUE shape consumed.
+
+All five P0s and all P1s except **C-15** (the crash class, KNOWN-OPEN, instrumented not fixed) are
+closed. Full gate after the batch: 57 checks, 2 skips (Chrome page-depth candidates and the Shortcuts
+window fixture — both known-open). The P2/P3 lists above remain open, in ID order within severity.

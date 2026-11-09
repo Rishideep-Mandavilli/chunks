@@ -138,6 +138,44 @@ enum UIRenderProbe {
         return CommandLine.arguments[index + 1]
     }
 
+    /// The assertion the window and panel renders used to lack (AUDIT.md E-12): a file written is
+    /// not a surface drawn. SwiftUI can draw *nothing* into an offscreen host and still produce a
+    /// PNG with a plausible byte count — the exact lie the caption renderer's comment documents.
+    /// The content here is warm paper on a dark ground, so a real render lights up a large fraction
+    /// of the canvas; a blank one leaves only the ground and the caption labels. Sampling a grid
+    /// (not every pixel) keeps this cheap, and the floor is far under what any drawn panel covers.
+    private static func renderHasContent(_ bitmap: NSBitmapImageRep, label: String) -> Bool {
+        let width = bitmap.pixelsWide
+        let height = bitmap.pixelsHigh
+        guard width > 0, height > 0 else {
+            print("\(label): FAIL - the bitmap has no size")
+            return false
+        }
+        let stepX = max(1, width / 160)
+        let stepY = max(1, height / 160)
+        var lit = 0
+        var sampled = 0
+        var y = 0
+        while y < height {
+            var x = 0
+            while x < width {
+                sampled += 1
+                if let color = bitmap.colorAt(x: x, y: y),
+                   color.brightnessComponent > 0.35 {
+                    lit += 1
+                }
+                x += stepX
+            }
+            y += stepY
+        }
+        let fraction = sampled > 0 ? Double(lit) / Double(sampled) : 0
+        let passed = fraction >= 0.05
+        print("\(label): content \(passed ? "PASS" : "FAIL") - "
+              + "\(String(format: "%.1f", fraction * 100))% of the canvas is drawn paper "
+              + "(a blank render reads near zero)")
+        return passed
+    }
+
     /// The cutout depth of the built-in display this machine reports, so the render shows the card
     /// hanging from a real notch rather than an invented one.
     private static var notchHeight: CGFloat { 33 }
@@ -550,7 +588,7 @@ enum UIRenderProbe {
             print("render-window: could not write \(url.path): \(error.localizedDescription)")
             exit(1)
         }
-        exit(0)
+        exit(renderHasContent(bitmap, label: "render-window") ? 0 : 1)
     }
 
     /// `--render-panel <path.png>` — the menu-bar panel, both states, stacked.
@@ -629,7 +667,7 @@ enum UIRenderProbe {
             print("render-panel: could not write \(url.path): \(error.localizedDescription)")
             exit(1)
         }
-        exit(0)
+        exit(renderHasContent(bitmap, label: "render-panel") ? 0 : 1)
     }
 
     /// A history with three sittings and four threads, assembled the way the app assembles one.

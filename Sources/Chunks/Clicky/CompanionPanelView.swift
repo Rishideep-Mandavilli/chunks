@@ -622,6 +622,11 @@ struct CompanionPanelView: View {
                           radius: 999,
                           elevation: .raised,
                           edge: primary ? C.ink : C.lineControl)
+                // The pill stays compact, but the thing you tap is a control: 10 pt micro text in
+                // 3 pt of padding is a 16 pt target, below the norm for the only route to re-grant a
+                // revoked permission (AUDIT.md E-09). The hit shape is grown, not the ink.
+                .frame(minHeight: 24)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .pointerCursor()
@@ -716,6 +721,10 @@ struct CompanionPanelView: View {
                     .font(.system(size: 10))
                     .foregroundColor(C.textTertiary)
             }
+            // The row reads as one control, so the words tap like the switch does. The Toggle keeps
+            // its own hit area and its VoiceOver label; this only widens the target (AUDIT.md E-10).
+            .contentShape(Rectangle())
+            .onTapGesture { companionManager.setAskBeforeActing(!companionManager.askBeforeActing) }
 
             Spacer()
 
@@ -783,6 +792,11 @@ struct CompanionPanelView: View {
                     .font(DS.Fonts.meta)
                     .foregroundColor(C.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard !isLoginUnavailable else { return }
+                companionManager.setLaunchAtLogin(!companionManager.launchesAtLogin)
             }
 
             Spacer()
@@ -1180,7 +1194,7 @@ struct CompanionPanelView: View {
                 Button("Arm") { armReminderFromPanel() }
                     .font(DS.Fonts.label)
                     .buttonStyle(.plain)
-                    .foregroundColor(C.accentText)
+                    .foregroundColor(C.linkOnField)
             }
             Text(reminderMessage
                  ?? "40 min · 2 hours · 3 days · at 21:00 · tomorrow at 07:30")
@@ -1242,7 +1256,7 @@ struct CompanionPanelView: View {
                 Button("Save") { saveRoutine() }
                     .font(DS.Fonts.label)
                     .buttonStyle(.plain)
-                    .foregroundColor(C.accentText)
+                    .foregroundColor(C.linkOnField)
             }
         }
         .padding(10)
@@ -1292,6 +1306,8 @@ struct CompanionPanelView: View {
                     .foregroundColor(C.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .contentShape(Rectangle())
+            .onTapGesture { companionManager.setOfflineBrain(!companionManager.isOfflineBrainOn) }
 
             Spacer()
 

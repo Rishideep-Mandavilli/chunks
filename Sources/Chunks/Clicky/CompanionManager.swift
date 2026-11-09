@@ -2576,6 +2576,9 @@ final class CompanionManager: ObservableObject {
             // that resumed here would be resuming past a question he did not answer.
             heldBehindLaunch = nil
             continuationBehindTool = nil
+            // The clock was left running while this act was owed (E-05); a "not now" is a terminal
+            // answer, so it stops here. The guard inside ignores a fresh turn that displaced the card.
+            hud.noteActsDone()
             return
         }
         switch request {
@@ -2626,9 +2629,9 @@ final class CompanionManager: ObservableObject {
                     self.turnEpoch += 1
                     Log.writeCritical("act: watchdog — \(Int(Self.actWatchdogSeconds))s with no outcome "
                                       + "on the approved act; letting the parked call finish alone")
-                    self.hud.noteActsDone()
                     self.hud.reportConfirm("Chunks acted, but the app did not answer in time — "
                                            + "look at it to be sure.")
+                    self.hud.noteActsDone()
                     return
                 }
                 guard self.turnEpoch == epoch else { return }

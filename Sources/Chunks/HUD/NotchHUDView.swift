@@ -387,12 +387,8 @@ struct NotchHUDView: View {
         if chip.isAction {
             Button(action: { onSelectAction(chip.label) }) { chipCard(chip, pressable: true) }
                 .buttonStyle(.plain)
-                // Each row occupies exactly `chipHeight`, gap included, so `n * chipHeight` in the
-                // measurement is the truth rather than an approximation.
-                .padding(.bottom, 4)
         } else {
             chipCard(chip, pressable: false)
-                .padding(.bottom, 4)
         }
     }
 
@@ -424,6 +420,10 @@ struct NotchHUDView: View {
                   // on, so the tappable chips carry it and the ones that only name a point do not.
                   edge: pressable ? DS.Colors.lineControl : DS.Colors.line)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // The hit area is the whole 26 pt row, not the 22 pt capsule: a follow-up chip is a Button,
+        // and 22 pt is below the control norm (AUDIT.md E-08). The gap below is part of the target
+        // now, so the row still measures exactly `chipHeight` and the capsule sits where it did.
+        .padding(.bottom, 4)
         .contentShape(Rectangle())
     }
 
@@ -559,9 +559,12 @@ struct WaveformBars: View {
     ///
     /// Nine 2 pt stubs at a 1 pt pitch rendered as a dotted rule — which is the exact state this
     /// component was built to kill, because a rule looks like a microphone that never opened. A
-    /// silent window therefore draws as a *rail* in the hairline tone: visibly an instrument, visibly
-    /// reading nothing, and every bar that does catch a syllable leaves it in the status colour.
-    var restColor: Color = DS.Colors.lineStrong
+    /// silent window therefore draws as a *rail* in the control-mark tone: visibly an instrument,
+    /// visibly reading nothing, and every bar that does catch a syllable leaves it in the status
+    /// colour. `lineControl`, not `lineStrong`: the lighter hairline measured ~1.3:1 on the card's
+    /// ground, a rail nobody can see is the same doubt as no rail at all (AUDIT.md E-11). The pair
+    /// is asserted in `Palette.graphicPairs` ("control outline on the ground").
+    var restColor: Color = DS.Colors.lineControl
 
     static let maxWidth: CGFloat = 12
     static let barWidth: CGFloat = 2

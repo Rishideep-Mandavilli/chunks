@@ -465,8 +465,14 @@ final class NotchHUDModel: ObservableObject {
         }
         // The clock stops when the *answer* is done, not when the model stops streaming: a reply
         // that queues four acts takes as long as the acts take, and the number the user sees has
-        // to be the one they waited for.
-        if actLines.isEmpty || stage == .streaming {
+        // to be the one they waited for. So while any act, tool or continuation is still owed, the
+        // clock keeps running and the act lifecycle stops it (`noteActsDone`); stopping here at
+        // stream end is what made an act-bearing turn report only the seconds the model took
+        // (AUDIT.md E-05).
+        let workRemains = !streamer.actionRequests.isEmpty
+            || !streamer.toolRequests.isEmpty
+            || streamer.continuation != nil
+        if !workRemains {
             stage = .answered
             stopClock()
         }
@@ -658,8 +664,13 @@ final class NotchHUDModel: ObservableObject {
     /// The last act of a turn has reported, so the pill must stop claiming work is in flight
     /// (AUDIT.md E-03). `finish` runs at stream end, before the acts run, so nothing else marks this
     /// and a finished plan used to read "Doing it" until his next question.
+    ///
+    /// Settles from `.waitingForYou` as well as `.acting`: with the clock now left running while acts
+    /// are owed (E-05), a card he answers "not now" must stop it too. A fresh turn that displaced the
+    /// card is `.askingModel`/`.streaming`, deliberately outside this guard, so settling a denial can
+    /// never mark his next question answered.
     func noteActsDone() {
-        guard stage == .acting else { return }
+        guard stage == .acting || stage == .waitingForYou else { return }
         stage = .answered
         stopClock()
     }

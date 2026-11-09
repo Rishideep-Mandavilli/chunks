@@ -40,7 +40,9 @@ final class CaptionPanelManager {
         model.text = line
         guard let screen = NSScreen.main else { return }
         let panel = ensurePanel()
-        panel.contentView = NSHostingView(rootView: CaptionView(model: model))
+        // The hosting view is built once, in `ensurePanel`; a new one per sentence is the flicker
+        // this file's own header promises against (AUDIT.md E-06). `CaptionView` observes the model,
+        // so the words above are all that changes here.
         position(panel, on: screen)
         if !panel.isVisible {
             panel.orderFrontRegardless()
@@ -125,6 +127,9 @@ final class CaptionPanelManager {
                       + "take the menu bar, and the call that sets it may have thrown")
             Log.flush()
         }
+        // Built once, here, and never again: the panel is reused across sentences and so is its
+        // content view, which observes `model` for the words (AUDIT.md E-06).
+        panel.contentView = NSHostingView(rootView: CaptionView(model: model))
         self.panel = panel
         return panel
     }

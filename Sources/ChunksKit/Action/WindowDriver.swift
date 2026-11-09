@@ -240,9 +240,22 @@ public enum WindowDriver {
     /// likely cause. `forceTerminate()` is not called anywhere in this app — killing a process that is
     /// asking him a question is the one way to lose work he cannot get back.
     public static func quit(appNamed name: String) -> Bool {
-        guard let app = NSWorkspace.shared.runningApplications.first(where: {
+        let matches = NSWorkspace.shared.runningApplications.filter {
             AXTDriver.matchesAppName(label: name, owner: $0.localizedName ?? "")
-        }) else { return false }
+        }
+        // A helper process can answer the same name — ShortcutsViewService did on 2026-10-27 — and
+        // terminating it left the app the card named still open (AUDIT.md A-03). The app he means is
+        // the regular one; two regular answers is a question, not a guess, so it refuses.
+        let regular = matches.filter { $0.activationPolicy == .regular }
+        let chosen: NSRunningApplication?
+        if regular.count == 1 {
+            chosen = regular.first
+        } else if regular.isEmpty, matches.count == 1 {
+            chosen = matches.first
+        } else {
+            chosen = nil
+        }
+        guard let app = chosen else { return false }
         return app.terminate()
     }
 

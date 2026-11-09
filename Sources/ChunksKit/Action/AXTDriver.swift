@@ -2270,8 +2270,13 @@ public enum AXTDriver {
             return .focusRefused(element: target.info)
         }
         // Read again after asking: an app can accept the focus write and put the cursor elsewhere,
-        // and typing into wherever the cursor actually is not the act the user approved.
-        guard hasFocus(target.element) else { return .focusRefused(element: target.info) }
+        // and typing into wherever the cursor actually is not the act the user approved. The hatch
+        // apps answer with a content group, so for them the weaker question is the only one that
+        // can ever pass — insisting on the exact element here made the hatch unreachable and
+        // refused every named type into Catalyst (AUDIT.md A-06).
+        guard hasFocus(target.element) || focusedFieldMatches(target) else {
+            return .focusRefused(element: target.info)
+        }
         switch Self.newlinePolicy(text: text, role: target.info.role) {
         case .refused(let lineBreaks):
             return .multilineIntoSingleLine(element: target.info, lineBreaks: lineBreaks)

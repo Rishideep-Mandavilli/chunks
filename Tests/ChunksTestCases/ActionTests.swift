@@ -1460,6 +1460,17 @@ public enum ActionTests {
                         "defaults is privileged and stays refused whatever follows it")
             expectEqual(DoRequest.parse("run_command:say \"hello there\""),
                         .runCommand(argv: ["say", "hello there"]))
+            // AUDIT.md A-02: interpreters and launchers re-open everything the deny list closes —
+            // System Events keystrokes past the key refusals, `do shell script` past the network
+            // ban, `open` past the credential refusals.
+            expectEqual(DoRequest.parse("run_command:osascript -e hello"), nil,
+                        "osascript buys keystrokes and shell scripts the rest of the policy refuses")
+            expectEqual(DoRequest.parse("run_command:open notes.txt"), nil,
+                        "open bypasses the read policy's credential and root rules")
+            expectEqual(DoRequest.parse("run_command:python3 -c hello"), nil,
+                        "an interpreter is every denied program at once")
+            expectEqual(DoRequest.parse("run_command:date"), .runCommand(argv: ["date"]),
+                        "an ordinary one-sentence program still parses")
             expectEqual(ToolLayer.question(for: .runCommand(argv: ["caffeinate", "-u"])),
                         "Run caffeinate -u?",
                         "the whole command line is the question, or he is approving what he cannot read")

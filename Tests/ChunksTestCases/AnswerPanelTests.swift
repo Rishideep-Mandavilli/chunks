@@ -246,6 +246,18 @@ public enum AnswerPanelTests {
                         "the first ] is inside the closing tag; the markup is not the sentence")
         }
 
+        test("the angle-open bracket-close CONTINUE is consumed while streaming") {
+            // AUDIT.md B-05: the fourth shape was caught only as an unclosed tail, so a closed
+            // `<CONTINUE]…]` leaked onto the card as prose and armed nothing.
+            let streamer = AnswerStreamer()
+            streamer.push("<CONTINUE]search for new messages] and that is all")
+            let result = streamer.finish()
+            expectEqual(streamer.continuation, "search for new messages",
+                        "the fourth bracket shape must carry the same sentence as the taught one")
+            expect(!result.detail.contains("CONTINUE"),
+                   "the tag leaked onto the card: \(result.detail)")
+        }
+
         test("an unclosed taught CONTINUE keeps the words it had") {
             let streamer = AnswerStreamer()
             streamer.push("<SAY>one moment.</SAY> <CONTINUE>search the chat list for unread messages")

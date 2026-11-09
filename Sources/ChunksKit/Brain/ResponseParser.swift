@@ -244,6 +244,7 @@ public final class ResponseParser {
         // one; the unterminated case is caught at flush by `AnswerStreamer`.
         Construct(start: "[CONTINUE>", end: "]", kind: .continuation),
         Construct(start: "[CONTINUE]", end: "]", kind: .continuation),
+        Construct(start: "<CONTINUE]", end: "]", kind: .continuation),
         // A file the model needs in front of it to answer at all: `[READ:~/Downloads/build.log|why
         // did it fail]`. Its own tag rather than a `[DO:]` because reading is not an act on the
         // user's behalf — it changes nothing on screen — and because the answer comes back in the

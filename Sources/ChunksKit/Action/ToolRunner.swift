@@ -351,6 +351,13 @@ public enum ToolRunner {
                     }
                 }
             }
+            if let browser {
+                // A named browser means *that* browser. Falling through to the default opened the
+                // URL in Safari while the outcome line said Chrome (AUDIT.md A-04).
+                NSLog("[Chunks] tool: %@ is not installed — refusing rather than using the default",
+                      browser)
+                return false
+            }
             return await withCheckedContinuation { done in
                 NSWorkspace.shared.open(target, configuration: configuration) { _, error in
                     done.resume(returning: error == nil)

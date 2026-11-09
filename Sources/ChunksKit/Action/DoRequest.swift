@@ -527,6 +527,11 @@ public enum DoRequest: Equatable, Sendable {
         "kill", "killall", "pkill", "shutdown", "halt", "reboot", "logout",
         "curl", "wget", "nc", "telnet", "ssh", "scp", "sftp", "rsync",
         "brew", "npm", "npx", "pip", "pip3", "gem", "cargo", "swiftpm",
+        // Interpreters and launchers re-open everything the list above closes: `osascript -e`
+        // buys System Events keystrokes past the key refusals, `do shell script` buys the network,
+        // and `open ~/.ssh/id_rsa` buys the credential files the read policy refuses (AUDIT.md A-02).
+        "osascript", "open", "sh", "bash", "zsh", "fish", "env", "xargs",
+        "perl", "python", "python3", "ruby", "node", "deno", "bun", "swift",
     ]
 
     /// The longest command line the card can show in full: `maxQuestionCharacters` minus the

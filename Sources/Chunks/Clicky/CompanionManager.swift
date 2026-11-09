@@ -1616,21 +1616,7 @@ final class CompanionManager: ObservableObject {
     /// there is no frontmost app or the turn is a pure region question (the crop's tree is not the
     /// screen's). The digest does its own redaction and budgeting; this only gathers names.
     private func screenStateDigest() async -> ScreenStateDigest? {
-        let gathered = await driver { () -> (front: String?, controls: [ScreenStateDigest.Control],
-                                             fields: [ScreenStateDigest.Field]) in
-            guard let front = NSWorkspace.shared.frontmostApplication?.localizedName else {
-                return (nil, [], [])
-            }
-            let controls = AXTDriver.pressableControls(ownedByNamed: front).controls.map {
-                ScreenStateDigest.Control(label: $0.publishedName, role: $0.info.role ?? "control")
-            }
-            let fields = AXTDriver.editableFields(ownedByNamed: front).fields.map {
-                ScreenStateDigest.Field(label: $0.fullLabel, role: $0.role ?? "field")
-            }
-            return (front, controls, fields)
-        }
-        return ScreenStateDigest.block(frontmost: gathered.front, windows: [],
-                                       controls: gathered.controls, fields: gathered.fields)
+        await driver({ AXTDriver.frontmostStateDigest() })
     }
 
     /// What is already on the schedule, by name and time.

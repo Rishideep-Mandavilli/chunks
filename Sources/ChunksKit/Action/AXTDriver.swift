@@ -1401,6 +1401,25 @@ public enum AXTDriver {
                             budgetSpent: budget == 0)
     }
 
+    /// The frontmost app's published state, shaped for the model's observation channel.
+    ///
+    /// One call so the shell can hop it in a single `driver({ … })` line — the main-thread gate
+    /// recognises that shape, and a multi-line closure hid the sweeps from it. Read-only: two bounded
+    /// sweeps, names only, redacted and budgeted by `ScreenStateDigest`. Returns nil with no frontmost
+    /// app. This is the state-grounding observation (StateAct): the model names controls from the tree
+    /// instead of reading pixels.
+    public static func frontmostStateDigest() -> ScreenStateDigest? {
+        guard let front = NSWorkspace.shared.frontmostApplication?.localizedName else { return nil }
+        let controls = pressableControls(ownedByNamed: front).controls.map {
+            ScreenStateDigest.Control(label: $0.publishedName, role: $0.info.role ?? "control")
+        }
+        let fields = editableFields(ownedByNamed: front).fields.map {
+            ScreenStateDigest.Field(label: $0.fullLabel, role: $0.role ?? "field")
+        }
+        return ScreenStateDigest.block(frontmost: front, windows: [],
+                                       controls: controls, fields: fields)
+    }
+
     /// Every pressable control an app publishes, shaped for `CandidateRanker`.
     ///
     /// The same walk as `pressableControls`, with one addition that is the whole point: the words

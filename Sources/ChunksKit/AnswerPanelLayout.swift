@@ -229,6 +229,11 @@ public enum AnswerPanelLayout {
         if let lastNewline = cut.lastIndex(of: "\n"),
            cut.distance(from: cut.startIndex, to: lastNewline) > budget / 2 {
             cut = String(cut[..<lastNewline])
+        } else if let lastSpace = cut.lastIndex(of: " "),
+                  cut.distance(from: cut.startIndex, to: lastSpace) > budget / 2 {
+            // Single-line text (a server error, a spoken fallback) gets the same word boundary every
+            // other truncation in this app keeps (AUDIT.md R-08).
+            cut = String(cut[..<lastSpace])
         }
         return cut.trimmingCharacters(in: .whitespacesAndNewlines) + "…"
     }

@@ -242,6 +242,10 @@ public struct RoutinesStore: Equatable, Sendable {
             else { return nil }
             if case .weekdays = routine.cadence, !isWeekday(slot, calendar: calendar) { return nil }
             guard slot <= now else { return nil }
+            // A routine added after its hour owes nothing today: "every morning at eight" said at
+            // 21:00 must wait for tomorrow, not fire on the next tick (AUDIT.md R-05). Existing
+            // routines were created before their slot, so the catch-up rule still holds for them.
+            guard routine.createdAt <= slot else { return nil }
             if let last = routine.lastRunAt, last >= slot { return nil }
             return slot
         }

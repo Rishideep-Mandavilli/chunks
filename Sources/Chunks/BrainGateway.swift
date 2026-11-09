@@ -239,7 +239,8 @@ final class BrainGateway {
                                                    history: history,
                                                    userPrompt: userPrompt,
                                                    started: started,
-                                                   onTextChunk: onTextChunk) {
+                                                   onTextChunk: onTextChunk,
+                                                   onFreshAttempt: onFreshAttempt) {
             return local
         }
 
@@ -511,7 +512,8 @@ final class BrainGateway {
         history: [(userPlaceholder: String, assistantResponse: String)],
         userPrompt: String,
         started: Date,
-        onTextChunk: @MainActor @Sendable (String) -> Void
+        onTextChunk: @MainActor @Sendable (String) -> Void,
+        onFreshAttempt: (@MainActor @Sendable () -> Void)? = nil
     ) async throws -> (text: String, duration: TimeInterval)? {
         let storedID = BrainSettings.storedProviderID()
         guard let storedID, !storedID.isEmpty, storedID != ProviderRegistry.gemini.id else { return nil }
@@ -539,13 +541,26 @@ final class BrainGateway {
         var candidates: [BrainModel] = [chosen]
         candidates += resolution.provider.models.filter { model in model.id != chosen.id }
         var lastFailure: Error?
+        // The same fence as the cloud chain: a local model that emitted half a reply and then
+        // stalled must not have the next model's words and act tags appended to it (AUDIT.md R-06).
+        let emitted = EmittedFlag()
+        let chunk: @MainActor @Sendable (String) -> Void = { delta in
+            emitted.set()
+            onTextChunk(delta)
+        }
         for candidate in candidates {
+            if emitted.any {
+                Log.write("brain: a local model wrote part of this reply — resetting the card "
+                    + "before \(candidate.id) writes")
+                await onFreshAttempt?()
+                emitted.reset()
+            }
             do {
                 return try await runLocalTurn(provider: resolution.provider, model: candidate,
                                               systemPrompt: systemPrompt, history: history,
                                               userPrompt: userPrompt, images: images,
                                               silenceIsRetryable: true,
-                                              started: started, onTextChunk: onTextChunk)
+                                              started: started, onTextChunk: chunk)
             } catch {
                 lastFailure = error
                 // One model refusing is not the server failing: `qwen3-vl:8b` here has a
@@ -984,12 +999,13 @@ final class BrainGateway {
     /// exactly as an HTTP 429 would.
     private static func statusInStreamMessage(_ message: String) -> Int? {
         let lowered = message.lowercased()
-        if lowered.contains("resource_exhausted") || lowered.contains("quota") || message.contains("429") {
-            return 429
-        }
-        if lowered.contains("unavailable") || lowered.contains("high demand") || message.contains("503") {
-            return 503
-        }
+        if lowered.contains("resource_exhausted") || lowered.contains("quota") { return 429 }
+        if lowered.contains("unavailable") || lowered.contains("high demand") { return 503 }
+        // A bare substring would read a timestamp or a request id containing "429" as a quota
+        // refusal (AUDIT.md R-07); the status has to stand alone as a number.
+        let numbers = message.split(whereSeparator: { !$0.isNumber }).map(String.init)
+        if numbers.contains("429") { return 429 }
+        if numbers.contains("503") { return 503 }
         return nil
     }
 

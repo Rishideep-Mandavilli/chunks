@@ -191,6 +191,18 @@ public enum AnswerPanelTests {
 
         // AUDIT.md B-03: a failover after a mid-stream drop must replace the half reply. The panel
         // assigns what the streamer reports, so reset is what keeps two models off one card.
+        test("a bounded single-line error cuts at a word, not mid-word") {
+            // AUDIT.md R-08: every truncation in this app keeps a word boundary; the card's fallback
+            // and failure text used to slice at exactly the budget.
+            let error = "Hit the free-tier rate limit for this key; try again in a little while please"
+            let bounded = AnswerPanelLayout.boundedDetail(error, budget: 40)
+            expect(bounded.hasSuffix("…"), "a cut must say it dropped something")
+            expect(!bounded.dropLast().hasSuffix(" "),
+                   "the cut landed mid-word: \(bounded)")
+            expect(error.hasPrefix(String(bounded.dropLast())),
+                   "the kept part must be a prefix of the original: \(bounded)")
+        }
+
         test("reset forgets the half reply so the next model starts from an empty card") {
             let streamer = AnswerStreamer()
             streamer.push("<SAY>half a sentence from the first model</SAY> [ACT:100,200:Send]")

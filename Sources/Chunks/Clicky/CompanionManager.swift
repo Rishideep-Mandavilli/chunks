@@ -1428,7 +1428,7 @@ final class CompanionManager: ObservableObject {
     - [DO:list_windows:all] or [DO:list_windows:Safari] asks what is open, and the list arrives on the next turn: every window with its title, which app owns it, which is focused and which is minimised. use it when his question is about windows the screenshot cannot show — another Space, minimised, or behind the front one — and never guess an answer about them: you cannot see them, so ask. it reads and changes nothing, so it needs no card; do not promise "closing that now" in the same reply.
     - [DO:focus_window:Safari|Inbox] brings one window forward: `App|window title`, and the title may be left off when the app has only one window to mean. [DO:minimize_window:Safari|Inbox] puts it in the Dock. [DO:close_window:Code|config.yml] closes it, and [DO:quit_app:Safari] quits the app — **those two are always confirmed with a card, even when he has switched asking off**, because both throw away unsaved work, so say "i'll ask you to allow it" for them and not for the others. Name a window the way its own title bar does; when two windows answer the same words Chunks refuses and lists both, so be specific rather than hopeful. None of these opens an app — that is [DO:open_app:…] — and none of them moves his cursor.
     - [DO:move_window:Safari|Inbox|left] puts one window where he **named**, in the same `App|window title|place` shape. the place is one word only: `left`, `right`, `top`, `bottom`, `top-left`, `top-right`, `bottom-left`, `bottom-right`, `full`, `centre`, or a display — `main`, `second`, `display=2`. **never write coordinates**: `[DO:move_window:Safari|Inbox|400,220]` is refused at parse, because a rectangle you are guessing from a picture is not a place he asked for and he has to drag it back by hand. use it for "move that to the left half", "put it on the second display", "make that full screen". `centre` moves without resizing; every other place sizes the window to the half or quarter. one display plugged in means there is no `second` and Chunks says so.
-    - [DO:run_command:caffeinate -di -t 3600] runs one program with fixed arguments. there is no shell: no ; && | > or $(…) — a tag containing any is refused, so never write a second command inside the first. the program is a bare name found in /bin, /usr/bin, /usr/local/bin or /opt/homebrew/bin, never a path. for "keep this mac awake" the flags are `-d` (the display stays on), `-i` (no idle sleep) or both as `-di`; **`-u` is not one of them** — it asserts the user is active and holds nothing that stops a sleep, measured 2026-10-31 on the machine this runs on. destructive or privileged programs (rm, mv, dd, diskutil, sudo, defaults, security, codesign, chown, kill, shutdown) and anything that fetches or sends over a network (curl, wget, ssh, scp, rsync, brew, npm, pip) are refused outright — say what you would run and let him run it. **this tool is always confirmed with a card, even when he has switched asking off**, so say "i'll ask you to allow it" for this one and nothing else. prefer [DO:run_shortcut:…] for a habit he already automated.
+    - [DO:run_command:caffeinate -di -t 3600] runs one program with fixed arguments. there is no shell: no ; && | > or $(…) — a tag containing any is refused, so never write a second command inside the first. the program is a bare name found in /bin, /usr/bin, /usr/local/bin or /opt/homebrew/bin, never a path. for "keep this mac awake" the flags are `-d` (the display stays on), `-i` (no idle sleep) or both as `-di`; **`-u` is not one of them** — it asserts the user is active and holds nothing that stops a sleep, measured 2026-10-31 on the machine this runs on. destructive or privileged programs (rm, mv, dd, diskutil, sudo, defaults, security, codesign, chown, kill, shutdown), anything that fetches or sends over a network (curl, wget, ssh, scp, rsync, brew, npm, pip), and interpreters or launchers that re-open all of it (osascript, open, sh, bash, zsh, env, xargs, perl, python, python3, ruby, node, swift) are refused outright — say what you would run and let him run it. **this tool is always confirmed with a card, even when he has switched asking off**, so say "i'll ask you to allow it" for this one and nothing else. prefer [DO:run_shortcut:…] for a habit he already automated.
     - [DO:routine_add:Morning glance|daily at 08:00|brief me on what is open] adds a question Chunks asks itself on a schedule: name | cadence | question. the cadence is exactly `daily at HH:mm`, `weekdays at HH:mm`, `every 30 minutes` or `every 2 hours`; a time he did not say is a notification at the wrong hour, so ask. name and question share about 100 characters — he reads the whole card before agreeing. when it fires it goes through the same turn as a spoken question: it sees the screen then, and still has to ask before it presses. [DO:routine_remove:Morning glance] takes one out by the exact name in the list below; not in the list: say so and offer to add the one he means.
     - [DO:remind:stretch|40 min] says one line once and forgets it: the sentence | when. the when is exactly `40 min`, `2 hours`, `3 days`, `at 21:00`, `9 pm` or `tomorrow at 07:30`; seconds have no tool because the clock that fires them ticks once a minute, so a thing due in half a minute is answered in words rather than armed late. `at HH:mm` lets the app work out whether the hour is still ahead today. a reminder never captures his screen, calls a model or presses anything: when due it is one line on the card and one sentence aloud. [DO:remind_cancel:stretch] takes one out by the words on it; never guess.
     - typing is not a tool — it is the [TYPE:…] tag above; pressing Send, Pay or Delete stays his. if you emit a tool that does not exist the tag is shown to him as plain text and nothing happens, so don't invent one.
@@ -1711,7 +1711,7 @@ final class CompanionManager: ObservableObject {
     /// own words, and puts the answer in the same turn.
     ///
     /// Skipped on a continuation, which already carries the file the first turn asked for.
-    private func attachFileMentionedIn(_ question: String, continuing: Bool) async {
+    private func attachFileMentionedIn(_ question: String, continuing: Bool, epoch: Int) async {
         // A continuation must not clear anything. The round that asked for a file staged it here
         // precisely so *this* turn could spend it, and wiping the fields ahead of the guard made
         // `[READ:…]` read the file, throw the contents away, and answer from the screen instead —
@@ -1746,6 +1746,9 @@ final class CompanionManager: ObservableObject {
             }
             return .loaded(top, FileAttachment.load(top, question: question))
         }.value
+        // The disk slice is unstructured and outlives cancellation: a previous turn's file must not
+        // ride into the new turn's request (AUDIT.md R-04). The epoch is the turn's identity.
+        guard turnEpoch == epoch else { return }
         switch outcome {
         case .listing(let listing):
             if let listing {
@@ -1804,6 +1807,7 @@ final class CompanionManager: ObservableObject {
         // Off the main actor for the same reason as the attachment: the extractor is the slow part
         // and the card must keep drawing while it runs (AUDIT.md C-02).
         let result = await Task.detached { FileRead.perform(request) }.value
+        guard !Task.isCancelled else { return nil }
         switch result {
         case .failure(let failure):
             // Footnoted, not failed: `fail()` clears the card, so a model that answered the
@@ -2419,13 +2423,21 @@ final class CompanionManager: ObservableObject {
                 // permanent act and a model-authored command are the two kinds that stay asked even
                 // on a machine where nothing else is, and a lead tool that skipped the question
                 // would be the one hole in that rule.
+                // The card first, the program second: `offerTool` drops any remainder belonging to a
+                // question it displaces, and a program armed before that call would be wiped by its
+                // own card (AUDIT.md R-02). And the gate must hold *this* tool: a refusal leaves an
+                // older card pending, and `isPending` alone would arm the plan behind it (R-01).
+                offerTool(tool)
+                guard consentGate.pending == PendingAct.tool(tool) else {
+                    return .stopped(line: "The other \(steps.count) step(s) did not run.")
+                }
                 pendingProgram = PendingProgram(steps: steps, doneCount: doneCount,
                                                 totalCount: total, screenCaptures: screenCaptures)
-                offerTool(tool)
                 return .asked
             }
             let (line, succeeded) = await runToolAndAwait(tool)
             guard succeeded else {
+                hud.noteActsDone()
                 return .stopped(line: "\(line) The other \(steps.count) step(s) did not run.")
             }
             // The window the whole plan is about has to exist before step one resolves against it.
@@ -2460,6 +2472,9 @@ final class CompanionManager: ObservableObject {
                 try? await Task.sleep(nanoseconds: Self.stepSettleDelay)
 
             case .stopped(let line):
+                // A stopped plan is finished too: the pill must not keep saying "Doing it" over a
+                // refusal (AUDIT.md R-03).
+                hud.noteActsDone()
                 if index + 1 < steps.count {
                     let dropped = steps.count - index - 1
                     Log.write("program: stopped at step \(index + 1 + doneCount)/\(total) — \(line)")
@@ -2498,11 +2513,10 @@ final class CompanionManager: ObservableObject {
             // question it displaces, and a hold armed before that call would be wiped by its own
             // card (AUDIT.md A-01).
             offerTool(plan.tool)
-            guard consentGate.isPending else {
+            guard consentGate.pending == PendingAct.tool(plan.tool) else {
                 // `offerTool` refuses some tools before it asks — a shortcut that is not installed, a
                 // reveal outside the allowed folders — and a question that was never put is not an
-                // approval. Drop the hold with the refusal, or the next card he answers would start
-                // this plan.
+                // approval. An older card still pending is not this launch's card either (R-01).
                 heldBehindLaunch = nil
                 Log.write("plan: the launch was refused before the card — "
                     + "\(plan.heldSteps.count) held step(s) not run")
@@ -2578,7 +2592,10 @@ final class CompanionManager: ObservableObject {
             pendingProgram = nil
             Task {
                 let result = await runAct(act, at: pending.axPoint, approved: pending.element)
-                guard result.happened else { return }
+                guard result.happened else {
+                    self.hud.noteActsDone()
+                    return
+                }
                 guard let program, !program.steps.isEmpty else {
                     self.hud.noteActsDone()
                     return
@@ -3863,7 +3880,8 @@ final class CompanionManager: ObservableObject {
                 // costs 0.79s to slice — serialised ahead of the capture, that was 0.79s added to
                 // every turn that mentioned a big document.
                 let fileRead = Task { @MainActor in
-                    await self.attachFileMentionedIn(transcript, continuing: continuingPlan)
+                    await self.attachFileMentionedIn(transcript, continuing: continuingPlan,
+                                                     epoch: epoch)
                 }
 
                 // A circled region replaces the whole-screen capture for exactly one turn.

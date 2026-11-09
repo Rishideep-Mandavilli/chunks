@@ -737,6 +737,18 @@ else
   printf '  \033[31mFAIL\033[0m  card: the pill lies after acts, or a safety switch wears the login label\n'
   fail=$((fail + 1)); failures+=("card stage and toggle labels")
 fi
+# The re-audit's two hold races (AUDIT.md R-01/R-02): a hold or a program may only arm behind a card
+# that holds *this* tool — a refusal leaves an older card pending — and a cancelled turn's file slice
+# must not stage into the new turn (R-04).
+if [[ $(grep -c 'consentGate.pending == PendingAct.tool' \
+      Sources/Chunks/Clicky/CompanionManager.swift) -ge 2 ]] \
+   && grep -q 'guard turnEpoch == epoch else { return }' Sources/Chunks/Clicky/CompanionManager.swift; then
+  printf '  \033[32mPASS\033[0m  holds arm only behind their own card, and a dead turn stages no file\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  a hold can arm behind a refusal, or a cancelled turn stages its file\n'
+  fail=$((fail + 1)); failures+=("hold arming and file staging races")
+fi
 # A crash that says nothing is a crash that teaches nothing. Four reports in eighteen hours all
 # faulted inside SwiftUI's event dispatch and none of them named the surface or the event, because a
 # fault does not flush the log — so the app installs a signal handler that writes one line first, and

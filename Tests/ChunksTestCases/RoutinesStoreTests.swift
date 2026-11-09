@@ -66,6 +66,17 @@ public enum RoutinesStoreTests {
                    "Saturday is not a weekday")
         }
 
+        test("a routine added after its hour waits for tomorrow instead of firing retroactively") {
+            // AUDIT.md R-05: "every morning at eight" said at 21:00 must not fire on the next tick.
+            let fresh = routine(created: date(2026, 11, 9, 21, 0))
+            expect(RoutinesStore.dueSlot(for: fresh, now: date(2026, 11, 9, 21, 5), calendar: calendar) == nil,
+                   "a brand-new routine owes nothing for a slot before it existed")
+            let old = routine(created: date(2026, 11, 1, 9, 0))
+            expectEqual(RoutinesStore.dueSlot(for: old, now: date(2026, 11, 9, 21, 5), calendar: calendar),
+                        date(2026, 11, 9, 8, 0),
+                        "an existing routine still catches up on a slot a blocked tick missed")
+        }
+
         test("a routine is refused with the sentence a user can act on") {
             let cases: [(String, String, Routine.Cadence, String)] = [
                 ("", "brief the inbox", .daily(at: "08:00"), "needs a name"),

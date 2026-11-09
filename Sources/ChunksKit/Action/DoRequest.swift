@@ -544,7 +544,7 @@ public enum DoRequest: Equatable, Sendable {
 
     /// Parse `[DO:run_command:…]` into an argv array, or nil when it is not exactly one command.
     ///
-    /// Quoting is supported for arguments with spaces — `osascript -e "tell app …"` is a real shape —
+    /// Quoting is supported for arguments with spaces — `say "hello there"` is a real shape —
     /// and nothing else is: no redirection, no chaining, no substitution, no path to the program.
     public static func commandArgv(in text: String) -> [String]? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -1056,7 +1056,27 @@ public enum AXTDriver {
     }
 
     public static func surface(ownedByNamed app: String) -> AppSurface? {
-        windowListSurface(ownedByNamed: app) ?? axSurface(ownedByNamed: app)
+        if let surface = windowListSurface(ownedByNamed: app) ?? axSurface(ownedByNamed: app) {
+            return surface
+        }
+        // A window that was just opened may not be in either list yet — the named act that follows a
+        // launch read "WhatsApp is not on screen" while WhatsApp was plainly open. Only wait when the
+        // process is actually running; an app that is not installed must refuse immediately.
+        guard isRunningApplication(named: app) else { return nil }
+        for _ in 0..<2 {
+            usleep(400_000)
+            if let surface = windowListSurface(ownedByNamed: app) ?? axSurface(ownedByNamed: app) {
+                return surface
+            }
+        }
+        return nil
+    }
+
+    /// Whether a running application answers the name, for the settle-retry above. A read, not an act.
+    static func isRunningApplication(named app: String) -> Bool {
+        NSWorkspace.shared.runningApplications.contains {
+            matchesAppName(label: app, owner: $0.localizedName ?? "")
+        }
     }
 
     /// Whether the application the model named is the application a window belongs to.
@@ -1329,7 +1349,12 @@ public enum AXTDriver {
                         + "|\(info.frame.map { "\($0)" } ?? "-")"
                     if seen.insert(key).inserted { found.append(info) }
                 }
-                queue.append(contentsOf: children(of: element))
+                // A menu's rows can never be typed into, and walking them spends the whole budget
+                // before the window's real fields are reached — measured on WhatsApp: 241 reads,
+                // 0 fields, while the focused search bar sat unpublished. Prune like the press walk.
+                if !isMenuSubtree(stringAttribute(element, kAXRoleAttribute as String) ?? "") {
+                    queue.append(contentsOf: children(of: element))
+                }
             }
         }
         return FieldSweep(fields: found, elementsRead: maxFieldSearchElements - budget,
@@ -1394,7 +1419,12 @@ public enum AXTDriver {
                         actions: actions,
                         childLabels: children(of: element).flatMap { publishedNames(of: $0) }))
                 }
-                queue.append(contentsOf: children(of: element))
+                // Menu rows are not controls the user is looking at, and walking them spends the
+                // budget before the window's own buttons are reached (the digest read back as a
+                // wall of AXMenuBarItem). Prune the subtree, as the press and field walks do.
+                if !isMenuSubtree(stringAttribute(element, kAXRoleAttribute as String) ?? "") {
+                    queue.append(contentsOf: children(of: element))
+                }
             }
         }
         return ControlSweep(controls: found, elementsRead: maxFieldSearchElements - budget,
@@ -2128,7 +2158,11 @@ public enum AXTDriver {
                 if found != nil { return nil }
                 found = element
             }
-            queue.append(contentsOf: children(of: element))
+            // Menus hold no field and spend the budget before the window's one open search box is
+            // reached (WhatsApp read back as 0 fields). Prune the subtree like the other sweeps.
+            if !isMenuSubtree(stringAttribute(element, kAXRoleAttribute as String) ?? "") {
+                queue.append(contentsOf: children(of: element))
+            }
         }
         return found
     }

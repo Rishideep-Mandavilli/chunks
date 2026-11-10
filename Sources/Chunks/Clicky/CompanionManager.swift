@@ -4399,7 +4399,15 @@ final class CompanionManager: ObservableObject {
                    !outcome.isEmpty {
                     saying += saying.isEmpty ? outcome : " " + outcome
                 }
-                if !saying.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // He asked for one voice at the end of a multi-part task, not a sentence per step.
+                // While any continuation, program, hold or card is still owed, this round's words go
+                // to the card only; the round with nothing left to do is the one that speaks.
+                let taskContinues = pendingContinuation != nil || pendingProgram != nil
+                    || heldBehindLaunch != nil || continuationBehindTool != nil
+                    || consentGate.isPending
+                if taskContinues {
+                    Log.write("voice: holding speech until the task ends — \(saying.count) chars on the card only")
+                } else if !saying.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     if streamer.endedMidConstruct {
                         // The words were spoken as far as the stream got them, and the reason the
                         // sentence stops half-way is the model's, not the app's — but it has to be

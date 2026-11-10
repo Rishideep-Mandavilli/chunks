@@ -1311,10 +1311,11 @@ session down with it, and a stale bundle that does not know the flag launches th
 
 ## Current state
 
-**The app runs. 874 of 874 tests green across 49 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 63 checks: 61 pass and 2 skip,
-and the ones that move are the live model round and the Chrome candidate sweep, never a check that
-went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
+**The app runs. 877 of 877 tests green across 50 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 63 checks when the live fixtures are
+present; the live-fixture ones (fields, hit test, semantic aim, candidates, geometry, state digest)
+skip *with a printed reason* when no app is open to aim at, and the live model round skips on a rate
+limit — never a check that went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is
 asleep or locked (`CGDisplayIsActive` false) — re-run with the screen awake before believing a red
 suite. The same rule now applies to `--probe-protocol`: it measures the *prompt* against a live
 capture, and a run started while the Mac is at the login window would grade five questions about a
@@ -1351,6 +1352,7 @@ Done and tested:
 | What is open | `Action/OpenWindows.swift` | The read half: window list → one labelled block for the next turn, grouped by app, whole groups only under a 3 KB budget, with the count of what was left out |
 | State-grounded observation | `Action/ScreenStateDigest.swift`, `Action/AXTDriver.swift` (`frontmostStateDigest`) | The frontmost app's published control/field **names** (never values), credential-redacted and whole-line budgeted, handed to the model so it names a target instead of reading pixels — the state-grounding lever that helps weak models most (StateAct). Gathered off-main concurrent with the capture, raced at 4 s, skipped for a circled region; `--probe-state` prints the exact block |
 | The externalized plan | `Brain/TaskPlan.swift`, `<PLAN>` in `ResponseParser`/`AnswerStreamer` | The model's ordered checklist for a multi-part request, kept outside the message history and re-injected on every continuation with "continue from the first undone step"; cleared by a new question or a finished task. Plan-and-execute so a weak model keeps the whole task in view; the tag is consumed, never shown |
+| Plan recovery | `Brain/PlanRecovery.swift` | Two bounded recoveries, both instructions to the one assistant: on an app refusal/failure with round budget left the next look replans with a different approach (a user's "not now" is never replanned), and before a plan ends one narration-blind look verifies the request against the current state. Both bounded by `maxPlanRounds` so an impossible task still ends honestly |
 | Which window he meant | `Action/WindowAct.swift`, `Action/WindowDriver.swift` | The pure half decides (a title answers when every distinctive word he said is in it, two equal answers are refused *with both names listed*, and nothing is ever chosen by where it sits); the driver enumerates windows through Accessibility **and** the window server — Accessibility alone publishes nothing for an app on another display — and performs raise/minimise/close/quit without moving the cursor |
 | Where a window goes | `Action/WindowPlacementPolicy.swift` | Twelve named places and nothing else: halves, quarters, full, centre, `main`/`second`/`display=N`. Refuses a coordinate at parse, computes in Accessibility's own top-left point space with no conversion, and is covered at 1x/2x/3x and on a negative-origin second display. `--probe-geometry` prints the rectangle it would write |
 | The whole keyboard | `Action/KeyAction.swift`, `Action/AXTDriver.swift` (`keys`) | `[DO:key:App|expr]`: a key table printed from this machine's `Carbon.HIToolbox`, a parse that refuses to guess, and a judgement (routine / always asked / refused) that gates the least corroborated act in the app. Available only with "Ask before acting" on; `⌘Q`, `⌘⌥esc` and caps lock refused whatever the switch says; `--probe-keys` prints the classification and the live focus and posts nothing |

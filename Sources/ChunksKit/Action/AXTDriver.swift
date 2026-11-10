@@ -2546,8 +2546,21 @@ public enum AXTDriver {
     public static func webEditorCandidate(at point: CGPoint) -> Bool {
         guard let info = elementAt(point) else { return false }
         let role = info.role ?? ""
-        return !editableRoles.contains(role)
-            && (role == "AXGroup" || role == "AXWebArea" || role == "AXDiv" || role.isEmpty)
+        if editableRoles.contains(role) { return false }
+        if ["AXGroup", "AXWebArea", "AXDiv", "AXScrollArea", "AXStaticText", "AXUnknown", ""]
+            .contains(role) { return true }
+        // A browser whose web tree is unpublished answers the hit test with the application element
+        // itself (measured on YouTube's search box: role=AXApplication named Chrome). That is still
+        // web content a click can put a caret into, not a native control — offer the focus click.
+        if role == "AXApplication", let app = info.appName, isBrowserName(app) { return true }
+        return false
+    }
+
+    /// Whether a name is a web browser, for the web-content focus-click fallback.
+    static func isBrowserName(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        return ["chrome", "chromium", "safari", "edge", "brave", "arc", "firefox", "opera", "vivaldi"]
+            .contains { lowered.contains($0) }
     }
 
     /// Put the caret where the aim is: one click at the box, then the breath his proven Auto Typer

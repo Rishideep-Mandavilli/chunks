@@ -756,11 +756,13 @@ fi
 if grep -q 'Construct(start: "<PLAN>"' Sources/ChunksKit/Brain/ResponseParser.swift \
    && grep -q 'currentPlanSteps = streamer.planSteps' Sources/Chunks/Clicky/CompanionManager.swift \
    && grep -q 'TaskPlan.block(steps: currentPlanSteps' Sources/Chunks/Clicky/CompanionManager.swift \
-   && grep -q 'stateDigest: stateDigest' Sources/Chunks/Clicky/CompanionManager.swift; then
-  printf '  \033[32mPASS\033[0m  pipeline: published-state observation and an externalized plan reach the prompt\n'
+   && grep -q 'stateDigest: stateDigest' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'PlanRecovery.replanInstruction' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'PlanRecovery.verifyInstruction' Sources/Chunks/Clicky/CompanionManager.swift; then
+  printf '  \033[32mPASS\033[0m  pipeline: state observation, externalized plan, replan and finish gate wired\n'
   pass=$((pass + 1))
 else
-  printf '  \033[31mFAIL\033[0m  pipeline: the state digest or the plan checklist no longer reaches the model\n'
+  printf '  \033[31mFAIL\033[0m  pipeline: the state digest, plan checklist or a recovery no longer reaches the model\n'
   fail=$((fail + 1)); failures+=("state-grounded observe + plan wiring")
 fi
 # A displaced question is a denial, and its held steps must die with it: before this check existed,

@@ -316,6 +316,10 @@ final class CompanionManager: ObservableObject {
     /// from him and by a turn that ends with nothing left to do.
     private var currentPlanSteps: [String] = []
 
+    /// Whether the finish gate has already spent its one verification look on the task in flight, so
+    /// a completed plan is checked once and not looped. Reset by a new question from him.
+    private var finishGateUsed = false
+
     /// The model's continuation sentence while a *lone tool* card is outstanding. With asking on the
     /// turn ends at the question, so the round it promised waits for his Allow exactly like a held
     /// plan does. Without this slot, "open WhatsApp and search" on an asking-on machine opened the
@@ -3910,6 +3914,7 @@ final class CompanionManager: ObservableObject {
             planRound = 0
             // His new question is a new task: the old checklist must not steer it.
             currentPlanSteps = []
+            finishGateUsed = false
             // The same rule for a plan still waiting behind a launch card: his new sentence is the
             // end of what the old one was about to do, and a hold that outlives the question it was
             // armed for would resume a plan onto a screen he has just changed the subject of.
@@ -3961,6 +3966,11 @@ final class CompanionManager: ObservableObject {
             // finished, rather than over the top of it.
             var pendingContinuation: String?
             var planStepCompleted = false
+            /// Set when a plan step failed and the round budget allows a different approach; the
+            /// next look replans from the current screen instead of hard-stopping.
+            var replanContinuation: String?
+            /// Set when the finish gate spends its one verification look on a plan about to end.
+            var finishGateRequested = false
             /// Whether this round asked for a file and got one, which is progress even when the
             /// reply proposed no act.
             var fileReadStaged = false
@@ -4230,6 +4240,13 @@ final class CompanionManager: ObservableObject {
                             planAdvanced = true
                         case .stopped(let line):
                             actOutcome = line
+                            // A failed step is not always the end: with a plan in flight and round
+                            // budget left, the next look replans from the current screen. This is an
+                            // app refusal/failure, never a user's "not now" (a denial ends the plan
+                            // through answerAct), and every replanned act still meets PolicyGate.
+                            replanContinuation = PlanRecovery.replanInstruction(
+                                failure: line, steps: currentPlanSteps,
+                                round: planRound, maxRounds: Self.maxPlanRounds)
                         case .asked: break
                         }
                         logUnaskedProposals(streamer: streamer, ranSteps: program.count,
@@ -4294,10 +4311,10 @@ final class CompanionManager: ObservableObject {
                     // looked like from the outside.
                     fileReadStaged = staged != nil
                     pendingContinuation = heldAfterLaunch ?? notebookContinuation
-                        ?? windowsContinuation ?? staged ?? saidNext
+                        ?? windowsContinuation ?? staged ?? replanContinuation ?? saidNext
                 } else {
                     pendingContinuation = heldAfterLaunch ?? notebookContinuation
-                        ?? windowsContinuation ?? saidNext
+                        ?? windowsContinuation ?? replanContinuation ?? saidNext
                 }
                 // A held plan wins the one continuation slot because it names the steps that
                 // verifiably did not run; the model's own sentence about what comes next may have
@@ -4317,7 +4334,20 @@ final class CompanionManager: ObservableObject {
                 // next, unrelated question. A pending card, program or hold means it is still live.
                 if pendingContinuation == nil, pendingProgram == nil, heldBehindLaunch == nil,
                    !consentGate.isPending {
-                    currentPlanSteps = []
+                    // Before a plan is allowed to end, one verification look checks the request
+                    // against the screen as it is now rather than trusting the agent's own account
+                    // of its work (verify-on-state). Spent once per task and bounded by the round
+                    // budget, so a task that cannot be done still ends honestly.
+                    if !currentPlanSteps.isEmpty, !finishGateUsed,
+                       planRound < Self.maxPlanRounds,
+                       let verify = PlanRecovery.verifyInstruction(steps: currentPlanSteps) {
+                        finishGateUsed = true
+                        finishGateRequested = true
+                        pendingContinuation = verify
+                        Log.write("plan: finish gate — one look to confirm the task against the screen")
+                    } else {
+                        currentPlanSteps = []
+                    }
                 }
                 // A round that asked for nothing to happen is not a failed step — it is a look that
                 // found nothing yet. Once a plan is genuinely under way, that deserves another look
@@ -4325,7 +4355,8 @@ final class CompanionManager: ObservableObject {
                 // Outside a plan it does not: a model that merely mentions `<CONTINUE>` after an
                 // ordinary answer must not spend four model calls on itself.
                 planStepCompleted = planAdvanced || fileReadStaged || notebookStaged
-                    || windowsStaged || (planRound > 0 && proposed.isEmpty && tools.isEmpty)
+                    || windowsStaged || finishGateRequested || replanContinuation != nil
+                    || (planRound > 0 && proposed.isEmpty && tools.isEmpty)
 
                 // Save this exchange to conversation history, with the tags resolved rather
                 // than stripped: what the user was *shown* is what the next turn has to

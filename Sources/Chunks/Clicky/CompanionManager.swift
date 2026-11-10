@@ -353,7 +353,12 @@ final class CompanionManager: ObservableObject {
     /// something is typed. So a turn may say what still has to happen, Chunks looks again, and the
     /// plan carries on without being asked twice. Bounded because a model that keeps promising a
     /// next step is otherwise a loop with a voice.
-    static let maxPlanRounds = 4
+    ///
+    /// Six, not four: a two-app task (browser half + messenger half) needs ~3 looks each, and every
+    /// recovery used to cost a forward round 1-for-1, which made such tasks impossible by arithmetic
+    /// (QA P1-3). With the browser type path working first-try and replans carrying the app's field
+    /// names, six gives a real two-app task room while still bounding a looping model.
+    static let maxPlanRounds = 6
 
     /// The longest a turn may sit with nothing on the card before the card says so.
     ///
@@ -2153,12 +2158,16 @@ final class CompanionManager: ObservableObject {
                 : (element.descriptionText?.isEmpty == false ? element.elementLabel : "area")
             Log.write("act: nothing pressable at \(axPoint) — role=\(element.role ?? "-") "
                 + "named \"\(element.elementLabel)\", asked \"\(act.label)\" — offering a real click")
+            // A real click warps the pointer — the one thing Chunks must never do unapproved. The
+            // question names the place, so it is asked even with the asking switch off (inferredAim
+            // sits above that shortcut in PolicyGate), restoring the invariant the comment promises.
             return await offerPolicyAndCard(request, element: element, axPoint: axPoint,
                                             question: Self.pressQuestion(
                                                 elementLabel: "the \(named) at "
                                                     + "(\(Int(axPoint.x)),\(Int(axPoint.y)))",
                                                 appName: appName(of: element)),
-                                            logPrefix: "act", position: position)
+                                            logPrefix: "act", position: position,
+                                            inferredAim: true)
         }
         let element = target.info
         if let named = act.pointTarget?.appName, let owner = element.appName,
@@ -2788,23 +2797,25 @@ final class CompanionManager: ObservableObject {
         guard let text = act.textToType else {
             return .stopped(line: "That ask was not a type act.")
         }
+        // Browser web content first: the tree is unpublished, so a typeTarget sweep would spend ~3s
+        // and still miss the caret. Go straight to the consented focus click — click, caret,
+        // keystrokes — which is the route that actually works on a web page (AUDIT P1-2/P2-1).
+        if await driver({ AXTDriver.webEditorCandidate(at: axPoint) }),
+           let hit = await driver({ AXTDriver.elementAt(axPoint) }) {
+            var withClick = act
+            withClick.webFocusClick = true
+            let question = ActionRequest.webTypeQuestion(
+                label: act.label, appName: appName(of: hit),
+                characters: text.count, point: axPoint)
+            Log.write("type: web content at \(axPoint) — offering a focus click for "
+                      + "\(text.count) characters")
+            // The focus click moves the pointer; like the ACT pointer-click fallback it is asked
+            // even with asking off, so the card names the click before it happens.
+            return await offerPolicyAndCard(withClick, element: hit, axPoint: axPoint,
+                                            question: question, logPrefix: "type",
+                                            position: position, inferredAim: true)
+        }
         guard let field = await driver({ AXTDriver.typeTarget(label: act.label, at: axPoint) }) else {
-            // Web content is the one place a caret exists with no field around it: a Chromium
-            // editor publishes nothing until the click puts the cursor in it. The question names
-            // the click, so what he approves is exactly what happens — click, caret, keystrokes.
-            if let text = act.textToType, await driver({ AXTDriver.webEditorCandidate(at: axPoint) }),
-               let hit = await driver({ AXTDriver.elementAt(axPoint) }) {
-                var withClick = act
-                withClick.webFocusClick = true
-                let question = ActionRequest.webTypeQuestion(
-                    label: act.label, appName: appName(of: hit),
-                    characters: text.count, point: axPoint)
-                Log.write("type: web content at \(axPoint) — offering a focus click for "
-                          + "\(text.count) characters")
-                return await offerPolicyAndCard(withClick, element: hit, axPoint: axPoint,
-                                                question: question, logPrefix: "type",
-                                                position: position)
-            }
             var reason = AXTDriver.TypeResult.noField(containing: axPoint).userFacingReason
             // The common case has a name for it. Measured 2026-10-05 on WhatsApp's search box: the
             // point holds an `AXStaticText "Search"` that answers `AXPress` and is not a field —
@@ -4247,6 +4258,11 @@ final class CompanionManager: ObservableObject {
                             replanContinuation = PlanRecovery.replanInstruction(
                                 failure: line, steps: currentPlanSteps,
                                 round: planRound, maxRounds: Self.maxPlanRounds)
+                            // A blind replanner re-aims the same pixel four times. Hand it the names
+                            // the app actually publishes so the next look can aim by name (P1-4).
+                            if replanContinuation != nil, let digest = await screenStateDigest() {
+                                replanContinuation? += "\n" + digest.text
+                            }
                         case .asked: break
                         }
                         logUnaskedProposals(streamer: streamer, ranSteps: program.count,

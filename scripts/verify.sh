@@ -765,6 +765,18 @@ else
   printf '  \033[31mFAIL\033[0m  pipeline: the state digest, plan checklist or a recovery no longer reaches the model\n'
   fail=$((fail + 1)); failures+=("state-grounded observe + plan wiring")
 fi
+# A real pointer click (ACT fallback and web focus-click) warps the user's pointer, so it is asked even
+# with asking off: both routes must pass inferredAim:true, and the browser web-content type path must
+# short-circuit to the focus click instead of burning typeTarget sweeps (QA P0-1/P1-2).
+if [[ $(grep -c 'inferredAim: true' Sources/Chunks/Clicky/CompanionManager.swift) -ge 2 ]] \
+   && grep -q 'isBrowserName(app) { return true }' Sources/ChunksKit/Action/AXTDriver.swift \
+   && grep -q 'webEditorCandidate(at: axPoint) }),' Sources/Chunks/Clicky/CompanionManager.swift; then
+  printf '  \033[32mPASS\033[0m  pointer clicks are consented even with asking off; browser type short-circuits\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  a pointer click can run unapproved, or browser type burns the sweep budget\n'
+  fail=$((fail + 1)); failures+=("pointer-click consent and browser type path")
+fi
 # A displaced question is a denial, and its held steps must die with it: before this check existed,
 # `pendingProgram` survived displacement and ran when the *next* card was allowed (AUDIT.md A-01).
 # Both card doors log the displacement; both must drop the remainder within the same branch.

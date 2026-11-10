@@ -2098,7 +2098,7 @@ public enum AXTDriver {
         // The window list omits some Catalyst apps (WhatsApp), so a point over their search box
         // resolved no window and the type refused "no text field there" about a focused, visible
         // field. Fall back to the frontmost app's own idea of its window before giving up.
-        guard let window = window(at: point) ?? frontmostWindowRecord() else { return nil }
+        guard let window = window(at: point) ?? frontmostWindowRecord(at: point) else { return nil }
         let app = AXUIElementCreateApplication(pid_t(window.pid))
         _ = AXUIElementSetMessagingTimeout(app, messagingTimeout)
 
@@ -2237,10 +2237,12 @@ public enum AXTDriver {
     }
 
     /// The frontmost app's own front window, for apps the window list does not publish (WhatsApp).
-    /// A read, not an act; nil when nothing is frontmost or it reports no window.
-    private static func frontmostWindowRecord() -> WindowRecord? {
-        guard let name = NSWorkspace.shared.frontmostApplication?.localizedName else { return nil }
-        return axSurface(ownedByNamed: name)?.front
+    /// A read, not an act; nil when nothing is frontmost, it reports no window, or the point belongs
+    /// to a different app than the frontmost one (sweeping the wrong app would type into it).
+    private static func frontmostWindowRecord(at point: CGPoint) -> WindowRecord? {
+        guard let front = NSWorkspace.shared.frontmostApplication else { return nil }
+        if let hit = elementAt(point), hit.pid != Int(front.processIdentifier) { return nil }
+        return axSurface(ownedByNamed: front.localizedName ?? "")?.front
     }
 
     /// How many times to look for a field that is not published yet, and how long to wait between.
@@ -2547,13 +2549,12 @@ public enum AXTDriver {
         guard let info = elementAt(point) else { return false }
         let role = info.role ?? ""
         if editableRoles.contains(role) { return false }
-        if ["AXGroup", "AXWebArea", "AXDiv", "AXScrollArea", "AXStaticText", "AXUnknown", ""]
-            .contains(role) { return true }
-        // A browser whose web tree is unpublished answers the hit test with the application element
-        // itself (measured on YouTube's search box: role=AXApplication named Chrome). That is still
-        // web content a click can put a caret into, not a native control — offer the focus click.
-        if role == "AXApplication", let app = info.appName, isBrowserName(app) { return true }
-        return false
+        // A browser's web tree is often unpublished, so the hit answers with a link, image, heading,
+        // group, or the application element itself. Decide by the owner, not the raw hit role: any
+        // non-editable point inside a browser is web content a click can put a caret into.
+        if let app = info.appName, isBrowserName(app) { return true }
+        return ["AXGroup", "AXWebArea", "AXDiv", "AXScrollArea", "AXStaticText", "AXUnknown", ""]
+            .contains(role)
     }
 
     /// Whether a name is a web browser, for the web-content focus-click fallback.
@@ -2593,7 +2594,7 @@ public enum AXTDriver {
     /// click put the caret where he approved — which is the whole contract his script proves.
     public static func typeWeb(_ text: String, at point: CGPoint) -> TypeResult {
         guard isTrusted() else { return .permissionMissing }
-        guard let window = window(at: point) ?? frontmostWindowRecord() else {
+        guard let window = window(at: point) ?? frontmostWindowRecord(at: point) else {
             return .noField(containing: point)
         }
         focusClick(at: point)

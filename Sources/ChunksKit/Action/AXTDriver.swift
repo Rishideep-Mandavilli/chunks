@@ -2593,7 +2593,9 @@ public enum AXTDriver {
     /// click put the caret where he approved — which is the whole contract his script proves.
     public static func typeWeb(_ text: String, at point: CGPoint) -> TypeResult {
         guard isTrusted() else { return .permissionMissing }
-        guard let window = window(at: point) else { return .noField(containing: point) }
+        guard let window = window(at: point) ?? frontmostWindowRecord() else {
+            return .noField(containing: point)
+        }
         focusClick(at: point)
         let app = AXUIElementCreateApplication(pid_t(window.pid))
         _ = AXUIElementSetMessagingTimeout(app, messagingTimeout)

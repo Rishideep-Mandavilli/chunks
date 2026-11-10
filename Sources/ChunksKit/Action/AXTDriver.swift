@@ -2094,7 +2094,11 @@ public enum AXTDriver {
     /// action, and a text field usually answers to none. Reusing it would make every field an
     /// `notPressable` refusal.
     public static func typeTarget(label: String, at point: CGPoint) -> TypeTarget? {
-        guard isTrusted(), let window = window(at: point) else { return nil }
+        guard isTrusted() else { return nil }
+        // The window list omits some Catalyst apps (WhatsApp), so a point over their search box
+        // resolved no window and the type refused "no text field there" about a focused, visible
+        // field. Fall back to the frontmost app's own idea of its window before giving up.
+        guard let window = window(at: point) ?? frontmostWindowRecord() else { return nil }
         let app = AXUIElementCreateApplication(pid_t(window.pid))
         _ = AXUIElementSetMessagingTimeout(app, messagingTimeout)
 
@@ -2230,6 +2234,13 @@ public enum AXTDriver {
             ?? stringAttribute(focused, kAXPlaceholderValueAttribute as String) ?? ""
         guard name.isEmpty || nameScore(label: label, title: name) >= 1 else { return nil }
         return focused
+    }
+
+    /// The frontmost app's own front window, for apps the window list does not publish (WhatsApp).
+    /// A read, not an act; nil when nothing is frontmost or it reports no window.
+    private static func frontmostWindowRecord() -> WindowRecord? {
+        guard let name = NSWorkspace.shared.frontmostApplication?.localizedName else { return nil }
+        return axSurface(ownedByNamed: name)?.front
     }
 
     /// How many times to look for a field that is not published yet, and how long to wait between.

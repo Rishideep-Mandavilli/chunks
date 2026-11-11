@@ -1,6 +1,32 @@
 import CoreGraphics
 import Foundation
 
+/// The palette the agent may draw with. The user's own overlay stays the single warm red; the agent
+/// can pick a colour per mark so a multi-part explanation reads as separate, legible strokes rather
+/// than one monochrome scribble.
+public enum InkColor: String, CaseIterable, Sendable {
+    case red, blue, green, orange, purple, yellow, pink, teal, white, black
+
+    public var cgColor: CGColor {
+        switch self {
+        case .red:    return CGColor(srgbRed: 1.00, green: 0.24, blue: 0.32, alpha: 1)
+        case .blue:   return CGColor(srgbRed: 0.15, green: 0.45, blue: 1.00, alpha: 1)
+        case .green:  return CGColor(srgbRed: 0.15, green: 0.70, blue: 0.35, alpha: 1)
+        case .orange: return CGColor(srgbRed: 1.00, green: 0.55, blue: 0.10, alpha: 1)
+        case .purple: return CGColor(srgbRed: 0.60, green: 0.30, blue: 0.95, alpha: 1)
+        case .yellow: return CGColor(srgbRed: 0.98, green: 0.80, blue: 0.10, alpha: 1)
+        case .pink:   return CGColor(srgbRed: 1.00, green: 0.40, blue: 0.70, alpha: 1)
+        case .teal:   return CGColor(srgbRed: 0.10, green: 0.70, blue: 0.70, alpha: 1)
+        case .white:  return CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+        case .black:  return CGColor(srgbRed: 0.05, green: 0.05, blue: 0.05, alpha: 1)
+        }
+    }
+
+    public static func parse(_ raw: String) -> InkColor? {
+        InkColor(rawValue: raw.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+}
+
 /// One mark the user drew on the overlay.
 public enum AnnotationShape: Equatable, Sendable {
     /// Freehand pen. Stored as sampled points, not a `CGPath`, so it stays `Sendable` and
@@ -20,8 +46,16 @@ public enum AnnotationShape: Equatable, Sendable {
     case highlight(LogicalRect)
     /// A line under a region — "this text".
     case underline(LogicalRect)
-    /// Words written on the screen at a point (top-left anchor).
+    /// Words written on the screen at a point (top-left anchor). Emoji render as real glyphs.
     case text(LogicalPoint, String)
+    /// A freeform polyline through the given points — the agent's pen for anything the named shapes
+    /// cannot say (a smile, a heart, a star, a squiggle). Smoothed when rendered.
+    case path([LogicalPoint])
+    /// An elliptical arc, angles in degrees (0 = right, increasing toward the bottom in the flipped
+    /// view), for smiles and curves.
+    case arc(center: LogicalPoint, radiusX: Double, radiusY: Double, start: Double, end: Double)
+    /// A mark drawn in a specific colour; the geometry is the inner shape.
+    indirect case tinted(AnnotationShape, InkColor)
 
     /// The context a pin carries into a crop, in logical points.
     public static let pinRadius: Double = 24
@@ -88,6 +122,25 @@ public enum AnnotationShape: Equatable, Sendable {
             return LogicalRect(x: point.x, y: point.y,
                                width: Swift.max(width, AnnotationShape.textSize),
                                height: AnnotationShape.textSize * 1.4)
+
+        case .path(let points):
+            guard let first = points.first else { return LogicalRect(x: 0, y: 0, width: 0, height: 0) }
+            var minX = first.x, maxX = first.x, minY = first.y, maxY = first.y
+            for p in points {
+                minX = Swift.min(minX, p.x); maxX = Swift.max(maxX, p.x)
+                minY = Swift.min(minY, p.y); maxY = Swift.max(maxY, p.y)
+            }
+            let pad = AnnotationShape.strokeWidth
+            return LogicalRect(x: minX - pad, y: minY - pad,
+                               width: maxX - minX + pad * 2, height: maxY - minY + pad * 2)
+
+        case .arc(let center, let rx, let ry, _, _):
+            let pad = AnnotationShape.strokeWidth
+            return LogicalRect(x: center.x - rx - pad, y: center.y - ry - pad,
+                               width: (rx + pad) * 2, height: (ry + pad) * 2)
+
+        case .tinted(let inner, _):
+            return inner.boundingBox
         }
     }
 
@@ -163,6 +216,11 @@ public struct AnnotationSession: Equatable, Sendable {
             case .highlight: noun = "highlighted"
             case .underline: noun = "underlined"
             case .text: noun = "wrote on"
+            case .path: noun = "drew"
+            case .arc: noun = "curved"
+            case .tinted(let inner, _):
+                noun = AnnotationSession(shapes: [inner]).descriptionForModel
+                    .replacingOccurrences(of: "1 region ", with: "")
             }
             counts[noun, default: 0] += 1
         }

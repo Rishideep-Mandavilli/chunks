@@ -136,10 +136,17 @@ public struct ScreenCapture: Sendable {
             return CGPoint(x: q.x, y: q.y)
         }
 
-        for shape in shapes {
+        func paint(_ shape: AnnotationShape) {
             switch shape {
             case .stroke(let points):
-                guard let first = points.first else { continue }
+                guard let first = points.first else { return }
+                context.beginPath()
+                context.move(to: px(first))
+                for p in points.dropFirst() { context.addLine(to: px(p)) }
+                context.strokePath()
+
+            case .path(let points):
+                guard let first = points.first else { return }
                 context.beginPath()
                 context.move(to: px(first))
                 for p in points.dropFirst() { context.addLine(to: px(p)) }
@@ -152,6 +159,17 @@ public struct ScreenCapture: Sendable {
                                   width: radiusX * 2 * scale,
                                   height: radiusY * 2 * scale)
                 context.strokeEllipse(in: rect)
+
+            case .arc(let c, let rx, let ry, let start, let end):
+                let steps = 24
+                let s = start * .pi / 180, e = end * .pi / 180
+                context.beginPath()
+                for i in 0...steps {
+                    let t = s + (e - s) * Double(i) / Double(steps)
+                    let p = px(LogicalPoint(x: c.x + rx * cos(t), y: c.y + ry * sin(t)))
+                    if i == 0 { context.move(to: p) } else { context.addLine(to: p) }
+                }
+                context.strokePath()
 
             case .rect(let r):
                 let topLeft = px(LogicalPoint(x: r.minX, y: r.minY))
@@ -198,12 +216,20 @@ public struct ScreenCapture: Sendable {
                 context.addLine(to: b)
                 context.strokePath()
 
+            case .tinted(let inner, let color):
+                context.setStrokeColor(color.cgColor)
+                context.setFillColor(color.cgColor)
+                paint(inner)
+                context.setStrokeColor(AnnotationShape.overlayStrokeColor)
+                context.setFillColor(AnnotationShape.overlayStrokeColor)
+
             case .text:
                 // Written words live on the passive ink layer for the user; they are not burned
                 // into the crop the model reads (the model already has the unmarked picture).
-                continue
+                return
             }
         }
+        for shape in shapes { paint(shape) }
 
         return context.makeImage() ?? image
     }

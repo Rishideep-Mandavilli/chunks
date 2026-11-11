@@ -60,6 +60,32 @@ public enum DrawTests {
             expect(session.shapes.count == 1, "only the topmost mark went")
         }
 
+        test("colour, freeform path, arc and emoji parse and carry through to the shape") {
+            let id: (Double, Double) -> LogicalPoint = { LogicalPoint(x: $0, y: $1) }
+            let blue = DrawRequest.parse("circle:blue|100,200,300,100")
+            expect(blue?.color == .blue, "a colour after the colon is parsed")
+            if case .tinted(_, let c)? = blue?.shape(map: id) { expect(c == .blue, "the shape is tinted") }
+            else { expect(false, "coloured circle must be a tinted shape") }
+            expect(DrawRequest.parse("circle:bogus|0,0,10,10") == nil, "an unknown colour is refused")
+
+            let path = DrawRequest.parse("path:purple|10,10 50,60 90,10")
+            expect(path?.kind == .path, "freeform path parses")
+            expect(path?.points.count == 3, "all path points are kept")
+            if case .tinted(.path(let pts), .purple)? = path?.shape(map: id) {
+                expectEqual(pts.count, 3, "the tinted path keeps its points")
+            } else { expect(false, "path must map to a tinted .path") }
+            expect(DrawRequest.parse("path|10,10") == nil, "a path needs at least two points")
+
+            let arc = DrawRequest.parse("arc:orange|0,0,100,100,0,180")
+            expect(arc?.kind == .arc, "arc parses")
+            if case .tinted(.arc(_, _, _, let s, let e), .orange)? = arc?.shape(map: id) {
+                expectEqual(s, 0, "arc start"); expectEqual(e, 180, "arc end (a smile)")
+            } else { expect(false, "arc must map to a tinted .arc") }
+
+            let emoji = DrawRequest.parse("text|500,500|😊")
+            expect(emoji?.words == "😊", "emoji survive as words and render as real glyphs")
+        }
+
         test("the parser and streamer collect DRAW marks and fail open on a bad one") {
             let parser = ResponseParser()
             let events = parser.feed("look [DRAW:circle|100,200,300,150] here [DRAW:pin|500,500]")

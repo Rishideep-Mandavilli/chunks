@@ -67,14 +67,24 @@ enum InkRenderProbe {
 
     static func sampleShapes() -> [AnnotationShape] {
         [
-            .ellipse(center: LogicalPoint(x: 200, y: 150), radiusX: 120, radiusY: 70),
-            .rect(LogicalRect(x: 420, y: 80, width: 220, height: 120)),
+            .tinted(.ellipse(center: LogicalPoint(x: 200, y: 150), radiusX: 120, radiusY: 70), .blue),
+            .tinted(.rect(LogicalRect(x: 420, y: 80, width: 220, height: 120)), .green),
             .highlight(LogicalRect(x: 700, y: 80, width: 220, height: 120)),
-            .arrow(from: LogicalPoint(x: 200, y: 320), to: LogicalPoint(x: 500, y: 420)),
-            .line(from: LogicalPoint(x: 560, y: 320), to: LogicalPoint(x: 860, y: 320)),
+            .tinted(.arrow(from: LogicalPoint(x: 200, y: 320), to: LogicalPoint(x: 500, y: 420)), .orange),
+            .tinted(.line(from: LogicalPoint(x: 560, y: 320), to: LogicalPoint(x: 860, y: 320)), .purple),
             .underline(LogicalRect(x: 560, y: 380, width: 300, height: 40)),
             .pin(LogicalPoint(x: 200, y: 560)),
             .text(LogicalPoint(x: 320, y: 540), "the Send button"),
+            // A freeform smile (curve) + two eyes, in colour — the "smiley" the model can now draw.
+            .tinted(.arc(center: LogicalPoint(x: 700, y: 520), radiusX: 70, radiusY: 60,
+                         start: 0, end: 180), .red),
+            .tinted(.pin(LogicalPoint(x: 670, y: 490)), .red),
+            .tinted(.pin(LogicalPoint(x: 730, y: 490)), .red),
+            // A real emoji glyph, and a freeform heart-ish curve.
+            .text(LogicalPoint(x: 850, y: 480), "😊"),
+            .tinted(.path([LogicalPoint(x: 100, y: 640), LogicalPoint(x: 140, y: 600),
+                           LogicalPoint(x: 180, y: 640), LogicalPoint(x: 140, y: 680),
+                           LogicalPoint(x: 100, y: 640)]), .pink),
         ]
     }
 

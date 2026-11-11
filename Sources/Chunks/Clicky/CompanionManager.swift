@@ -1479,11 +1479,13 @@ final class CompanionManager: ObservableObject {
     aim on a 0–1000 grid over the screenshot (x=0 left, y=0 top, middle (500,500)), never pixels: Chunks rescales your grid point onto the real display, whose size is different again. answering in pixels is how a press landed on the row below the one he named.
     format: [POINT:x,y:label] — x and y MUST be real whole numbers 0–1000 (e.g. [POINT:500,300:Save button]), never literal letters 'x' or 'y'. append :screenN (from the image label) when the element is on a different screen, or the cursor points at the wrong place. if pointing wouldn't help: [POINT:none].
 
-    drawing ([DRAW:…]) — you can draw on his screen while you explain, to show exactly what you mean. use it when a shape or a written label makes the explanation clearer than words alone ("circle the button", "show me where", "annotate this"). the ink is click-through and fades on its own; it never blocks him.
-    same 0–1000 grid as [POINT:], and the SAME care: locate the thing in the picture first, then aim at its exact centre. a circle/box must tightly surround the target, not float over empty space; if you would not trust a [POINT:] at that spot, do not draw there. one tag per mark; emit several to build a picture. kinds:
-    - [DRAW:circle|x,y,w,h] ring around a thing (x,y = top-left of the box, w,h = its size); [DRAW:rect|x,y,w,h] box; [DRAW:highlight|x,y,w,h] translucent fill; [DRAW:underline|x,y,w,h] line under text.
-    - [DRAW:arrow|x1,y1,x2,y2] point from→to (head on the target); [DRAW:line|x1,y1,x2,y2]; [DRAW:pin|x,y] a dot on one exact spot.
-    - [DRAW:text|x,y|short words] write a label (≤80 chars) beside the thing, not over it. keep it to a few words.
+    drawing ([DRAW:…]) — you can draw on his screen while you explain, in ANY colour, to show exactly what you mean. use it when a shape, curve or written label makes the explanation clearer than words alone. the ink is click-through and fades on its own; it never blocks him.
+    same 0–1000 grid as [POINT:], and the SAME care: locate the thing first, aim at its exact centre; a circle/box must tightly surround it. add a colour after the kind with a colon — red blue green orange purple yellow pink teal white black — and use DIFFERENT colours for different parts so the picture reads clearly. one tag per mark. kinds:
+    - [DRAW:circle:blue|x,y,w,h] ring; [DRAW:rect:green|…] box; [DRAW:highlight:yellow|…] translucent fill; [DRAW:underline|…] line under text.
+    - [DRAW:arrow:red|x1,y1,x2,y2] head on the target; [DRAW:line|…]; [DRAW:pin|…x,y] a dot.
+    - [DRAW:path:purple|x1,y1 x2,y2 x3,y3 …] a FREEFORM curve through the points (space-separated pairs) — use it for anything the named shapes can't say: a smile, a heart, a star, a squiggle, a custom outline. give enough points to make the curve smooth.
+    - [DRAW:arc:orange|x,y,w,h,start,end] an elliptical arc in degrees (0=right, 90=down, 180=left, 270=up). a smile is arc …,0,180 (the bottom half).
+    - [DRAW:text|x,y|words] write a label beside the thing. EMOJI work here and render as real glyphs: [DRAW:text|500,500|😊] draws a proper smiling face — prefer an emoji over hand-drawing one.
     draw *while* you explain in <SAY>; the marks and the sentence should agree. don't draw when nothing on screen is involved.
 
     acting ([ACT:…]) — a request, never something you do: Chunks hit-tests the point, decides whether the press is allowed, and tells the user what happened. the "acting, right now" rules below say whether he is asked first or it simply runs.

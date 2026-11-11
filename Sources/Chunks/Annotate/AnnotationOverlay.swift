@@ -552,8 +552,19 @@ final class AnnotationCanvas: NSView {
     /// Shared by the drawing surface, the passive ink layer, and any render probe, so a shape looks
     /// the same everywhere it appears.
     static func draw(_ shape: AnnotationShape) {
-        let ink = NSColor(cgColor: AnnotationShape.overlayStrokeColor)
+        if case .tinted(let inner, let color) = shape {
+            draw(inner, color: NSColor(cgColor: color.cgColor) ?? .red)
+            return
+        }
+        draw(shape, color: NSColor(cgColor: AnnotationShape.overlayStrokeColor) ?? .red)
+    }
+
+    /// Paint one mark in a given colour. The agent picks a colour per mark; the user overlay uses red.
+    static func draw(_ shape: AnnotationShape, color: NSColor) {
+        let ink: NSColor? = color
         switch shape {
+        case .tinted(let inner, let c):
+            draw(inner, color: NSColor(cgColor: c.cgColor) ?? .red)
         case .pin(let point):
             let dot = AnnotationShape.pinDotRadius
             ink?.setFill()
@@ -634,6 +645,33 @@ final class AnnotationCanvas: NSView {
         case .underline(let r):
             path.move(to: CGPoint(x: r.minX, y: r.maxY))
             path.line(to: CGPoint(x: r.maxX, y: r.maxY))
+        case .path(let points):
+            guard let first = points.first else { return nil }
+            // Smoothed with quadratic midpoints so a freeform smile/heart reads as a curve, not a
+            // jagged polyline.
+            path.move(to: CGPoint(x: first.x, y: first.y))
+            if points.count == 2 {
+                path.line(to: CGPoint(x: points[1].x, y: points[1].y))
+            } else {
+                for i in 1..<(points.count - 1) {
+                    let mid = CGPoint(x: (points[i].x + points[i + 1].x) / 2,
+                                      y: (points[i].y + points[i + 1].y) / 2)
+                    path.curve(to: mid, controlPoint1: CGPoint(x: points[i].x, y: points[i].y),
+                               controlPoint2: CGPoint(x: points[i].x, y: points[i].y))
+                }
+                if let last = points.last { path.line(to: CGPoint(x: last.x, y: last.y)) }
+            }
+        case .arc(let c, let rx, let ry, let start, let end):
+            // Sample the elliptical arc into the path (flipped view: degrees run toward the bottom).
+            let steps = 24
+            let s = start * .pi / 180, e = end * .pi / 180
+            for i in 0...steps {
+                let t = s + (e - s) * Double(i) / Double(steps)
+                let p = CGPoint(x: c.x + rx * cos(t), y: c.y + ry * sin(t))
+                if i == 0 { path.move(to: p) } else { path.line(to: p) }
+            }
+        case .tinted(let inner, _):
+            return Self.path(for: inner)
         case .pin, .highlight, .text:
             return nil
         }

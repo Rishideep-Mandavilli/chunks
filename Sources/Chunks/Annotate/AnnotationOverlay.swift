@@ -522,24 +522,12 @@ final class AnnotationCanvas: NSView {
         (dimsScreen ? Self.screenTint : NSColor.clear).setFill()
         bounds.fill()
 
-        let colour = AnnotationShape.overlayStrokeColor
-        NSColor(cgColor: colour)?.setStroke()
-        NSColor(cgColor: colour)?.setFill()
-        let line = NSBezierPath()
-        line.lineWidth = AnnotationShape.strokeWidth
-        line.lineCapStyle = .round
-        line.lineJoinStyle = .round
-
         // The in-progress shape is drawn last so a mark being dragged is always on top.
         var drawable = session.shapes
         if let pending = inProgressShape() { drawable.append(pending) }
 
         for shape in drawable {
-            guard let path = Self.bezier(for: shape) else { continue }
-            path.lineWidth = line.lineWidth
-            path.lineCapStyle = line.lineCapStyle
-            path.lineJoinStyle = line.lineJoinStyle
-            path.stroke()
+            Self.draw(shape)
         }
     }
 
@@ -560,13 +548,64 @@ final class AnnotationCanvas: NSView {
         }
     }
 
-    /// The view-space path for a mark. Separate from `AnnotationShape.boundingBox` so the
+    /// Paint one mark, whatever its kind: stroked paths, filled pins/highlights, and written words.
+    /// Shared by the drawing surface, the passive ink layer, and any render probe, so a shape looks
+    /// the same everywhere it appears.
+    static func draw(_ shape: AnnotationShape) {
+        let ink = NSColor(cgColor: AnnotationShape.overlayStrokeColor)
+        switch shape {
+        case .pin(let point):
+            let dot = AnnotationShape.pinDotRadius
+            ink?.setFill()
+            NSBezierPath(ovalIn: NSRect(x: point.x - dot, y: point.y - dot,
+                                        width: dot * 2, height: dot * 2)).fill()
+            let ring = AnnotationShape.pinDotRadius + AnnotationShape.pinRingGap
+            let halo = NSBezierPath(ovalIn: NSRect(x: point.x - ring, y: point.y - ring,
+                                                   width: ring * 2, height: ring * 2))
+            halo.lineWidth = AnnotationShape.pinRingWidth
+            NSColor.white.setStroke()
+            halo.stroke()
+
+        case .highlight(let r):
+            ink?.withAlphaComponent(0.22).setFill()
+            NSBezierPath(rect: NSRect(x: r.minX, y: r.minY, width: r.width, height: r.height)).fill()
+
+        case .text(let point, let words):
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: AnnotationShape.textSize, weight: .bold),
+                .foregroundColor: ink ?? NSColor.red,
+            ]
+            // A subtle white halo behind the words keeps them legible on any wallpaper.
+            let haloAttrs: [NSAttributedString.Key: Any] = [
+                .font: attrs[.font] as Any,
+                .foregroundColor: NSColor.white,
+                .strokeWidth: 3.0,
+            ]
+            let s = NSAttributedString(string: words, attributes: attrs)
+            let halo = NSAttributedString(string: words, attributes: haloAttrs)
+            let at = NSPoint(x: point.x, y: point.y)
+            halo.draw(at: at)
+            s.draw(at: at)
+
+        default:
+            guard let path = path(for: shape) else { return }
+            path.lineWidth = AnnotationShape.strokeWidth
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            ink?.setStroke()
+            path.stroke()
+        }
+    }
+
+    /// The view-space path for a stroked mark. Separate from `AnnotationShape.boundingBox` so the
     /// pure logic stays free of AppKit and unit-testable.
     ///
     /// The view is flipped, so its y axis already matches `LogicalPoint`. Drawing a shape
     /// here and compositing the same shape into a screenshot share this convention, which
     /// is why the user sees the circle where they drew it rather than mirrored vertically.
-    static func bezier(for shape: AnnotationShape) -> NSBezierPath? {
+    ///
+    /// Filled marks (pin, highlight) and words have no path — `draw(_:)` paints them.
+    static func path(for shape: AnnotationShape) -> NSBezierPath? {
         let path = NSBezierPath()
         switch shape {
         case .stroke(let points):
@@ -589,6 +628,14 @@ final class AnnotationCanvas: NSView {
             path.line(to: CGPoint(x: to.x - head * cos(angle + .pi / 7),
                                   y: to.y - head * sin(angle + .pi / 7)))
             path.close()
+        case .line(let from, let to):
+            path.move(to: CGPoint(x: from.x, y: from.y))
+            path.line(to: CGPoint(x: to.x, y: to.y))
+        case .underline(let r):
+            path.move(to: CGPoint(x: r.minX, y: r.maxY))
+            path.line(to: CGPoint(x: r.maxX, y: r.maxY))
+        case .pin, .highlight, .text:
+            return nil
         }
         return path
     }

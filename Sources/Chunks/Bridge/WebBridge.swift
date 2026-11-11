@@ -104,6 +104,12 @@ final class WebBridge {
             readBuffer.removeFirst(consumed)
             handle(reply)
         }
+        // A corrupt stream that never yields a whole frame must not grow without bound; a real
+        // frame is far under the ceiling, so an over-ceiling buffer is garbage, not a partial.
+        if readBuffer.count > 1_000_000 {
+            readBuffer = Data()
+            Log.write("bridge: dropped an over-size corrupt read buffer")
+        }
     }
 
     private func drop(_ fd: Int32) {

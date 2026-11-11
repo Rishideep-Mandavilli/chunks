@@ -126,6 +126,8 @@ public enum ReplyEvent: Equatable, Sendable {
     case speech(String)
     /// Fly the cursor to this.
     case point(PointTarget)
+    /// Draw a shape or write words on the user's screen while explaining (agent ink).
+    case draw(DrawRequest)
     /// The model proposed a memory change. Validate before applying.
     case memory(MemoryProposal)
     /// Words to be sent, written for him to send himself.
@@ -208,7 +210,7 @@ public final class ResponseParser {
         let start: String        // literal that opens it
         let end: String?         // literal that closes it, nil if self-closing (e.g. [POINT:…])
         let kind: Kind
-        enum Kind { case say, memory, point, act, type, scroll, tool, summary,
+        enum Kind { case say, memory, point, draw, act, type, scroll, tool, summary,
                    doneTitle, nextActions, continuation, plan, read, draft, note, noteSearch }
     }
 
@@ -216,6 +218,9 @@ public final class ResponseParser {
         Construct(start: "<SAY>",    end: "</SAY>",    kind: .say),
         Construct(start: "<MEMORY>", end: "</MEMORY>", kind: .memory),
         Construct(start: "[POINT:",  end: "]",         kind: .point),
+        // Agent ink: `[DRAW:circle|x,y,w,h]`, `[DRAW:text|x,y|words]`, etc. The model explains and
+        // shows at once; the shell maps the grid to the display and renders it on a passive overlay.
+        Construct(start: "[DRAW:",   end: "]",         kind: .draw),
         // Same body format as [POINT:…] — the model is pointing at a control it wants
         // pressed rather than one it wants flown to.
         Construct(start: "[ACT:",    end: "]",         kind: .act),
@@ -475,6 +480,14 @@ public final class ResponseParser {
                     events.append(.point(target))
                 } else {
                     // Malformed POINT: show it raw rather than losing it.
+                    events.append(.text(String(buffer[hit.range])))
+                }
+            case .draw:
+                if let request = DrawRequest.parse(hit.inner ?? "") {
+                    events.append(.draw(request))
+                } else {
+                    // Fail open like the act tags: a malformed DRAW shown as text beats a silent
+                    // nothing the user reads as the explanation being ignored.
                     events.append(.text(String(buffer[hit.range])))
                 }
             case .act:

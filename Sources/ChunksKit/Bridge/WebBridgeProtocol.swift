@@ -150,7 +150,12 @@ public enum WebBridgeFraming {
         let length = buffer.prefix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
         let size = Int(UInt32(littleEndian: length))
         guard size > 0, size <= maxBytes, buffer.count >= 4 + size else { return nil }
-        let json = buffer.subdata(in: 4..<(4 + size))
+        // Index-relative, not absolute: the read loop calls `removeFirst` on its buffer, which can
+        // leave a non-zero `startIndex`. Absolute `4..<4+size` then traps in `subdata` (the 22:12
+        // crash). Offsetting from `startIndex` is correct for any slice.
+        let lo = buffer.index(buffer.startIndex, offsetBy: 4)
+        let hi = buffer.index(buffer.startIndex, offsetBy: 4 + size)
+        let json = buffer.subdata(in: lo..<hi)
         guard let value = try? JSONDecoder().decode(type, from: json) else { return nil }
         return (value, 4 + size)
     }

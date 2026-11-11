@@ -847,6 +847,22 @@ else
   printf '  \033[31mFAIL\033[0m  voice breadth: the picker or the TTS still excludes non-English voices\n'
   fail=$((fail + 1)); failures+=("voice language breadth")
 fi
+# Agent ink (3.19): the model can draw shapes and write text on the screen. The layer must be inert
+# (click-through, never key/main, excluded from capture) and the DRAW tag must parse and render.
+if grep -q 'case draw(DrawRequest)' Sources/ChunksKit/Brain/ResponseParser.swift \
+   && grep -q 'var draws: \[DrawRequest\]' Sources/ChunksKit/Brain/AnswerStreamer.swift \
+   && grep -q 'renderAgentInk' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'ignoresMouseEvents = true' Sources/Chunks/Annotate/InkLayer.swift \
+   && "$DEV_BIN" --probe-ink > "$RENDER_DIR/ink.txt" 2>&1 \
+   && grep -q 'probe-ink: PASS' "$RENDER_DIR/ink.txt" \
+   && "$DEV_BIN" --render-ink "$RENDER_DIR/ink.png" >/dev/null 2>&1 \
+   && [[ -f "$RENDER_DIR/ink.png" && $(stat -f%z "$RENDER_DIR/ink.png") -gt 10000 ]]; then
+  printf '  \033[32mPASS\033[0m  agent ink: DRAW parses, renders every shape + text, and the layer is inert\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  agent ink: the drawing tag, the render, or the inert-layer contract regressed\n'
+  fail=$((fail + 1)); failures+=("agent ink drawing")
+fi
 # The three brain promises the audit found broken (AUDIT.md B-01/B-02/B-03): the backup-key bound is
 # stamped per turn, an in-stream SSE error is kept and classified, and a failover after a mid-stream
 # drop resets the card instead of letting two models write one reply and one plan.

@@ -39,6 +39,20 @@ struct leanring_buddyApp: App {
         if WebProbe.isRequested {
             WebProbe.run()
         }
+        if let path = InkRenderProbe.renderPath {
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { InkRenderProbe.runRender(to: path) }
+            } else {
+                DispatchQueue.main.sync { MainActor.assumeIsolated { InkRenderProbe.runRender(to: path) } }
+            }
+        }
+        if InkRenderProbe.isProbeRequested {
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { InkRenderProbe.runProbe() }
+            } else {
+                DispatchQueue.main.sync { MainActor.assumeIsolated { InkRenderProbe.runProbe() } }
+            }
+        }
         if let point = AXProbe.requestedPoint() {
             AXProbe.run(at: point)
         }

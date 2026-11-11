@@ -56,6 +56,12 @@ public struct LogicalRect: Hashable, Sendable {
     public var midX: Double { origin.x + size.width / 2 }
     public var midY: Double { origin.y + size.height / 2 }
     public var isEmpty: Bool { size.width <= 0 || size.height <= 0 }
+
+    /// Whether a point lies inside the rect, edges included — the hit-test the eraser and the
+    /// "which mark did he touch" question use.
+    public func contains(_ p: LogicalPoint) -> Bool {
+        p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
+    }
 }
 
 // MARK: - The coordinate authority

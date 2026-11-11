@@ -24,6 +24,28 @@ public enum WebBridgeTests {
             expectEqual(consumed, frame.count, "the whole frame is consumed")
         }
 
+        test("the read loop decodes consecutive frames after removeFirst without trapping") {
+            // The 22:12 crash: decode used absolute 4..<4+size on a buffer whose startIndex had
+            // shifted after removeFirst, trapping in Data.subdata. Mirror the ingest loop exactly.
+            let a = BridgeReply(id: "one", ok: true, message: "first")
+            let b = BridgeReply(id: "two", ok: true, message: "second")
+            guard let fa = WebBridgeFraming.encode(a), let fb = WebBridgeFraming.encode(b) else {
+                expect(false, "encoding must succeed"); return
+            }
+            var buffer = Data([0xAA, 0xBB])           // leading garbage offset
+            buffer.append(fa); buffer.append(fb)
+            buffer.removeFirst(2)                     // shift startIndex like the read loop
+            guard let (first, c1) = WebBridgeFraming.decode(BridgeReply.self, from: buffer) else {
+                expect(false, "first frame must decode from a shifted buffer"); return
+            }
+            expectEqual(first.id, "one", "the shifted buffer decoded the wrong frame")
+            buffer.removeFirst(c1)
+            guard let (second, _) = WebBridgeFraming.decode(BridgeReply.self, from: buffer) else {
+                expect(false, "second frame must decode after removeFirst"); return
+            }
+            expectEqual(second.id, "two", "consecutive frames must both survive the read loop")
+        }
+
         test("a partial frame decodes to nothing rather than guessing") {
             let command = BridgeCommand(id: "a1", action: .snapshot)
             guard let frame = WebBridgeFraming.encode(command) else {

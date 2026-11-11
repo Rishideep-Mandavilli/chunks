@@ -162,6 +162,46 @@ public struct ScreenCapture: Sendable {
 
             case .arrow(let from, let to):
                 drawArrow(from: px(from), to: px(to), lineWidth: lineWidth, context: context)
+
+            case .line(let from, let to):
+                context.beginPath()
+                context.move(to: px(from))
+                context.addLine(to: px(to))
+                context.strokePath()
+
+            case .pin(let point):
+                let c = px(point)
+                let dot = AnnotationShape.pinDotRadius * measuredScale
+                context.fillEllipse(in: CGRect(x: c.x - dot, y: c.y - dot,
+                                               width: dot * 2, height: dot * 2))
+                let ring = (AnnotationShape.pinDotRadius + AnnotationShape.pinRingGap) * measuredScale
+                context.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+                context.setLineWidth(AnnotationShape.pinRingWidth * measuredScale)
+                context.strokeEllipse(in: CGRect(x: c.x - ring, y: c.y - ring,
+                                                 width: ring * 2, height: ring * 2))
+                context.setStrokeColor(AnnotationShape.overlayStrokeColor)
+                context.setLineWidth(lineWidth)
+
+            case .highlight(let r):
+                let topLeft = px(LogicalPoint(x: r.minX, y: r.minY))
+                context.setFillColor(AnnotationShape.overlayStrokeColor.copy(alpha: 0.22)
+                                     ?? AnnotationShape.overlayStrokeColor)
+                context.fill(CGRect(x: topLeft.x, y: topLeft.y,
+                                    width: r.width * measuredScale, height: r.height * measuredScale))
+                context.setFillColor(AnnotationShape.overlayStrokeColor)
+
+            case .underline(let r):
+                let a = px(LogicalPoint(x: r.minX, y: r.maxY))
+                let b = px(LogicalPoint(x: r.maxX, y: r.maxY))
+                context.beginPath()
+                context.move(to: a)
+                context.addLine(to: b)
+                context.strokePath()
+
+            case .text:
+                // Written words live on the passive ink layer for the user; they are not burned
+                // into the crop the model reads (the model already has the unmarked picture).
+                continue
             }
         }
 

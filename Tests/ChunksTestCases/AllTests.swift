@@ -55,5 +55,6 @@ public func runAllChunksTests() -> Bool {
     TaskPlanTests.register()
     PlanRecoveryTests.register()
     WebBridgeTests.register()
+    DrawTests.register()
     return TestRunner.run()
 }

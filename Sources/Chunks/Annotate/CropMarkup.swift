@@ -160,11 +160,7 @@ final class CropMarkupWindow: NSObject, NSWindowDelegate {
         flip.concat()
         NSColor(cgColor: AnnotationShape.overlayStrokeColor)?.setStroke()
         for shape in shapes {
-            guard let path = AnnotationCanvas.bezier(for: shape) else { continue }
-            path.lineWidth = AnnotationShape.strokeWidth
-            path.lineCapStyle = .round
-            path.lineJoinStyle = .round
-            path.stroke()
+            AnnotationCanvas.draw(shape)
         }
         NSGraphicsContext.restoreGraphicsState()
         return target.representation(using: .png, properties: [:])

@@ -442,6 +442,41 @@ final class CompanionManager: ObservableObject {
         Task { [weak self] in await self?.ttsClient.speakSample(identifier: identifier) }
     }
 
+    // MARK: - Agent ink (3.19): Chunks draws and writes on the screen while it explains
+
+    /// The passive, click-through layer the model's `[DRAW:]` marks render on. It is an NSView panel,
+    /// not a SwiftUI hosting view, so it sits outside the pointer-event crash class entirely.
+    private let inkLayer = InkLayerManager()
+
+    /// Render the reply's draw commands over the display they were measured on.
+    ///
+    /// The grid→screen flip happens exactly once, through `ScreenshotGeometry`, the same authority an
+    /// `[ACT:]` uses; the result is converted to display-local top-left points for the flipped ink
+    /// view. A crop with no known rectangle cannot place ink, so it is skipped and said so.
+    private func renderAgentInk(_ draws: [DrawRequest], on capture: CompanionScreenCapture?) {
+        guard !draws.isEmpty else { return }
+        guard let capture else {
+            Log.write("ink: skipped — no capture to place the drawing on")
+            return
+        }
+        let frame = capture.displayFrame
+        var shapes: [AnnotationShape] = []
+        for request in draws {
+            let shape = request.shape { x, y in
+                guard let g = ScreenshotGeometry.appKitGlobalPoint(
+                    x: x, y: y,
+                    imageWidth: Double(capture.screenshotWidthInPixels),
+                    imageHeight: Double(capture.screenshotHeightInPixels),
+                    imageFrame: capture.imageFrame) else {
+                    return LogicalPoint(x: 0, y: 0)
+                }
+                return LogicalPoint(x: g.x - frame.minX, y: frame.maxY - g.y)
+            }
+            shapes.append(shape)
+        }
+        inkLayer.show(shapes, in: frame)
+    }
+
     /// Whether macOS will start Chunks at login — read from the system, not from a default.
     ///
     /// `SMAppService` can be flipped in System Settings without this app being told, so the row
@@ -1443,6 +1478,13 @@ final class CompanionManager: ObservableObject {
     a small blue triangle cursor flies to things on screen. point whenever it genuinely helps — how-to questions, finding a menu or button, navigating an app. don't point at the obvious or when nothing on screen is involved.
     aim on a 0–1000 grid over the screenshot (x=0 left, y=0 top, middle (500,500)), never pixels: Chunks rescales your grid point onto the real display, whose size is different again. answering in pixels is how a press landed on the row below the one he named.
     format: [POINT:x,y:label] — x and y MUST be real whole numbers 0–1000 (e.g. [POINT:500,300:Save button]), never literal letters 'x' or 'y'. append :screenN (from the image label) when the element is on a different screen, or the cursor points at the wrong place. if pointing wouldn't help: [POINT:none].
+
+    drawing ([DRAW:…]) — you can draw on his screen while you explain, to show exactly what you mean. use it when a shape or a written label makes the explanation clearer than words alone ("circle the button", "show me where", "annotate this"). the ink is click-through and fades on its own; it never blocks him.
+    same 0–1000 grid as [POINT:]. one tag per mark; emit several to build a picture. kinds:
+    - [DRAW:circle|x,y,w,h] ring around a thing; [DRAW:rect|x,y,w,h] box; [DRAW:highlight|x,y,w,h] translucent fill; [DRAW:underline|x,y,w,h] line under text.
+    - [DRAW:arrow|x1,y1,x2,y2] point from→to; [DRAW:line|x1,y1,x2,y2]; [DRAW:pin|x,y] a dot on one exact spot.
+    - [DRAW:text|x,y|short words] write a label (≤80 chars) at a spot. keep it to a few words.
+    draw *while* you explain in <SAY>; the marks and the sentence should agree. don't draw when nothing on screen is involved.
 
     acting ([ACT:…]) — a request, never something you do: Chunks hit-tests the point, decides whether the press is allowed, and tells the user what happened. the "acting, right now" rules below say whether he is asked first or it simply runs.
     - an act is a plain press: no modifier held, no drag, no right-click. when what he asked needs one (command-click to reveal in Finder is the usual one), do the part that needs no modifier and say plainly which part is his.
@@ -2699,6 +2741,7 @@ final class CompanionManager: ObservableObject {
         continuationTask?.cancel()
         continuationTask = nil
         ttsClient.stopPlayback()
+        inkLayer.clear(reason: "he took back control")
         consentGate.cancel()
         pendingPress = nil
         dropHeldRemainder("take-back")
@@ -4103,6 +4146,8 @@ final class CompanionManager: ObservableObject {
             // His new question is a new task: the old checklist must not steer it.
             currentPlanSteps = []
             finishGateUsed = false
+            // And the old explanation's ink must not point at a screen he has moved on from.
+            inkLayer.clear(reason: "a new question")
             // The same rule for a plan still waiting behind a launch card: his new sentence is the
             // end of what the old one was about to do, and a hold that outlives the question it was
             // armed for would resume a plan onto a screen he has just changed the subject of.
@@ -4364,6 +4409,14 @@ final class CompanionManager: ObservableObject {
                     print("🎯 Element pointing: (\(Int(point.x)), \(Int(point.y))) → \"\(point.label)\"")
                 } else {
                     print("🎯 Element pointing: no element")
+                }
+
+                // Agent ink: the "show" half of the explanation, rendered on the passive layer over
+                // the same display the answer was measured on. Skipped for a crop with no rectangle.
+                if !cropHasNoScreenRect {
+                    renderAgentInk(streamer.draws, on: targetScreenCapture)
+                } else if !streamer.draws.isEmpty {
+                    Log.write("ink: skipped — the selection carries no rectangle to sit in")
                 }
 
                 // An act is offered only once the reply is complete: mid-stream the card is

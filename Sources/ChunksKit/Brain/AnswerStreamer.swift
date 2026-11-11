@@ -19,6 +19,9 @@ public final class AnswerStreamer {
     public private(set) var speech: String = ""
     public private(set) var detail: String = ""
     public private(set) var points: [PointTarget] = []
+    /// `[DRAW:…]` agent-ink commands, in order. Rendered by the shell on a passive overlay; never
+    /// shown as text and never spoken — they are the "show" half of an explanation.
+    public private(set) var draws: [DrawRequest] = []
     public private(set) var proposal: MemoryProposal?
 
     /// The turn's completion line, spoken when the stream ends.
@@ -114,6 +117,7 @@ public final class AnswerStreamer {
         speech = ""
         detail = ""
         points = []
+        draws = []
         proposal = nil
         summary = nil
         doneTitle = nil
@@ -241,6 +245,9 @@ public final class AnswerStreamer {
 
             case .point(let target):
                 points.append(target)
+
+            case .draw(let request):
+                draws.append(request)
 
             case .act(let request):
                 actionRequests.append(request)

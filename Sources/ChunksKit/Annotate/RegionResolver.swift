@@ -12,6 +12,26 @@ public enum AnnotationShape: Equatable, Sendable {
     case rect(LogicalRect)
     /// An arrow, drawn from tail to head.
     case arrow(from: LogicalPoint, to: LogicalPoint)
+    /// A pin: one point, marked, with no extent of its own.
+    case pin(LogicalPoint)
+    /// A straight line, tail to head (an arrow without the head).
+    case line(from: LogicalPoint, to: LogicalPoint)
+    /// A translucent filled box — "this region", without a hard outline.
+    case highlight(LogicalRect)
+    /// A line under a region — "this text".
+    case underline(LogicalRect)
+    /// Words written on the screen at a point (top-left anchor).
+    case text(LogicalPoint, String)
+
+    /// The context a pin carries into a crop, in logical points.
+    public static let pinRadius: Double = 24
+    /// The radius of the dot a pin is drawn as.
+    public static let pinDotRadius: Double = 5
+    public static let pinRingGap: Double = 1.5
+    public static let pinRingWidth: Double = 2
+    public static var pinDrawnRadius: Double { pinDotRadius + pinRingGap + pinRingWidth }
+    /// The size of written words, in logical points.
+    public static let textSize: Double = 22
 
     /// The smallest rect containing the mark, in display-local logical points.
     public var boundingBox: LogicalRect {
@@ -43,6 +63,31 @@ public enum AnnotationShape: Equatable, Sendable {
             let maxX = Swift.max(from.x, to.x) + pad
             let maxY = Swift.max(from.y, to.y) + pad
             return LogicalRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+
+        case .pin(let point):
+            let radius = AnnotationShape.pinRadius
+            return LogicalRect(x: point.x - radius, y: point.y - radius,
+                               width: radius * 2, height: radius * 2)
+
+        case .line(let from, let to):
+            let pad = AnnotationShape.strokeWidth
+            let minX = Swift.min(from.x, to.x) - pad
+            let minY = Swift.min(from.y, to.y) - pad
+            let maxX = Swift.max(from.x, to.x) + pad
+            let maxY = Swift.max(from.y, to.y) + pad
+            return LogicalRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+
+        case .highlight(let r), .underline(let r):
+            let pad = AnnotationShape.strokeWidth
+            return LogicalRect(x: r.minX - pad, y: r.minY - pad,
+                               width: r.width + pad * 2, height: r.height + pad * 2)
+
+        case .text(let point, let words):
+            // A generous estimate so a crop around written words is never smaller than the words.
+            let width = Double(words.count) * AnnotationShape.textSize * 0.62
+            return LogicalRect(x: point.x, y: point.y,
+                               width: Swift.max(width, AnnotationShape.textSize),
+                               height: AnnotationShape.textSize * 1.4)
         }
     }
 
@@ -78,6 +123,22 @@ public struct AnnotationSession: Equatable, Sendable {
 
     public mutating func clear() { shapes.removeAll() }
 
+    /// Remove the mark under a point, topmost first, and say whether anything went.
+    public mutating func erase(at point: LogicalPoint) -> Bool {
+        for index in shapes.indices.reversed() {
+            if shapes[index].boundingBox.contains(point) {
+                shapes.remove(at: index)
+                return true
+            }
+        }
+        return false
+    }
+
+    /// The mark under a point, without removing it — the same rule the eraser uses.
+    public func shape(at point: LogicalPoint) -> AnnotationShape? {
+        shapes.last { $0.boundingBox.contains(point) }
+    }
+
     public var boundingBox: LogicalRect? {
         guard let first = shapes.first?.boundingBox else { return nil }
         return shapes.dropFirst().reduce(first) { $0.union($1.boundingBox) }
@@ -97,6 +158,11 @@ public struct AnnotationSession: Equatable, Sendable {
             case .ellipse: noun = "circled"
             case .rect: noun = "boxed"
             case .arrow: noun = "pointed at"
+            case .pin: noun = "pinned"
+            case .line: noun = "lined"
+            case .highlight: noun = "highlighted"
+            case .underline: noun = "underlined"
+            case .text: noun = "wrote on"
             }
             counts[noun, default: 0] += 1
         }

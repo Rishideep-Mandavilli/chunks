@@ -8,7 +8,13 @@ const HOST = "com.chunks.bridge";
 let port = null;
 
 function connect() {
-  port = chrome.runtime.connectNative(HOST);
+  try {
+    port = chrome.runtime.connectNative(HOST);
+  } catch (e) {
+    port = null;
+    setTimeout(connect, 2000);
+    return;
+  }
   port.onMessage.addListener(onCommand);
   port.onDisconnect.addListener(() => {
     port = null;
@@ -19,6 +25,12 @@ function connect() {
 
 function activeTab() {
   return chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => tabs[0]);
+}
+
+// Only web pages have a content script; chrome://, the new-tab page and store pages do not, and
+// messaging them rejects with "Receiving end does not exist".
+function isWeb(tab) {
+  return !!tab && /^https?:/.test(tab.url || "");
 }
 
 function reply(id, ok, message, snapshot) {
@@ -35,7 +47,7 @@ async function onCommand(cmd) {
       return reply(id, true, "navigated");
     }
     const tab = await activeTab();
-    if (!tab) return reply(id, false, "no active tab");
+    if (!isWeb(tab)) return reply(id, false, "the active tab is not a web page");
     const result = await chrome.tabs.sendMessage(tab.id, cmd);
     reply(id, !!result.ok, result.message || "", result.snapshot || null);
   } catch (e) {
@@ -47,7 +59,7 @@ async function onCommand(cmd) {
 async function pushSnapshot() {
   try {
     const tab = await activeTab();
-    if (!tab || !port) return;
+    if (!isWeb(tab) || !port) return;
     const result = await chrome.tabs.sendMessage(tab.id, { id: "push", action: "snapshot" });
     if (result && result.snapshot) reply("push", true, "", result.snapshot);
   } catch (e) {

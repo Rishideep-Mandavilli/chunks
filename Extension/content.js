@@ -98,13 +98,24 @@ chrome.runtime.onMessage.addListener((cmd, sender, sendResponse) => {
       const el = byIndex(target.index);
       if (!el || !isEditable(el)) return sendResponse({ ok: false, message: "not a field" });
       el.focus();
-      const setter = Object.getOwnPropertyDescriptor(
-        el.tagName.toLowerCase() === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
-        "value"
-      ).set;
-      setter.call(el, cmd.text);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
+      if (el.isContentEditable) {
+        // A contentEditable div is not an input: the native value setter throws
+        // "Illegal invocation" on it. Select all and insert text instead.
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand("insertText", false, cmd.text);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        const proto = el.tagName.toLowerCase() === "textarea"
+          ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+        setter.call(el, cmd.text);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
       sendResponse({ ok: true, message: "typed into " + target.text });
       return;
     }

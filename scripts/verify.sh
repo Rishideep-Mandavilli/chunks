@@ -819,6 +819,22 @@ else
   printf '  \033[31mFAIL\033[0m  consent: a displaced plan can resume on a later, unrelated Allow\n'
   fail=$((fail + 1)); failures+=("displacement drops the held plan")
 fi
+# Take-back control (3.18 item 3): a new sentence and a deliberate mouse sweep must both cancel the
+# in-flight turn AND deny the outstanding card, not merely wait for the next card to displace it.
+if grep -q 'private func takeBackControl' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'takeBackControl(reason: "a new sentence")' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'takeBackControl(reason: "the mouse moved")' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'startTakeBackMouseMonitor()' Sources/Chunks/Clicky/CompanionManager.swift \
+   && awk '/private func takeBackControl/,/^    }/' Sources/Chunks/Clicky/CompanionManager.swift \
+        | grep -q 'consentGate.cancel()' \
+   && awk '/private func takeBackControl/,/^    }/' Sources/Chunks/Clicky/CompanionManager.swift \
+        | grep -q 'currentResponseTask?.cancel()'; then
+  printf '  \033[32mPASS\033[0m  take-back: a new sentence or a mouse sweep cancels the turn and denies the card\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  take-back: moving on leaves the old card answerable or the turn running\n'
+  fail=$((fail + 1)); failures+=("take-back control")
+fi
 # The three brain promises the audit found broken (AUDIT.md B-01/B-02/B-03): the backup-key bound is
 # stamped per turn, an in-stream SSE error is kept and classified, and a failover after a mid-stream
 # drop resets the card instead of letting two models write one reply and one plan.

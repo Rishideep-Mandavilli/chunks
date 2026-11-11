@@ -905,6 +905,8 @@ final class CompanionManager: ObservableObject {
         // The Chrome bridge listens for the extension's native host. Local-only; every act that
         // crosses it still meets the consent chain below.
         WebBridge.shared.start()
+        // "Move the mouse or speak and you are back" — the pointer half of take-back control.
+        startTakeBackMouseMonitor()
         // An outcome line that answered a live question is said aloud from here. The card shows it
         // either way, but with asking switched on nothing else in the app ever speaks it — and an act
         // he approved, watched happen and never heard is the "not speaking out" he has reported.
@@ -2663,6 +2665,67 @@ final class CompanionManager: ObservableObject {
         continuationBehindTool = nil
     }
 
+    /// "Move the mouse or speak and you are back" (3.18 item 3).
+    ///
+    /// A new sentence already cancelled the waiting round, but the outstanding card stayed
+    /// answerable and `pendingProgram` stayed armed until the *next* card displaced it — so an Allow
+    /// tapped in that window ran steps for a question he had already moved on from. Taking back
+    /// control closes that window: the epoch moves, the in-flight task and the round are cancelled,
+    /// the gate is denied, every held remainder dies, and the card goes away. The parked call is not
+    /// killed (it cannot be); it wakes to an epoch that is no longer its and walks away.
+    private func takeBackControl(reason: String) {
+        turnEpoch += 1
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        continuationTask?.cancel()
+        continuationTask = nil
+        ttsClient.stopPlayback()
+        consentGate.cancel()
+        pendingPress = nil
+        dropHeldRemainder("take-back")
+        currentPlanSteps = []
+        hud.dismiss(reason: "take-back: \(reason)")
+        Log.writeCritical("take-back: \(reason) — in-flight turn and outstanding card cancelled")
+    }
+
+    /// "Move the mouse … and you are back" — the pointer half of take-back control.
+    ///
+    /// Only while Chunks is *acting*: a card he is about to answer must not be cancelled by the mouse
+    /// travelling toward the Allow button, and a turn that is merely thinking is his to interrupt by
+    /// speaking, not by fidgeting. A deliberate sweep (80 pt of travel) is the signal; small jitter is
+    /// ignored. Chunks never moves the pointer itself outside an approved web caret click, so a moving
+    /// mouse is unambiguously him.
+    private var takeBackMouseMonitor: Any?
+    private var lastTakeBackMousePoint: NSPoint?
+    private var takeBackMouseTravel: CGFloat = 0
+    static let takeBackMouseTravelThreshold: CGFloat = 80
+
+    private func startTakeBackMouseMonitor() {
+        guard takeBackMouseMonitor == nil else { return }
+        takeBackMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleTakeBackMouse() }
+        }
+    }
+
+    private func handleTakeBackMouse() {
+        guard hud.stage == .acting else {
+            lastTakeBackMousePoint = nil
+            takeBackMouseTravel = 0
+            return
+        }
+        let point = NSEvent.mouseLocation
+        if let last = lastTakeBackMousePoint {
+            takeBackMouseTravel += hypot(point.x - last.x, point.y - last.y)
+        }
+        lastTakeBackMousePoint = point
+        guard takeBackMouseTravel >= Self.takeBackMouseTravelThreshold else { return }
+        takeBackMouseTravel = 0
+        lastTakeBackMousePoint = nil
+        takeBackControl(reason: "the mouse moved")
+        hud.showHint("Stopped — you're in control.", for: 3)
+    }
+
     /// The user answered the card. Act on an approval, do nothing on a denial.
     private func answerAct(_ outcome: ConsentGate.Outcome) {
         guard let request = consentGate.resolve(outcome) else {
@@ -3907,6 +3970,14 @@ final class CompanionManager: ObservableObject {
         // A question rather than an answer to the open card: the ink's lifetime keys off this, and a
         // continuation round deliberately does not come through here, because it is the same turn
         // about the same marks.
+        //
+        // "Speak and you are back" (3.18 item 3): a new sentence ends whatever was in flight. The
+        // outstanding card is denied and the held steps die now, not when the next card happens to
+        // displace them — an Allow tapped in that window must not run steps for a question he has
+        // already moved on from.
+        if currentResponseTask != nil || hud.confirmQuestion != nil {
+            takeBackControl(reason: "a new sentence")
+        }
         turnSequence += 1
         turnEpoch += 1
         lastTranscript = question

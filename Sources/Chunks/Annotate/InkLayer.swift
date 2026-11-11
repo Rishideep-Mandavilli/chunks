@@ -32,10 +32,10 @@ import ChunksKit
 @MainActor
 final class InkLayerManager {
 
-    /// The cap, when nothing else cleared it. Well past a full turn's 60 s budget plus its acts, and
-    /// well short of "forgotten". `nonisolated` because it is the default argument of `show`, which a
-    /// caller reads from outside the main actor.
-    nonisolated static let absoluteLimitSeconds: TimeInterval = 120
+    /// The cap, when nothing else cleared it. The turn normally clears the ink as soon as its answer
+    /// finishes; this is only the backstop for a turn that died without clearing, so it is short —
+    /// stale red marks over a live desktop are worse than none.
+    nonisolated static let absoluteLimitSeconds: TimeInterval = 30
 
     private var panel: InkPanel?
     private var view: InkView?

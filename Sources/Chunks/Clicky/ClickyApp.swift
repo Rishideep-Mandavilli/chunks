@@ -46,6 +46,13 @@ struct leanring_buddyApp: App {
                 DispatchQueue.main.sync { MainActor.assumeIsolated { InkRenderProbe.runRender(to: path) } }
             }
         }
+        if let path = InkRenderProbe.alignPath {
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { InkRenderProbe.runAlign(to: path) }
+            } else {
+                DispatchQueue.main.sync { MainActor.assumeIsolated { InkRenderProbe.runAlign(to: path) } }
+            }
+        }
         if InkRenderProbe.isProbeRequested {
             if Thread.isMainThread {
                 MainActor.assumeIsolated { InkRenderProbe.runProbe() }

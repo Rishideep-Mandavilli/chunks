@@ -1480,10 +1480,10 @@ final class CompanionManager: ObservableObject {
     format: [POINT:x,y:label] — x and y MUST be real whole numbers 0–1000 (e.g. [POINT:500,300:Save button]), never literal letters 'x' or 'y'. append :screenN (from the image label) when the element is on a different screen, or the cursor points at the wrong place. if pointing wouldn't help: [POINT:none].
 
     drawing ([DRAW:…]) — you can draw on his screen while you explain, to show exactly what you mean. use it when a shape or a written label makes the explanation clearer than words alone ("circle the button", "show me where", "annotate this"). the ink is click-through and fades on its own; it never blocks him.
-    same 0–1000 grid as [POINT:]. one tag per mark; emit several to build a picture. kinds:
-    - [DRAW:circle|x,y,w,h] ring around a thing; [DRAW:rect|x,y,w,h] box; [DRAW:highlight|x,y,w,h] translucent fill; [DRAW:underline|x,y,w,h] line under text.
-    - [DRAW:arrow|x1,y1,x2,y2] point from→to; [DRAW:line|x1,y1,x2,y2]; [DRAW:pin|x,y] a dot on one exact spot.
-    - [DRAW:text|x,y|short words] write a label (≤80 chars) at a spot. keep it to a few words.
+    same 0–1000 grid as [POINT:], and the SAME care: locate the thing in the picture first, then aim at its exact centre. a circle/box must tightly surround the target, not float over empty space; if you would not trust a [POINT:] at that spot, do not draw there. one tag per mark; emit several to build a picture. kinds:
+    - [DRAW:circle|x,y,w,h] ring around a thing (x,y = top-left of the box, w,h = its size); [DRAW:rect|x,y,w,h] box; [DRAW:highlight|x,y,w,h] translucent fill; [DRAW:underline|x,y,w,h] line under text.
+    - [DRAW:arrow|x1,y1,x2,y2] point from→to (head on the target); [DRAW:line|x1,y1,x2,y2]; [DRAW:pin|x,y] a dot on one exact spot.
+    - [DRAW:text|x,y|short words] write a label (≤80 chars) beside the thing, not over it. keep it to a few words.
     draw *while* you explain in <SAY>; the marks and the sentence should agree. don't draw when nothing on screen is involved.
 
     acting ([ACT:…]) — a request, never something you do: Chunks hit-tests the point, decides whether the press is allowed, and tells the user what happened. the "acting, right now" rules below say whether he is asked first or it simply runs.
@@ -4694,6 +4694,16 @@ final class CompanionManager: ObservableObject {
             if !Task.isCancelled {
                 voiceState = .idle
                 scheduleTransientHideIfNeeded()
+                // The explanation's ink has done its job once the answer is spoken. Linger a few
+                // seconds so he can see it while listening, then take it down — a mark that stays
+                // for minutes points at whatever moved underneath it. A continuation keeps its ink.
+                if pendingContinuation == nil {
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 5_000_000_000)
+                        guard let self, self.turnEpoch == epoch else { return }
+                        self.inkLayer.clear(reason: "the answer finished")
+                    }
+                }
                 // After the speech, not during it: the next round starts a new card and cuts off
                 // whatever is still being said, so a plan that continued here would talk over
                 // itself and the user would hear half of each step.

@@ -12,6 +12,59 @@ enum InkRenderProbe {
     }
     static var isProbeRequested: Bool { CommandLine.arguments.contains("--probe-ink") }
 
+    static var alignPath: String? {
+        guard let i = CommandLine.arguments.firstIndex(of: "--render-ink-align"),
+              i + 1 < CommandLine.arguments.count else { return nil }
+        return CommandLine.arguments[i + 1]
+    }
+
+    /// Burn ink at known grid points into a live capture so the grid→screen mapping can be checked
+    /// against the real desktop: a pin at (500,500) must sit at the exact centre of the display.
+    @MainActor
+    static func runAlign(to path: String) {
+        guard let display = CaptureEngine.mainDisplay() else {
+            print("render-ink-align: no display"); exit(1)
+        }
+        let w = display.space.displayFrame.width
+        let h = display.space.displayFrame.height
+        let frame = display.space.displayFrame
+        let cgFrame = CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
+        func local(_ x: Double, _ y: Double) -> LogicalPoint {
+            guard let g = ScreenshotGeometry.appKitGlobalPoint(
+                x: x, y: y, imageWidth: w * display.space.scale,
+                imageHeight: h * display.space.scale, imageFrame: cgFrame) else {
+                return LogicalPoint(x: 0, y: 0)
+            }
+            return LogicalPoint(x: g.x - frame.minX, y: frame.maxY - g.y)
+        }
+        let centre = local(500, 500)
+        let topLeft = local(0, 0)
+        let bottomRight = local(1000, 1000)
+        print("render-ink-align: display \(Int(w))x\(Int(h)) centre=(\(Int(centre.x)),\(Int(centre.y))) "
+            + "topLeft=(\(Int(topLeft.x)),\(Int(topLeft.y))) bottomRight=(\(Int(bottomRight.x)),\(Int(bottomRight.y)))")
+        let shapes: [AnnotationShape] = [
+            .pin(centre),
+            .ellipse(center: centre, radiusX: 60, radiusY: 60),
+            .text(LogicalPoint(x: centre.x + 70, y: centre.y - 10), "centre 500,500"),
+            .pin(topLeft), .pin(bottomRight),
+        ]
+        Task { @MainActor in
+            do {
+                let captured = try await CaptureEngine().capture(display: display)
+                let burned = captured.composited(with: shapes, display: display)
+                guard let png = ScreenCapture(image: burned, globalRect: captured.globalRect).png() else {
+                    print("render-ink-align: encode failed"); exit(1)
+                }
+                try png.write(to: URL(fileURLWithPath: path))
+                print("render-ink-align: wrote \(png.count / 1024) KB to \(path)")
+                exit(0)
+            } catch {
+                print("render-ink-align: capture failed \(error)"); exit(1)
+            }
+        }
+        RunLoop.main.run()
+    }
+
     static func sampleShapes() -> [AnnotationShape] {
         [
             .ellipse(center: LogicalPoint(x: 200, y: 150), radiusX: 120, radiusY: 70),

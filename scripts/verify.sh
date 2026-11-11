@@ -852,6 +852,8 @@ fi
 if grep -q 'case draw(DrawRequest)' Sources/ChunksKit/Brain/ResponseParser.swift \
    && grep -q 'var draws: \[DrawRequest\]' Sources/ChunksKit/Brain/AnswerStreamer.swift \
    && grep -q 'renderAgentInk' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'the answer finished' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'absoluteLimitSeconds: TimeInterval = 30' Sources/Chunks/Annotate/InkLayer.swift \
    && grep -q 'ignoresMouseEvents = true' Sources/Chunks/Annotate/InkLayer.swift \
    && "$DEV_BIN" --probe-ink > "$RENDER_DIR/ink.txt" 2>&1 \
    && grep -q 'probe-ink: PASS' "$RENDER_DIR/ink.txt" \

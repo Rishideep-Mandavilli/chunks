@@ -71,7 +71,7 @@ enum SelfTest {
 
         say("Chunks self-test")
         say("  screen recording: \(CaptureEngine.hasScreenRecordingPermission() ? "granted" : "NOT granted")")
-        let keyPresent = KeychainStore.hasKey
+        let keyPresent = KeychainStore.boundedHasKey()
         say("  api key: \(keyPresent ? "present" : "MISSING")")
         Log.write("self-test: key present=\(keyPresent)")
         for display in CaptureEngine.displays() {
@@ -198,6 +198,15 @@ enum SelfTest {
         // the main run loop. `app.run()` normally supplies it; in self-test there is no
         // app, so without this the task is scheduled and then nothing ever services it. The
         // loop never returns: the task above always calls `exit`.
+        //
+        // A stalled capture (asleep display, a TCC prompt) must not hang the gate: if the task has
+        // not exited within the budget, report a skip and leave. The live turn has its own watchdog;
+        // this is the probe's equivalent.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 45) {
+            say("SKIP: self-test did not finish in 45s — the capture or the model stalled.")
+            Log.flush()
+            exit(3)
+        }
         RunLoop.main.run()
     }
 }
@@ -357,6 +366,19 @@ enum KeychainStore {
 
     /// Blocking check, for the self-test and other places already off the main thread.
     static var hasKey: Bool { (try? read(account: account)) != nil }
+
+    /// A key check that cannot hang: reads off the caller's thread and gives up after `timeout`.
+    /// A pending Keychain consent dialog must never freeze a probe or the launch path; "no answer
+    /// yet" is reported as no key, which is recoverable, where a blocked main thread is not.
+    static func boundedHasKey(timeout: TimeInterval = 2) -> Bool {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result = false
+        DispatchQueue.global(qos: .userInitiated).async {
+            result = (try? read(account: account)) != nil
+            semaphore.signal()
+        }
+        return semaphore.wait(timeout: .now() + timeout) == .success ? result : false
+    }
 
     @discardableResult
     static func setGeminiKey(_ key: String) -> Bool {

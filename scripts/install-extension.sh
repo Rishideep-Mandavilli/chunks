@@ -10,6 +10,15 @@ if [[ ! -x "$BIN" ]]; then
 fi
 
 EXT_DIR="$(cd "$(dirname "$0")/../Extension" && pwd)"
+
+# The host is a plain interpreter pump, not the GUI app binary: Chrome spawns it with a minimal
+# environment where the AppKit binary failed to start. It only shuttles bytes to the app's socket.
+HOST="$EXT_DIR/native_host.py"
+chmod +x "$HOST"
+# Chrome spawns the host with a minimal PATH, so `env python3` may not resolve (Homebrew python is
+# outside it). Pin the shebang to an absolute interpreter so the host always starts.
+PY3="$(command -v python3)"
+sed -i '' "1s|^#!.*|#!$PY3|" "$HOST"
 KEY=$(python3 -c "import json,sys;print(json.load(open('$EXT_DIR/manifest.json'))['key'])")
 
 # The extension id is the first 16 bytes of the SHA-256 of the DER public key, each hex nibble
@@ -24,7 +33,7 @@ write_host() {
 {
   "name": "com.chunks.bridge",
   "description": "Chunks local web bridge",
-  "path": "$BIN",
+  "path": "$HOST",
   "type": "stdio",
   "allowed_origins": ["$ORIGIN"]
 }

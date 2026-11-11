@@ -89,7 +89,7 @@ final class FirstRunModel: ObservableObject {
                 inputMonitoring: manager.hasInputMonitoringPermission,
                 screenRecording: manager.hasScreenRecordingPermission,
                 screenContent: manager.hasScreenContentPermission),
-            hasKey: KeychainStore.hasKey,
+            hasKey: KeychainStore.isKeyConfigured,
             offlineBrainOn: manager.isOfflineBrainOn,
             finished: FirstRunStore.completed)
     }

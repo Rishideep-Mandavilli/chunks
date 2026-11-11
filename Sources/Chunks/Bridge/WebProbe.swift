@@ -16,7 +16,7 @@ enum WebProbe {
         let path = WebBridge.socketPath
         let exists = FileManager.default.fileExists(atPath: path)
         print("web bridge socket: \(exists ? "present" : "absent") at \(path)")
-        print("host binary flag: --native-host (Chrome spawns it; it pumps stdio to the socket)")
+        print("host: Extension/native_host.py (Chrome spawns it; it pumps stdio to the socket)")
         if !exists {
             print("bridge: not connected — load the extension (scripts/install-extension.sh) and keep the app running.")
         } else {

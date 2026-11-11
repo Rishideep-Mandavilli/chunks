@@ -163,6 +163,31 @@ public enum DoRequest: Equatable, Sendable {
     /// allowed to happen.
     case key(app: String, body: String)
 
+    /// `[DO:web_open:youtube.com]` — navigate the connected browser's active tab, through the Chrome
+    /// extension rather than the address bar.
+    ///
+    /// The extension is a second, local-only driver for web content (native messaging + a Unix
+    /// socket, no cloud). It exists because typing a URL into the omnibox fills a field and never
+    /// submits it — Chunks deliberately never presses Return on a `[TYPE]` — so the page never loads
+    /// and the model loops re-typing. `chrome.tabs.update` navigates with no keystroke and no pixel.
+    /// Only offered while the bridge is connected; otherwise it is a refusal in words.
+    case webOpen(url: String)
+
+    /// `[DO:web_click:the first video result]` — click one control on the connected page, by the words
+    /// a person sees or by `#index` from the page snapshot.
+    ///
+    /// A press on a page, so it is asked about even with asking off, exactly like a control the app
+    /// calls Send: the DOM gives the element's real words, the card quotes them, and the content
+    /// script re-resolves the same words before clicking so a relayout cannot swap the target.
+    case webClick(query: String)
+
+    /// `[DO:web_type:#3|good night]` — fill one field on the connected page, by `#index` or words.
+    ///
+    /// Keystrokes into a page are the least corroborated web act, so like `web_click` it is always
+    /// asked. It fills the field and never submits; pressing the page's Send stays a separate,
+    /// separately-approved `web_click`.
+    case webType(query: String, text: String)
+
     /// Whether this request only *reads* the machine, and so must never be offered as a question.
     ///
     /// One property rather than a list at each call site, because getting it wrong is asymmetric: a
@@ -326,6 +351,27 @@ public enum DoRequest: Equatable, Sendable {
             guard !app.isEmpty, !app.contains("/"), app.count <= 60 else { return nil }
             guard KeyAction.parse(body) != nil else { return nil }
             return .key(app: app, body: body)
+
+        // The web bridge. Only meaningful while the Chrome extension is connected; the shell refuses
+        // these in words when it is not, and the prompt only teaches them when it is. The URL goes
+        // through the same normalizer as open_url so `javascript:` and `file:` are refused here too.
+        case "web_open", "web_navigate", "web_go":
+            guard let url = DoRequest.normalizedURL(argument) else { return nil }
+            return .webOpen(url: url)
+
+        case "web_click", "web_press":
+            let query = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty, query.count <= 60,
+                  !query.contains(where: { $0.isNewline }) else { return nil }
+            return .webClick(query: query)
+
+        case "web_type", "web_fill":
+            guard let split = argument.firstIndex(of: "|") else { return nil }
+            let query = argument[..<split].trimmingCharacters(in: .whitespaces)
+            let text = String(argument[argument.index(after: split)...])
+            guard !query.isEmpty, query.count <= 60, !text.isEmpty,
+                  text.count <= 6000 else { return nil }
+            return .webType(query: query, text: text)
 
         case "list_windows", "windows", "what_is_open":
             let filter = argument.trimmingCharacters(in: .whitespaces)
@@ -706,10 +752,11 @@ public enum DoRequest: Equatable, Sendable {
         case .key: return false
 
         case .openApp, .openURL, .runShortcut, .email, .reveal,
-             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith, .moveWindow:
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith, .moveWindow,
+             .webOpen, .webClick:
             return true
         case .setVolume, .addReminder, .cancelReminder, .addRoutine, .removeRoutine, .runCommand,
-             .listWindows:
+             .listWindows, .webType:
             return false
         }
     }
@@ -777,6 +824,12 @@ public enum ToolLayer {
             return "Open \(revealLabel(path)) in \(app)?"
         case .moveWindow(let app, let title, let target):
             return WindowPlacementPolicy.question(target: target, candidate: Self.windowCandidate(app, title))
+        case .webOpen(let url):
+            return "Go to \(DoRequest.displayURL(url)) in the browser?"
+        case .webClick(let query):
+            return "Click \"\(query)\" on the page?"
+        case .webType(let query, let text):
+            return "Type \(text.count) characters into \"\(query)\" on the page?"
         }
     }
 
@@ -811,6 +864,11 @@ public enum ToolLayer {
         if case .runCommand = request { return true }
         if case .closeWindow = request { return true }
         if case .quitApp = request { return true }
+        // A click or a keystroke on a web page is a press on something the model named from scraped
+        // words, so it is asked about even with asking off — the same standing-instruction rule that
+        // keeps a Send button behind a card. Navigating (web_open) is routine, like open_url.
+        if case .webClick = request { return true }
+        if case .webType = request { return true }
         return false
     }
 
@@ -848,7 +906,8 @@ public enum ToolLayer {
             return .readsTheMachine
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .addRoutine, .removeRoutine,
              .addReminder, .cancelReminder, .reveal, .runCommand,
-             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith, .moveWindow:
+             .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith, .moveWindow,
+             .webOpen, .webClick, .webType:
             return .changesSystemState
         }
     }
@@ -952,6 +1011,15 @@ public enum ToolLayer {
             return WindowPlacementPolicy.outcomeLine(target: target,
                                                candidate: Self.windowCandidate(app, title),
                                                succeeded: succeeded)
+        case .webOpen(let url):
+            return succeeded ? forward("Opened \(DoRequest.displayURL(url)).")
+                             : "The page did not open \(DoRequest.displayURL(url))."
+        case .webClick(let query):
+            return succeeded ? "Clicked \"\(query)\" on the page."
+                             : "Nothing on the page answered \"\(query)\"."
+        case .webType(let query, _):
+            return succeeded ? "Typed into \"\(query)\" on the page."
+                             : "Nothing on the page accepted text into \"\(query)\"."
         }
     }
 }

@@ -584,7 +584,7 @@ echo "the safety contract, asserted not assumed"
 # used to pass this gate untouched (AUDIT.md F-11). Probes are exempt — they run before any run loop.
 ax_unhopped="$(grep -n 'AXTDriver\.' $(find Sources/Chunks -name '*.swift' ! -name '*Probe*') \
   | grep -v 'driver({' \
-  | grep -vE 'AXTDriver\.(PressResult|TypeResult|ScrollResult|SemanticMiss|RankedPress|PressTarget|TypeTarget|ScrollTarget|PressSnapshot|isTrusted|fieldLabel|appNamesMatch|isAmbiguousFailure|waitForLanding)' \
+  | grep -vE 'AXTDriver\.(PressResult|TypeResult|ScrollResult|SemanticMiss|RankedPress|PressTarget|TypeTarget|ScrollTarget|PressSnapshot|isTrusted|fieldLabel|appNamesMatch|isBrowserName|isAmbiguousFailure|waitForLanding)' \
   | grep -vE ':[[:space:]]*(///|//)' || true)"
 if [[ -z "$ax_unhopped" ]]; then
   printf '  \033[32mPASS\033[0m  no Accessibility call runs on the main thread\n'
@@ -776,6 +776,33 @@ if [[ $(grep -c 'inferredAim: true' Sources/Chunks/Clicky/CompanionManager.swift
 else
   printf '  \033[31mFAIL\033[0m  a pointer click can run unapproved, or browser type burns the sweep budget\n'
   fail=$((fail + 1)); failures+=("pointer-click consent and browser type path")
+fi
+# The Chrome bridge is a second web driver, and it must stay local-only and consent-gated: the socket
+# is a Unix file (no network listener), a web click/type is always asked even with asking off, the web
+# verbs are refused before a card when the extension is not connected, and the prompt only teaches them
+# while connected. A bridge that could act unapproved, or over the network, would break invariant 8 and
+# the no-cloud-backend line at once.
+if grep -q 'AF_UNIX' Sources/Chunks/Bridge/WebBridge.swift \
+   && ! grep -qE 'NWListener|\.tcp|http://' Sources/Chunks/Bridge/WebBridge.swift \
+   && grep -q 'if case .webClick = request { return true }' Sources/ChunksKit/Action/DoRequest.swift \
+   && grep -q 'if case .webType = request { return true }' Sources/ChunksKit/Action/DoRequest.swift \
+   && grep -q 'case .webOpen, .webClick, .webType:' Sources/Chunks/Clicky/CompanionManager.swift \
+   && grep -q 'if WebBridge.shared.isConnected {' Sources/Chunks/Clicky/CompanionManager.swift; then
+  printf '  \033[32mPASS\033[0m  web bridge: local Unix socket only, click/type always asked, refused when disconnected\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  web bridge: a web act can run unapproved, disconnected, or over the network\n'
+  fail=$((fail + 1)); failures+=("web bridge consent and locality")
+fi
+# The bridge probe reports its wiring without acting; it must name the three web verbs and the socket.
+if "$DEV_BIN" --probe-web > "$RENDER_DIR/web.txt" 2>&1 \
+   && grep -q 'web_open / web_click / web_type' "$RENDER_DIR/web.txt" \
+   && grep -q 'web bridge socket:' "$RENDER_DIR/web.txt"; then
+  printf '  \033[32mPASS\033[0m  web bridge probe reports the socket and the consented verbs, and acts on nothing\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  web bridge probe did not report its wiring\n'
+  fail=$((fail + 1)); failures+=("web bridge probe")
 fi
 # A displaced question is a denial, and its held steps must die with it: before this check existed,
 # `pendingProgram` survived displacement and ran when the *next* card was allowed (AUDIT.md A-01).

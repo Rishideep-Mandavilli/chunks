@@ -21,6 +21,12 @@ struct leanring_buddyApp: App {
     ///
     /// `SelfTest.run()` never returns: it drives the run loop itself and exits with a status.
     init() {
+        // The Chrome native-messaging host is a product surface, not a developer probe: it is the
+        // process Chrome spawns for the extension, a local stdio↔socket pump. It must run alongside
+        // the app (so before the single-instance guard) and never starts the GUI.
+        if CommandLine.arguments.contains("--native-host") {
+            NativeHost.run()
+        }
         // The probes are the developer's harness, not a surface for whoever holds the machine: they
         // name any point on the screen, print which file a sentence resolves to, and read one end to
         // end. In a release build they are inert unless `CHUNKS_DEV=1`, so sharing the app does not
@@ -35,6 +41,9 @@ struct leanring_buddyApp: App {
         }
         if CrashProbe.isRequested {
             CrashProbe.start()
+        }
+        if WebProbe.isRequested {
+            WebProbe.run()
         }
         if let point = AXProbe.requestedPoint() {
             AXProbe.run(at: point)

@@ -902,6 +902,9 @@ final class CompanionManager: ObservableObject {
         // which surface or which event. A fault does not flush, so the evidence was being lost with
         // the process.
         CrashBreadcrumb.install()
+        // The Chrome bridge listens for the extension's native host. Local-only; every act that
+        // crosses it still meets the consent chain below.
+        WebBridge.shared.start()
         // An outcome line that answered a live question is said aloud from here. The card shows it
         // either way, but with asking switched on nothing else in the app ever speaks it — and an act
         // he approved, watched happen and never heard is the "not speaking out" he has reported.
@@ -1452,7 +1455,7 @@ final class CompanionManager: ObservableObject {
 
     tools ([DO:…]) — things outside the screen; at most one per reply, at the very end, only when he asked for that exact thing:
     - [DO:open_app:Notes] opens, launches, or brings forward an app (e.g. Notes, WhatsApp, Safari, Chrome, Music). ALWAYS use this tool whenever the user says "open App" or asks to start an app, NEVER use an [ACT] tag to launch an application. The name is as in /Applications, never a path.
-    - [DO:open_url:youtube.com] or [DO:open_url:youtube.com|Chrome] hands the address to the browser, which opens a new tab;
+    - [DO:open_url:youtube.com] or [DO:open_url:youtube.com|Chrome] hands the address to the browser, which opens a new tab. **to go to a website always use this tool — never [TYPE] a url into the address bar**: a [TYPE] fills the bar but never presses Return, so the page would not load and you would loop re-typing it.
     - [DO:set_volume:40] a whole percent 0–100.
     - [DO:run_shortcut:Focus] runs an automation the user made, by the exact name he gave it in the Shortcuts app; never invent a name — if you have not seen it, say you don't know that shortcut. it runs the shortcut; it does not open the app and click a tile.
     - [DO:reveal:Memora] shows one thing in Finder — a folder opened, a file selected inside its parent. the argument is the name he used or a path you can see on his screen; Chunks looks the name up in his folders and tells him when two things share it, so never invent or guess a path. use it for "open that in finder", "where is that file", "show me the folder".
@@ -1561,6 +1564,9 @@ final class CompanionManager: ObservableObject {
             + "\n\n" + Self.planningRules
             + "\n\nwhat i know about this user (from earlier turns):\n"
             + (known.isEmpty ? "(nothing yet)" : known)
+        if WebBridge.shared.isConnected {
+            prompt += "\n\n" + Self.webBridgeRules
+        }
         if showingARegion {
             // The picture is a crop, so the grid is over the crop. Said out loud because the
             // alternative is a model that refuses to aim at all — or aims at the whole screen it
@@ -1625,7 +1631,15 @@ final class CompanionManager: ObservableObject {
     /// there is no frontmost app or the turn is a pure region question (the crop's tree is not the
     /// screen's). The digest does its own redaction and budgeting; this only gathers names.
     private func screenStateDigest() async -> ScreenStateDigest? {
-        await driver({ AXTDriver.frontmostStateDigest() })
+        let ax = await driver({ AXTDriver.frontmostStateDigest() })
+        // When the Chrome bridge is connected and a browser is frontmost, the DOM names the page's
+        // controls that the AX tree cannot (A-11). Merge them so the model aims web acts at real words.
+        guard WebBridge.shared.isConnected,
+              let front = NSWorkspace.shared.frontmostApplication?.localizedName,
+              AXTDriver.isBrowserName(front),
+              let snapshot = await WebBridge.shared.refreshSnapshot() else { return ax }
+        if let ax { return ax.appendingWeb(snapshot) }
+        return ScreenStateDigest.web(snapshot)
     }
 
     /// What is already on the schedule, by name and time.
@@ -1937,6 +1951,25 @@ final class CompanionManager: ObservableObject {
     when a block listing what the frontmost app publishes is present, prefer those exact names with \
     [ACT:app=… name=…] or [TYPE:app=… name=…|…] over pixel coordinates — a name survives a relayout, a \
     coordinate does not. Use the picture and the 0–1000 grid only for what that list does not contain.
+    """
+
+    /// Spliced in only while the Chrome extension is connected, so a model is never taught a verb the
+    /// machine will refuse. The web bridge is the reliable driver for page content: it navigates,
+    /// reads and clicks the DOM directly, where the Accessibility tree sees unnamed groups.
+    static let webBridgeRules = """
+    the Chrome bridge is connected: for anything inside a web page prefer the web tools over pixel \
+    aims, because the page's own DOM names its controls.
+    - [DO:web_open:youtube.com] navigates the open tab. use it to go to a site or to a search results \
+    url (e.g. youtube.com/results?search_query=comedy+scenes). never type a url into the address bar.
+    - [DO:web_click:#3] or [DO:web_click:the words on it] clicks one control from the page list. \
+    [DO:web_type:#3|text] fills one field from the list and never submits it; pressing the page's Send \
+    or Search is a separate [DO:web_click].
+    - the page list (url, title and #index controls) arrives with the screen when a browser is \
+    frontmost. pick the #index or the exact words from it; two controls answering the same words is a \
+    refusal, so be specific. web_click and web_type are always confirmed with a card.
+    - for a task like "open youtube, search X, play the first video": web_open the site, web_type the \
+    query into the search field, web_click the search button, then on the next look web_click the first \
+    result. carry the not-yet-possible steps in <CONTINUE>.
     """
 
     /// Merge the model's proposed memory change and show what actually happened.
@@ -3214,6 +3247,51 @@ final class CompanionManager: ObservableObject {
                 report(line, succeeded)
             }
 
+        case .webOpen(let url):
+            Task {
+                let reply = await WebBridge.shared.request(action: .navigate, url: url)
+                Log.write("tool: web_open \(url) — \(reply.ok ? "navigated" : reply.message)")
+                report(ToolLayer.outcomeLine(for: request, succeeded: reply.ok), reply.ok)
+            }
+
+        case .webClick(let query), .webType(let query, _):
+            // Resolve against a fresh snapshot before acting — the web analogue of re-read-before-
+            // press. Two controls answering the same words is a refusal that lists them, never a
+            // guess; the content script then re-resolves the same index and checks its words before
+            // it clicks, so a relayout between approval and action cannot swap the target.
+            Task {
+                guard WebBridge.shared.isConnected else {
+                    report("The Chrome bridge is not connected.", false); return
+                }
+                guard let snapshot = await WebBridge.shared.refreshSnapshot() else {
+                    report("Chunks could not read the open page.", false); return
+                }
+                switch WebQuery.resolve(query, in: snapshot.elements) {
+                case .none:
+                    report("Nothing on the page answers \"\(query)\".", false)
+                case .ambiguous(let matches):
+                    let names = matches.prefix(3).map { "\"\($0.text)\"" }.joined(separator: ", ")
+                    report("More than one control answers \"\(query)\": \(names). "
+                        + "Name it by #index from the page list.", false)
+                case .one(let element):
+                    if case .webType(_, let text) = request {
+                        guard element.editable else {
+                            report("\"\(element.text)\" is not a field on the page.", false); return
+                        }
+                        let reply = await WebBridge.shared.request(action: .type,
+                                                                   query: "#\(element.index)", text: text)
+                        Log.write("tool: web_type #\(element.index) — \(reply.message)")
+                        report(ToolLayer.outcomeLine(for: request, succeeded: reply.ok), reply.ok)
+                    } else {
+                        let reply = await WebBridge.shared.request(action: .click,
+                                                                   query: "#\(element.index)",
+                                                                   text: element.text)
+                        Log.write("tool: web_click #\(element.index) \"\(element.text)\" — \(reply.message)")
+                        report(ToolLayer.outcomeLine(for: request, succeeded: reply.ok), reply.ok)
+                    }
+                }
+            }
+
         default:
             Task {
                 // Through `runForOutcome`, not `run`: for the verbs that bring something up, "it
@@ -3321,6 +3399,15 @@ final class CompanionManager: ObservableObject {
             guard reminders.reminders.contains(where: {
                 $0.text.lowercased().hasPrefix(text.lowercased())
             }) else { return "Nothing is waiting called \"\(text)\"." }
+            return nil
+
+        case .webOpen, .webClick, .webType:
+            // The web verbs only exist while the Chrome extension is connected. Refused before a card
+            // when it is not, so he is never asked to approve a click that then declines to happen.
+            if !WebBridge.shared.isConnected {
+                return "The Chrome bridge is not connected. Load the Chunks extension in Chrome, "
+                    + "then ask again — or I can use the screen the way I always have."
+            }
             return nil
         }
     }

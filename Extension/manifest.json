@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Chunks Bridge",
+  "version": "1.0.0",
+  "description": "Lets the Chunks macOS companion read and act on the open web page, locally, with a confirm card for every click and keystroke.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1KYWtp++QDWZUUGfOzw9BaJNempRUwsVW7tM/ozwrTYu7DZYX+k3bFIVH5kScFMN5n1ZJJRhytJSxdEFHqGH5siO/+W25U4hdR7Hawxq+k5Qd7nHLOT3MZ/v/U71WtxCPJ8AuuiWqs103jcAKRmcwDg3ETuatGq2qcplEr068AZ7wmHfr+KW5zFxxkqbEY6flMo5D2UMygd2EZRVsofa1Xaycd8uzkNVwCdvp0SfHSOT8PxIv1SgBaQvdF31CzKw0b2aRLj/CaBExUxE1YRkSG2ciKr58qcGg/I6tPBJQ7CU/KdkZOFtyTM5bnsAz/5juvnqhZrksfaYKdxXFc/QFQIDAQAB",
+  "permissions": ["nativeMessaging", "tabs", "activeTab", "scripting"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

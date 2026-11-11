@@ -264,6 +264,12 @@ public enum ToolRunner {
             // mistake reads as "Chunks could see no windows" instead of crashing mid-turn.
             return false
 
+        case .webOpen, .webClick, .webType:
+            // The web bridge is shell work (a live socket to the Chrome extension), so these are
+            // performed in `CompanionManager.runTool` and never reach this stateless executor. False
+            // rather than a trap, so a routing mistake reads as a refusal instead of crashing.
+            return false
+
         // The window verbs. Resolution already happened in the shell — a window is found against the
         // live tree *before* the card asks, the same order a press uses — so what arrives here names
         // the window that will really be acted on, and this only performs the verb.

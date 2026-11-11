@@ -2558,7 +2558,7 @@ public enum AXTDriver {
     }
 
     /// Whether a name is a web browser, for the web-content focus-click fallback.
-    static func isBrowserName(_ name: String) -> Bool {
+    public static func isBrowserName(_ name: String) -> Bool {
         let lowered = name.lowercased()
         return ["chrome", "chromium", "safari", "edge", "brave", "arc", "firefox", "opera", "vivaldi"]
             .contains { lowered.contains($0) }

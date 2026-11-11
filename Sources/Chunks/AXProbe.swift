@@ -56,6 +56,13 @@ enum AXProbe {
         let chosen = SpeechVoices.pick(from: voices)
         print("probe-voice: Chunks would speak with "
             + "\(chosen.map { SpeechVoices.displayName(for: $0) } ?? "nothing")")
+        let groups = SpeechVoices.grouped(voices)
+        print("probe-voice: \(groups.count) language(s) offered by the picker:")
+        for group in groups {
+            print("  \(SpeechVoices.languageName(group.language)) — \(group.voices.count) voice(s), "
+                + "best: \(group.voices.first.map { SpeechVoices.displayName(for: $0) } ?? "-")")
+        }
+        print("probe-voice: en-IN covered = \(voices.contains { $0.language == "en-IN" })")
         exit(chosen == nil ? 1 : 0)
     }
 

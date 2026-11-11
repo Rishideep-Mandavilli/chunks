@@ -66,6 +66,35 @@ public enum SpeechVoiceTests {
             expect(SpeechVoices.preferredIndex(machine[3]) > samantha,
                    "Zarvox is a robot voice and must not outrank a person")
         }
+        test("breadth: every language is offered, his first, and a stored non-English choice resolves") {
+            let hindi = voice("com.apple.ttsbundle.gryphon-neural_Lekha_hi-IN_premium", "Voice 1", "hi-IN", 2)
+            let all = machine + [hindi]
+            let across = SpeechVoices.rankedAcrossLanguages(all)
+            expect(across.contains { $0.language == "hi-IN" },
+                   "a picker that drops non-English voices can never offer the Hindi one he installed")
+            expect(across.first?.language.hasPrefix("en") ?? false,
+                   "adding breadth must not change the default: his language still leads")
+            // A premium Hindi voice sits after every English voice, not before them.
+            let firstHindi = across.firstIndex(where: { $0.language == "hi-IN" }) ?? 0
+            let lastEnglish = across.lastIndex(where: { $0.language.hasPrefix("en") }) ?? 0
+            expect(firstHindi > lastEnglish, "English voices stay ahead of other languages by default")
+            let chosen = SpeechVoices.pickAcrossLanguages(from: all, storedIdentifier: hindi.identifier)
+            expectEqual(chosen?.identifier ?? "", hindi.identifier,
+                        "a stored Hindi choice was overridden by the English default")
+            let def = SpeechVoices.pickAcrossLanguages(from: all)
+            expect(def?.language.hasPrefix("en") ?? false, "no stored choice still picks English")
+        }
+
+        test("breadth: the picker groups by language, his first, each group best-first") {
+            let grouped = SpeechVoices.grouped(machine)
+            expect(grouped.first?.language.hasPrefix("en") ?? false, "his language is the first group")
+            expect(grouped.contains { $0.language == "fr-FR" }, "other installed languages are reachable")
+            let en = grouped.first(where: { $0.language == "en-IN" })?.voices ?? []
+            if let first = en.first { expect(first.quality == 2, "within a group the premium voice leads") }
+            expect(SpeechVoices.languageName("en-IN").contains("India"),
+                   "the group header is a readable language, not a bare code")
+        }
+
         test("the voice Chunks picks is the best English one the machine offers") {
             // Against real hardware on purpose: the whole complaint is that the machine is holding
             // a neural voice the app never used. The assertion is the *rule* rather than a fixed

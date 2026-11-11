@@ -423,6 +423,25 @@ final class CompanionManager: ObservableObject {
         Log.write("acting: ask before acting = \(enabled)")
     }
 
+    // MARK: - Voice choice (3.18 item 2, language breadth)
+
+    /// Every installed voice grouped by language, his language first, for the panel's picker.
+    var voiceChoices: [(language: String, voices: [SpeechVoices.Voice])] { ttsClient.voiceChoices }
+
+    /// The voice he last chose, or nil for "the best one this Mac has".
+    var currentVoiceIdentifier: String? { ttsClient.chosenVoiceIdentifier }
+
+    /// Persist a voice choice. A nil identifier returns to the automatic best voice.
+    func setVoice(identifier: String?) {
+        ttsClient.chosenVoiceIdentifier = identifier
+        Log.write("voice: chose \(identifier ?? "automatic")")
+    }
+
+    /// Speak a short sample in a candidate voice so he can hear it before committing.
+    func previewVoice(identifier: String) {
+        Task { [weak self] in await self?.ttsClient.speakSample(identifier: identifier) }
+    }
+
     /// Whether macOS will start Chunks at login — read from the system, not from a default.
     ///
     /// `SMAppService` can be flipped in System Settings without this app being told, so the row

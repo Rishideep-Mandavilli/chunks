@@ -49,6 +49,11 @@ final class LocalTTSClient {
         SpeechVoices.ranked(Self.allVoices())
     }
 
+    /// Every voice grouped by language for the picker, his language first (3.18 item 2).
+    var voiceChoices: [(language: String, voices: [SpeechVoices.Voice])] {
+        SpeechVoices.grouped(Self.allVoices())
+    }
+
     var chosenVoiceIdentifier: String? {
         get { defaults.string(forKey: Self.voiceKey) }
         set { defaults.set(newValue, forKey: Self.voiceKey) }
@@ -62,8 +67,10 @@ final class LocalTTSClient {
     /// (`…_Riya_en-IN_premium`, `…_Simone_en-US_premium`) sat unused, and it is the reason the
     /// spoken half of every answer sounded far worse than the written half.
     private var voice: AVSpeechSynthesisVoice? {
-        guard let picked = SpeechVoices.pick(from: availableVoices,
-                                             storedIdentifier: chosenVoiceIdentifier),
+        // Across languages so a voice he picked in Hindi or en-IN actually resolves; with no stored
+        // choice the best English voice still wins, so breadth never changes the default sound.
+        guard let picked = SpeechVoices.pickAcrossLanguages(from: Self.allVoices(),
+                                                           storedIdentifier: chosenVoiceIdentifier),
               let real = AVSpeechSynthesisVoice(identifier: picked.identifier)
         else { return AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode()) }
         if lastSpokenIdentifier != real.identifier {
@@ -109,6 +116,20 @@ final class LocalTTSClient {
             // A little above the voice's own pitch, and slower than the old rate: "sweet" is mostly
             // about not being rushed, and the neural voices stay natural at this offset while a
             // compact one gets chipmunk-y past about 1.1.
+            utterance.pitchMultiplier = pitchMultiplier
+            synthesizer.speak(utterance)
+        }
+    }
+
+    /// Speak a short sample in a specific voice without changing the stored preference, so the
+    /// picker can let him hear a candidate before committing to it.
+    func speakSample(identifier: String) async {
+        guard let real = AVSpeechSynthesisVoice(identifier: identifier) else { return }
+        await MainActor.run {
+            if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
+            let utterance = AVSpeechUtterance(string: "Hello — this is how I will sound.")
+            utterance.voice = real
+            utterance.rate = AVSpeechUtteranceDefaultSpeechRate * rateMultiplier
             utterance.pitchMultiplier = pitchMultiplier
             synthesizer.speak(utterance)
         }

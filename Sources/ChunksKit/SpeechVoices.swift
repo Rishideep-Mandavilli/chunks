@@ -91,4 +91,67 @@ public enum SpeechVoices {
         }
         return candidates.first
     }
+
+    // MARK: - Language breadth (3.18 item 2)
+
+    /// Every voice on the machine, his language first, then the rest — nothing excluded.
+    ///
+    /// `ranked` answers "the best English voice", which is the right default but the wrong *menu*:
+    /// a picker that only lists English can never offer the Hindi or Tamil voice he installed. This
+    /// keeps the default unchanged (his language leads, quality first within it) while making every
+    /// other installed language reachable, so a stored non-English choice actually resolves.
+    public static func rankedAcrossLanguages(_ voices: [Voice], preferred: String = "en") -> [Voice] {
+        voices.sorted { left, right in
+            let leftMatch = left.language.hasPrefix(preferred)
+            let rightMatch = right.language.hasPrefix(preferred)
+            if leftMatch != rightMatch { return leftMatch }
+            if left.quality != right.quality { return left.quality > right.quality }
+            let preference = preferredIndex(left) - preferredIndex(right)
+            if preference != 0 { return preference < 0 }
+            let byName = displayName(for: left).localizedCaseInsensitiveCompare(displayName(for: right))
+            if byName != .orderedSame { return byName == .orderedAscending }
+            return left.identifier < right.identifier
+        }
+    }
+
+    /// The same, honouring a stored choice across all languages. With no stored choice the best
+    /// voice of the preferred language wins, so adding breadth never changes the default sound.
+    public static func pickAcrossLanguages(from voices: [Voice], storedIdentifier: String? = nil,
+                                           preferred: String = "en") -> Voice? {
+        let candidates = rankedAcrossLanguages(voices, preferred: preferred)
+        if let storedIdentifier,
+           let stored = candidates.first(where: { $0.identifier == storedIdentifier }) {
+            return stored
+        }
+        return candidates.first
+    }
+
+    /// Voices grouped by language for the picker: his language first, then alphabetical, each group
+    /// best-sounding first. A flat list of forty voices across ten languages is unreadable; grouping
+    /// is what makes "pick the voice I speak with" a two-tap decision.
+    public static func grouped(_ voices: [Voice], preferred: String = "en")
+        -> [(language: String, voices: [Voice])] {
+        let codes = Set(voices.map { $0.language })
+        let ordered = codes.sorted { left, right in
+            let leftMatch = left.hasPrefix(preferred)
+            let rightMatch = right.hasPrefix(preferred)
+            if leftMatch != rightMatch { return leftMatch }
+            return left < right
+        }
+        return ordered.map { code in
+            (language: code,
+             voices: ranked(voices.filter { $0.language == code }, language: code))
+        }
+    }
+
+    /// A human label for a language code: "en-IN" → "English (India)", "hi-IN" → "Hindi (India)".
+    public static func languageName(_ code: String) -> String {
+        let locale = Locale(identifier: code)
+        let language = locale.localizedString(forLanguageCode: locale.languageCode ?? code) ?? code
+        if let region = locale.regionCode,
+           let regionName = locale.localizedString(forRegionCode: region) {
+            return "\(language) (\(regionName))"
+        }
+        return language
+    }
 }

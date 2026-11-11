@@ -835,6 +835,18 @@ else
   printf '  \033[31mFAIL\033[0m  take-back: moving on leaves the old card answerable or the turn running\n'
   fail=$((fail + 1)); failures+=("take-back control")
 fi
+# Language breadth (3.18 item 2): the picker must offer every installed language (not English only),
+# the TTS must resolve a stored non-English choice, and the default must stay the best English voice.
+if grep -q 'func rankedAcrossLanguages' Sources/ChunksKit/SpeechVoices.swift \
+   && grep -q 'func grouped' Sources/ChunksKit/SpeechVoices.swift \
+   && grep -q 'pickAcrossLanguages(from: Self.allVoices()' Sources/Chunks/Clicky/LocalTTSClient.swift \
+   && grep -q 'voicePickerRow' Sources/Chunks/Clicky/CompanionPanelView.swift; then
+  printf '  \033[32mPASS\033[0m  voice breadth: picker spans languages, stored choice resolves, default unchanged\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  voice breadth: the picker or the TTS still excludes non-English voices\n'
+  fail=$((fail + 1)); failures+=("voice language breadth")
+fi
 # The three brain promises the audit found broken (AUDIT.md B-01/B-02/B-03): the backup-key bound is
 # stamped per turn, an in-stream SSE error is kept and classified, and a failover after a mid-stream
 # drop resets the card instead of letting two models write one reply and one plan.

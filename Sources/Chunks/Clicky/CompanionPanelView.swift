@@ -109,6 +109,8 @@ struct CompanionPanelView: View {
                     // operates; the fields are for reading, the paper is for doing.
                     VStack(spacing: 0) {
                         modelPickerRow
+                        DotsDashRule()
+                        voicePickerRow
                         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted
                             || showsEverySection {
                             DotsDashRule()
@@ -702,6 +704,71 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
+    /// The voice Chunks speaks with, across every installed language (3.18 item 2).
+    ///
+    /// Grouped by language with his first, because a flat list of forty voices is unreadable.
+    /// Choosing a voice also plays a short sample so he hears it before it becomes the default;
+    /// "Automatic" returns to the best voice this Mac has.
+    private var voicePickerRow: some View {
+        HStack {
+            Text("Voice")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(C.textSecondary)
+
+            Spacer()
+
+            Menu {
+                Button {
+                    companionManager.setVoice(identifier: nil)
+                } label: {
+                    if companionManager.currentVoiceIdentifier == nil {
+                        Label("Automatic (best on this Mac)", systemImage: "checkmark")
+                    } else {
+                        Text("Automatic (best on this Mac)")
+                    }
+                }
+                ForEach(companionManager.voiceChoices, id: \.language) { group in
+                    Section(SpeechVoices.languageName(group.language)) {
+                        ForEach(group.voices, id: \.identifier) { voice in
+                            Button {
+                                companionManager.setVoice(identifier: voice.identifier)
+                                companionManager.previewVoice(identifier: voice.identifier)
+                            } label: {
+                                if voice.identifier == companionManager.currentVoiceIdentifier {
+                                    Label(SpeechVoices.displayName(for: voice), systemImage: "checkmark")
+                                } else {
+                                    Text(SpeechVoices.displayName(for: voice))
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Text(currentVoiceLabel)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(C.ink)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(DS.Dots.sea)
+                    .dotsSolidBorder(radius: 6)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var currentVoiceLabel: String {
+        guard let id = companionManager.currentVoiceIdentifier else { return "Automatic" }
+        let all = companionManager.voiceChoices.flatMap { $0.voices }
+        if let voice = all.first(where: { $0.identifier == id }) {
+            return SpeechVoices.displayName(for: voice)
+        }
+        return "Automatic"
+    }
+    ///
     /// Whether the notch asks before Chunks presses a control or runs a tool.
     ///
     /// Off by default, because the ask is what the user objected to: they named a thing on

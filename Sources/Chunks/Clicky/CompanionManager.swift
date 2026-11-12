@@ -1487,6 +1487,7 @@ final class CompanionManager: ObservableObject {
     - [DRAW:arc:orange|x,y,w,h,start,end] an elliptical arc in degrees (0=right, 90=down, 180=left, 270=up). a smile is arc …,0,180 (the bottom half).
     - [DRAW:text|x,y|words] write a label beside the thing. EMOJI work here and render as real glyphs: [DRAW:text|500,500|😊] draws a proper smiling face — prefer an emoji over hand-drawing one.
     draw *while* you explain in <SAY>; the marks and the sentence should agree. don't draw when nothing on screen is involved.
+    example (copy this format, several colours): [DRAW:circle:blue|120,180,220,90] [DRAW:arrow:orange|400,300,520,380] [DRAW:rect:green|600,150,180,80] [DRAW:text|600,260|Send] [DRAW:text|820,420|😊]
 
     acting ([ACT:…]) — a request, never something you do: Chunks hit-tests the point, decides whether the press is allowed, and tells the user what happened. the "acting, right now" rules below say whether he is asked first or it simply runs.
     - an act is a plain press: no modifier held, no drag, no right-click. when what he asked needs one (command-click to reveal in Finder is the usual one), do the part that needs no modifier and say plainly which part is his.

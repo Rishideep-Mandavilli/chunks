@@ -62,6 +62,17 @@ public struct DrawRequest: Equatable, Sendable {
         default: return nil
         }
 
+        // A colour may arrive on the kind (`circle:blue`) OR as a trailing field (`circle|…|blue`) —
+        // models write both, and dropping the second is how a multicolour reply came out monochrome.
+        var coordText = rest
+        var trailingColor: InkColor?
+        if kind != .text {
+            let segs = rest.split(separator: "|", omittingEmptySubsequences: false)
+            coordText = String(segs[0]).trimmingCharacters(in: .whitespaces)
+            if segs.count > 1 { trailingColor = InkColor.parse(String(segs[1])) }
+        }
+        let effectiveColor = color ?? trailingColor
+
         func nums(_ s: String) -> [Double]? {
             let parts = s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             var out: [Double] = []
@@ -75,30 +86,30 @@ public struct DrawRequest: Equatable, Sendable {
                   _ words: String = "", _ points: [LogicalPoint] = [],
                   _ start: Double = 0, _ end: Double = 0) -> DrawRequest {
             DrawRequest(kind: kind, a: a, b: b, size: size, words: words,
-                        points: points, start: start, end: end, color: color)
+                        points: points, start: start, end: end, color: effectiveColor)
         }
 
         switch kind {
         case .circle, .rect, .underline, .highlight:
-            guard let n = nums(rest), n.count == 4 else { return nil }
+            guard let n = nums(coordText), n.count == 4 else { return nil }
             return make(LogicalPoint(x: n[0], y: n[1]), LogicalPoint(x: n[0], y: n[1]),
                         LogicalSize(width: n[2], height: n[3]))
         case .arrow, .line:
-            guard let n = nums(rest), n.count == 4 else { return nil }
+            guard let n = nums(coordText), n.count == 4 else { return nil }
             return make(LogicalPoint(x: n[0], y: n[1]), LogicalPoint(x: n[2], y: n[3]),
                         LogicalSize(width: 0, height: 0))
         case .pin:
-            guard let n = nums(rest), n.count == 2 else { return nil }
+            guard let n = nums(coordText), n.count == 2 else { return nil }
             return make(LogicalPoint(x: n[0], y: n[1]), LogicalPoint(x: n[0], y: n[1]),
                         LogicalSize(width: 0, height: 0))
         case .arc:
-            guard let n = nums(rest), n.count == 6 else { return nil }
+            guard let n = nums(coordText), n.count == 6 else { return nil }
             return make(LogicalPoint(x: n[0], y: n[1]), LogicalPoint(x: n[0], y: n[1]),
                         LogicalSize(width: n[2], height: n[3]), "", [], n[4], n[5])
         case .path:
             // Space-separated comma pairs: "x1,y1 x2,y2 x3,y3".
             var pts: [LogicalPoint] = []
-            for token in rest.split(separator: " ") {
+            for token in coordText.split(separator: " ") {
                 guard let n = nums(String(token)), n.count == 2 else { return nil }
                 pts.append(LogicalPoint(x: n[0], y: n[1]))
                 if pts.count > maxPathPoints { return nil }

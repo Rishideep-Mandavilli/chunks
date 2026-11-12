@@ -18,6 +18,75 @@ enum InkRenderProbe {
         return CommandLine.arguments[i + 1]
     }
 
+    static var replyPath: String? {
+        guard let i = CommandLine.arguments.firstIndex(of: "--render-ink-reply"),
+              i + 1 < CommandLine.arguments.count else { return nil }
+        return CommandLine.arguments[i + 1]
+    }
+
+    /// Run a raw model reply through the SAME parse→map→render pipeline the live turn uses, so a
+    /// multi-colour / freeform reply can be looked at end-to-end (not just the hand-built samples).
+    @MainActor
+    static func runReply(to path: String) {
+        let reply = """
+        <SAY>Here is the search bar, the send button, and a smile.</SAY>
+        [DRAW:circle:blue|100,100,300,150]
+        [DRAW:rect:green|500,100,250,150]
+        [DRAW:arrow:orange|200,400,500,500]
+        [DRAW:path:purple|600,400 650,350 700,400 650,450 600,400]
+        [DRAW:arc:red|750,400,150,120,0,180]
+        [DRAW:text|100,600|the search bar]
+        [DRAW:text|700,600|😊]
+        [DRAW:pin|500,650|teal]
+        """
+        let streamer = AnswerStreamer()
+        streamer.push(reply)
+        streamer.finish()
+        let draws = streamer.draws
+        print("render-ink-reply: parsed \(draws.count) draw marks")
+        // Mirror renderAgentInk's mapping over a synthetic 1000x700 display.
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 700)
+        var shapes: [AnnotationShape] = []
+        for request in draws {
+            shapes.append(request.shape { x, y in
+                guard let g = ScreenshotGeometry.appKitGlobalPoint(
+                    x: x, y: y, imageWidth: 1000, imageHeight: 700, imageFrame: frame) else {
+                    return LogicalPoint(x: 0, y: 0)
+                }
+                return LogicalPoint(x: g.x - frame.minX, y: frame.maxY - g.y)
+            })
+        }
+        let view = InkView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700))
+        view.backdrop = NSColor.white
+        view.shapes = shapes
+        writePNG(view: view, path: path)
+    }
+
+    @MainActor
+    static func writePNG(view: InkView, path: String) {
+        let pdf = view.dataWithPDF(inside: view.bounds)
+        guard let image = NSImage(data: pdf) else {
+            print("render-ink: could not rasterize"); exit(1)
+        }
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width), pixelsHigh: Int(view.bounds.height),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+            print("render-ink: could not allocate bitmap"); exit(1)
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(x: 0, y: 0, width: view.bounds.width, height: view.bounds.height))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let png = rep.representation(using: .png, properties: [:]) else {
+            print("render-ink: encode failed"); exit(1)
+        }
+        do { try png.write(to: URL(fileURLWithPath: path)) }
+        catch { print("render-ink: write failed \(error)"); exit(1) }
+        print("render-ink: wrote \(png.count / 1024) KB to \(path)")
+        exit(0)
+    }
+
     /// Burn ink at known grid points into a live capture so the grid→screen mapping can be checked
     /// against the real desktop: a pin at (500,500) must sit at the exact centre of the display.
     @MainActor

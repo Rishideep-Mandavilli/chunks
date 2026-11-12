@@ -40,8 +40,9 @@ public struct DrawRequest: Equatable, Sendable {
         let color: InkColor?
         if let colon = kindToken.firstIndex(of: ":") {
             kindName = String(kindToken[..<colon])
+            // An unknown colour must not delete the mark — draw it in the default colour instead.
+            // Dropping it is how a brown trunk vanished and left a trunk-less tree.
             color = InkColor.parse(String(kindToken[kindToken.index(after: colon)...]))
-            if color == nil { return nil }
         } else {
             kindName = kindToken
             color = nil

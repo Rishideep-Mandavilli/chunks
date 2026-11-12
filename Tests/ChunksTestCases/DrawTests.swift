@@ -66,7 +66,10 @@ public enum DrawTests {
             expect(blue?.color == .blue, "a colour after the colon is parsed")
             if case .tinted(_, let c)? = blue?.shape(map: id) { expect(c == .blue, "the shape is tinted") }
             else { expect(false, "coloured circle must be a tinted shape") }
-            expect(DrawRequest.parse("circle:bogus|0,0,10,10") == nil, "an unknown colour is refused")
+            expect(DrawRequest.parse("circle:bogus|0,0,10,10")?.color == nil,
+                   "an unknown colour falls back to default, it must not delete the mark")
+            expect(DrawRequest.parse("rect:brown|490,400,20,50")?.color == .brown,
+                   "brown (a tree trunk) is in the palette")
             // Models also write the colour as a trailing field; both placements must work.
             expect(DrawRequest.parse("circle|100,200,300,100|blue")?.color == .blue,
                    "a trailing colour field is honoured, not dropped")

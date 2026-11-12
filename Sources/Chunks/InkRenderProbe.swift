@@ -29,15 +29,16 @@ enum InkRenderProbe {
     @MainActor
     static func runReply(to path: String) {
         let reply = """
-        <SAY>Here is the search bar, the send button, and a smile.</SAY>
-        [DRAW:circle:blue|100,100,300,150]
-        [DRAW:rect:green|500,100,250,150]
-        [DRAW:arrow:orange|200,400,500,500]
-        [DRAW:path:purple|600,400 650,350 700,400 650,450 600,400]
-        [DRAW:arc:red|750,400,150,120,0,180]
-        [DRAW:text|100,600|the search bar]
-        [DRAW:text|700,600|😊]
-        [DRAW:pin|500,650|teal]
+        <SAY>Here is a tree with a brown trunk and green leaves, and a smile.</SAY>
+        [DRAW:rect:brown|480,400,40,120]
+        [DRAW:path:green|500,250 430,350 570,350 500,250]
+        [DRAW:circle:green|450,300,50,50]
+        [DRAW:circle:green|550,300,50,50]
+        [DRAW:circle:lime|500,270,60,60]
+        [DRAW:arc:red|700,400,150,120,0,180]
+        [DRAW:pin:red|670,380]
+        [DRAW:pin:red|730,380]
+        [DRAW:text|700,560|😊]
         """
         let streamer = AnswerStreamer()
         streamer.push(reply)

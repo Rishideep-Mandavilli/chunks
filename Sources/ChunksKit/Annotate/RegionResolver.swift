@@ -6,6 +6,7 @@ import Foundation
 /// than one monochrome scribble.
 public enum InkColor: String, CaseIterable, Sendable {
     case red, blue, green, orange, purple, yellow, pink, teal, white, black
+    case brown, gray, cyan, magenta, gold, navy, lime, maroon, violet
 
     public var cgColor: CGColor {
         switch self {
@@ -19,11 +20,22 @@ public enum InkColor: String, CaseIterable, Sendable {
         case .teal:   return CGColor(srgbRed: 0.10, green: 0.70, blue: 0.70, alpha: 1)
         case .white:  return CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
         case .black:  return CGColor(srgbRed: 0.05, green: 0.05, blue: 0.05, alpha: 1)
+        case .brown:  return CGColor(srgbRed: 0.55, green: 0.35, blue: 0.15, alpha: 1)
+        case .gray:   return CGColor(srgbRed: 0.50, green: 0.50, blue: 0.50, alpha: 1)
+        case .cyan:   return CGColor(srgbRed: 0.10, green: 0.80, blue: 0.90, alpha: 1)
+        case .magenta:return CGColor(srgbRed: 0.90, green: 0.20, blue: 0.80, alpha: 1)
+        case .gold:   return CGColor(srgbRed: 0.85, green: 0.65, blue: 0.10, alpha: 1)
+        case .navy:   return CGColor(srgbRed: 0.10, green: 0.20, blue: 0.50, alpha: 1)
+        case .lime:   return CGColor(srgbRed: 0.60, green: 0.90, blue: 0.20, alpha: 1)
+        case .maroon: return CGColor(srgbRed: 0.50, green: 0.10, blue: 0.15, alpha: 1)
+        case .violet: return CGColor(srgbRed: 0.50, green: 0.20, blue: 0.80, alpha: 1)
         }
     }
 
     public static func parse(_ raw: String) -> InkColor? {
-        InkColor(rawValue: raw.trimmingCharacters(in: .whitespaces).lowercased())
+        let name = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        if name == "grey" { return .gray }
+        return InkColor(rawValue: name)
     }
 }
 

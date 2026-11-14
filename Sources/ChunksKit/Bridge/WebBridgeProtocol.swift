@@ -55,7 +55,9 @@ public struct PageSnapshot: Codable, Equatable, Sendable {
         }
         var body = text
         if body.count > Self.maxTextCharacters {
-            let cut = body.index(body.startIndex, offsetBy: Self.maxTextCharacters)
+            // Reserve room for the " …" suffix so the result never exceeds the ceiling (QA P2).
+            let limit = Self.maxTextCharacters - 2
+            let cut = body.index(body.startIndex, offsetBy: limit)
             let head = body[..<cut]
             if let space = head.lastIndex(of: " ") {
                 body = String(head[..<space])
@@ -178,7 +180,11 @@ public enum WebQuery {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .none }
 
-        if trimmed.hasPrefix("#"), let index = Int(trimmed.dropFirst()) {
+        if trimmed.hasPrefix("#") {
+            let digits = trimmed.dropFirst()
+            // "#01"/"#-3" are not indices the snapshot assigned; only plain non-negative digits.
+            guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }),
+                  let index = Int(digits) else { return .none }
             if let hit = elements.first(where: { $0.index == index }) { return .one(hit) }
             return .none
         }

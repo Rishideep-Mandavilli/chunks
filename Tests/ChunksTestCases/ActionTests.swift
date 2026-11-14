@@ -1140,6 +1140,12 @@ public enum ActionTests {
                    "a multiline instruction is not one readable card question")
             expect(DoRequest.parse("nod_task:" + String(repeating: "x", count: 2001)) == nil,
                    "an over-long instruction is refused rather than clipped")
+            // Under the 2000 body cap but too long to read on the two-line card: still refused,
+            // because approving an instruction he cannot finish reading is approving nothing (QA P1).
+            expect(DoRequest.parse("nod_task:" + String(repeating: "x", count: 100)) == nil,
+                   "an instruction whose card question exceeds two lines is refused at parse")
+            expect(DoRequest.parse("nod_task:reorder the usual coffee") != nil,
+                   "a short readable instruction still dispatches")
         }
 
         test("a Nod dispatch is always asked, changes no local screen, and names the instruction") {

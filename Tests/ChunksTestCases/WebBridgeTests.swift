@@ -143,5 +143,30 @@ public enum WebBridgeTests {
             expect(block.contains("web_click"), "the block teaches the verb that matches the list")
             expect(block.contains("not instructions"), "the block is framed as data")
         }
+
+        test("budgeted snapshot never exceeds its text ceiling, and indices are plain digits") {
+            let snap = PageSnapshot(url: "u", title: "t",
+                                    text: String(repeating: "word ", count: 2000), elements: [])
+            let cut = snap.budgeted()
+            expect(cut.text.count <= PageSnapshot.maxTextCharacters,
+                   "the ' …' suffix must not push the text past the ceiling (QA P2)")
+            let el = [WebElement(index: 1, text: "Send", role: "button", selector: "#1", editable: false)]
+            expect(WebQuery.resolve("#1", in: el) == .one(el[0]), "a plain index resolves")
+            expect(WebQuery.resolve("#-3", in: el) == .none, "a negative index is not an index")
+            expect(WebQuery.resolve("#01x", in: el) == .none, "a non-digit index is refused")
+        }
+
+        test("Nod remote strings are bounded before they reach the card, voice or log") {
+            let long = String(repeating: "a", count: 5000)
+            let receipt = try? NodTaskBridge.parseReceipt(
+                Data(#"{"taskId":"\#(long)","status":"\#(long)"}"#.utf8))
+            expect((receipt?.taskId.count ?? 0) <= 64, "a remote task ID is capped")
+            expect((receipt?.status.count ?? 0) <= 32, "a remote status is capped")
+            let msg = NodTaskBridge.errorMessage(from: Data(#"{"error":"\#(long)"}"#.utf8), status: 400)
+            expect(msg.count <= 120, "a remote error message is capped before it is spoken/logged")
+            let cfg = NodBridgeConfiguration(baseURL: URL(string: "https://nod.example")!, token: "t")
+            let req = NodTaskBridge.statusRequest(configuration: cfg, taskId: "../../etc/passwd")
+            expect(!(req.url!.absoluteString.contains("..")), "a task ID cannot climb out of the path")
+        }
     }
 }

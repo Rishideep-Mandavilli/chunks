@@ -146,10 +146,7 @@ final class WebBridge {
         guard let frame = WebBridgeFraming.encode(command) else {
             return BridgeReply(id: id, ok: false, message: "The bridge could not encode that request.")
         }
-        let written = frame.withUnsafeBytes { write(clientFD, $0.baseAddress, $0.count) }
-        guard written == frame.count else {
-            return BridgeReply(id: id, ok: false, message: "The Chrome bridge did not accept the request.")
-        }
+        let fd = clientFD
         return await withCheckedContinuation { cont in
             pending[id] = cont
             Task { @MainActor [weak self] in
@@ -157,6 +154,19 @@ final class WebBridge {
                 guard let self, let stale = self.pending.removeValue(forKey: id) else { return }
                 stale.resume(returning: BridgeReply(id: id, ok: false,
                                                     message: "The page did not answer in time."))
+            }
+            // The write must never run on the main actor: if the host stops draining (its own
+            // stdout to Chrome is blocked), a synchronous write fills the socket buffer and hangs
+            // the run loop forever — and the timeout above could not fire on a blocked actor.
+            // Off-main, a stalled peer costs one parked thread, not the UI (QA P1).
+            Task.detached { [weak self] in
+                let written = frame.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+                guard written != frame.count else { return }
+                Task { @MainActor [weak self] in
+                    guard let self, let c = self.pending.removeValue(forKey: id) else { return }
+                    c.resume(returning: BridgeReply(id: id, ok: false,
+                                                    message: "The Chrome bridge did not accept the request."))
+                }
             }
         }
     }

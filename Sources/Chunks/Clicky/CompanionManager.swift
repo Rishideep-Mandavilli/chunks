@@ -2048,7 +2048,8 @@ final class CompanionManager: ObservableObject {
     instruction to Nod over Tailscale and returns a task ID. Nod does the work in its own session with \
     its own browser and apps; Chunks does not do it here.
     - use it only when he asked for that errand and it is substantial work, not a quick lookup you can \
-    answer from the screen. one task per tag; put the whole goal in one instruction.
+    answer from the screen. one task per tag. keep the instruction short (under ~70 characters) so he \
+    can read the whole thing on the confirm card — a longer one is refused; summarise the goal instead.
     - it is always confirmed with a card, even when asking is off, because it starts work on another \
     machine. say "i'll ask you to allow it". after Allow, report the task ID Nod returned; do not claim \
     the errand is finished — Nod reports that itself.

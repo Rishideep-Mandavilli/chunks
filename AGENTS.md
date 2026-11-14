@@ -1311,8 +1311,8 @@ session down with it, and a stale bundle that does not know the flag launches th
 
 ## Current state
 
-**The app runs. 877 of 877 tests green across 50 suites (the count is the `.register()` calls in
-`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 63 checks when the live fixtures are
+**The app runs. 901 of 901 tests green across 52 suites (the count is the `.register()` calls in
+`Tests/ChunksTestCases/AllTests.swift`), and the full gate is 61 checks when the live fixtures are
 present; the live-fixture ones (fields, hit test, semantic aim, candidates, geometry, state digest)
 skip *with a printed reason* when no app is open to aim at, and the live model round skips on a rate
 limit — never a check that went unwarned.** `DisplayEnumerationTests` asserts against real hardware and fails while the display is

@@ -78,10 +78,15 @@ public enum NodTaskBridge {
         configuration: NodBridgeConfiguration,
         taskId: String
     ) -> URLRequest {
+        // A task ID is opaque server-supplied text; keep it to a safe path segment so it cannot
+        // climb out of the tasks collection (QA P4).
+        let safe = taskId.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_"
+        }.map(String.init).joined()
         var request = URLRequest(
             url: configuration.baseURL
                 .appendingPathComponent("api/v1/external/tasks")
-                .appendingPathComponent(taskId))
+                .appendingPathComponent(String(safe.prefix(64))))
         request.httpMethod = "GET"
         request.timeoutInterval = 30
         request.setValue("Bearer \(configuration.token)", forHTTPHeaderField: "Authorization")
@@ -92,7 +97,9 @@ public enum NodTaskBridge {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let taskId = object["taskId"] as? String, !taskId.isEmpty
         else { throw NodBridgeError.badResponse("Nod did not return a task ID.") }
-        return NodTaskReceipt(taskId: taskId, status: (object["status"] as? String) ?? "queued")
+        // Remote strings are bounded before they can reach the card, the voice or the log (QA P2).
+        return NodTaskReceipt(taskId: String(taskId.prefix(64)),
+                              status: String(((object["status"] as? String) ?? "queued").prefix(32)))
     }
 
     public static func parseStatus(_ data: Data) throws -> NodTaskStatus {
@@ -100,11 +107,11 @@ public enum NodTaskBridge {
               let taskId = object["taskId"] as? String, !taskId.isEmpty
         else { throw NodBridgeError.badResponse("Nod did not return that task.") }
         return NodTaskStatus(
-            taskId: taskId,
-            title: (object["title"] as? String) ?? "",
-            status: (object["status"] as? String) ?? "queued",
-            result: (object["result"] as? String) ?? "",
-            updatedAt: (object["updatedAt"] as? String) ?? "")
+            taskId: String(taskId.prefix(64)),
+            title: String(((object["title"] as? String) ?? "").prefix(120)),
+            status: String(((object["status"] as? String) ?? "queued").prefix(32)),
+            result: String(((object["result"] as? String) ?? "").prefix(400)),
+            updatedAt: String(((object["updatedAt"] as? String) ?? "").prefix(40)))
     }
 
     public static func dispatch(
@@ -143,7 +150,7 @@ public enum NodTaskBridge {
     static func errorMessage(from data: Data, status: Int) -> String {
         if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let message = object["error"] as? String, !message.isEmpty {
-            return message
+            return String(message.prefix(120))
         }
         return "Nod answered \(status)."
     }

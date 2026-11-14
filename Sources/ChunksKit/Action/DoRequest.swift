@@ -403,7 +403,12 @@ public enum DoRequest: Equatable, Sendable {
             let instruction = argument.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !instruction.isEmpty, instruction.count <= 2000,
                   !instruction.contains(where: { $0.isNewline }) else { return nil }
-            return .nodTask(instruction: instruction)
+            let candidate = DoRequest.nodTask(instruction: instruction)
+            // The card shows two lines; approving an instruction he cannot finish reading is
+            // approving nothing — the same rule as run_command/routine_add (QA P1).
+            guard ToolLayer.question(for: candidate).count <= DoRequest.maxQuestionCharacters
+            else { return nil }
+            return candidate
 
         default:
             return nil

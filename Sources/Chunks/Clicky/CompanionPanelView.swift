@@ -121,6 +121,8 @@ struct CompanionPanelView: View {
                             loginRow
                             DotsDashRule()
                             keepAwakeRow
+                            DotsDashRule()
+                            presenceRow
                         }
                     }
                     .padding(.horizontal, 12)
@@ -924,6 +926,53 @@ struct CompanionPanelView: View {
                 .toggleStyle(.switch)
                 .tint(DS.Dots.teal)
                 .controlSize(.small)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Presence (3.6): the notch face and its subtle earcons. Both are optional; the face is a pure
+    /// visual in the notch and the earcons are built-in system sounds, so neither adds a surface that
+    /// can take input or a file that must be bundled.
+    private var presenceRow: some View {
+        VStack(spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Notch face")
+                        .font(DS.Fonts.label)
+                        .foregroundColor(C.textSecondary)
+                    Text("A small face that mirrors what Chunks is doing.")
+                        .font(DS.Fonts.meta)
+                        .foregroundColor(C.textTertiary)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { companionManager.presenceFaceEnabled },
+                    set: { companionManager.presenceFaceEnabled = $0 }))
+                    .labelsHidden()
+                    .accessibilityLabel("Show the notch face")
+                    .toggleStyle(.switch)
+                    .tint(DS.Dots.teal)
+                    .controlSize(.small)
+            }
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Presence sounds")
+                        .font(DS.Fonts.label)
+                        .foregroundColor(C.textSecondary)
+                    Text("Subtle earcons when listening, answering, or a turn fails.")
+                        .font(DS.Fonts.meta)
+                        .foregroundColor(C.textTertiary)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { companionManager.presenceSoundEnabled },
+                    set: { companionManager.presenceSoundEnabled = $0 }))
+                    .labelsHidden()
+                    .accessibilityLabel("Play presence sounds")
+                    .toggleStyle(.switch)
+                    .tint(DS.Dots.teal)
+                    .controlSize(.small)
+            }
         }
         .padding(.vertical, 4)
     }

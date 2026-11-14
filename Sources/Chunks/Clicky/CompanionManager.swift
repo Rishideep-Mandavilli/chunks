@@ -442,6 +442,63 @@ final class CompanionManager: ObservableObject {
         Task { [weak self] in await self?.ttsClient.speakSample(identifier: identifier) }
     }
 
+    // MARK: - Presence (3.6 / P10): face, moods, earcons, identity
+
+    /// The notch face on/off. The face is a pure visual inside the existing notch; it takes no input.
+    @Published var presenceFaceEnabled: Bool = UserDefaults.standard.object(forKey: "presenceFaceEnabled") == nil
+        ? true : UserDefaults.standard.bool(forKey: "presenceFaceEnabled") {
+        didSet {
+            UserDefaults.standard.set(presenceFaceEnabled, forKey: "presenceFaceEnabled")
+            hud.faceEnabled = presenceFaceEnabled
+        }
+    }
+
+    /// Subtle earcons on the transitions worth hearing. Off is a valid choice; nothing is bundled.
+    @Published var presenceSoundEnabled: Bool = UserDefaults.standard.object(forKey: "presenceSoundEnabled") == nil
+        ? true : UserDefaults.standard.bool(forKey: "presenceSoundEnabled") {
+        didSet { UserDefaults.standard.set(presenceSoundEnabled, forKey: "presenceSoundEnabled") }
+    }
+
+    private var earcon: NSSound?
+
+    /// Play the mood's earcon, if sound is on. NSSound.play is asynchronous; holding the reference
+    /// keeps it alive for the duration. Never blocks the main thread.
+    func playEarcon(for mood: NotchMood) {
+        guard presenceSoundEnabled, let name = mood.earcon else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let sound = NSSound(named: name) else { return }
+            DispatchQueue.main.async {
+                self?.earcon = sound
+                sound.play()
+            }
+        }
+    }
+
+    /// The owner-editable persona, loaded from IDENTITY.md / SOUL.md beside memory.md.
+    private(set) var presenceIdentity = PresenceIdentity(name: PresenceIdentity.defaultName,
+                                                         persona: PresenceIdentity.defaultPersona)
+
+    /// Load (or seed) the identity files. Seeding writes defaults only when absent, so an edited
+    /// file is never overwritten. Reading is off-main; the result is published on main.
+    func loadPresenceIdentity() {
+        let dir = (MemoryStore.defaultURL().deletingLastPathComponent())
+        let idURL = dir.appendingPathComponent("IDENTITY.md")
+        let soulURL = dir.appendingPathComponent("SOUL.md")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fm = FileManager.default
+            if !fm.fileExists(atPath: idURL.path) {
+                try? "# Chunks\n\n\(PresenceIdentity.defaultName)\n".write(to: idURL, atomically: true, encoding: .utf8)
+            }
+            if !fm.fileExists(atPath: soulURL.path) {
+                try? (PresenceIdentity.defaultPersona + "\n").write(to: soulURL, atomically: true, encoding: .utf8)
+            }
+            let id = try? String(contentsOf: idURL, encoding: .utf8)
+            let soul = try? String(contentsOf: soulURL, encoding: .utf8)
+            let parsed = PresenceIdentity.parse(identity: id, soul: soul)
+            DispatchQueue.main.async { self?.presenceIdentity = parsed }
+        }
+    }
+
     // MARK: - Agent ink (3.19): Chunks draws and writes on the screen while it explains
 
     /// The passive, click-through layer the model's `[DRAW:]` marks render on. It is an NSView panel,
@@ -959,6 +1016,9 @@ final class CompanionManager: ObservableObject {
         // The Chrome bridge listens for the extension's native host. Local-only; every act that
         // crosses it still meets the consent chain below.
         WebBridge.shared.start()
+        // Presence: the face follows the turn, earcons mark the transitions, identity is the owner's.
+        hud.faceEnabled = presenceFaceEnabled
+        loadPresenceIdentity()
         // "Move the mouse or speak and you are back" — the pointer half of take-back control.
         startTakeBackMouseMonitor()
         // An outcome line that answered a live question is said aloud from here. The card shows it
@@ -1379,6 +1439,7 @@ final class CompanionManager: ObservableObject {
             // A new press replaces whatever the HUD was showing, including a card the user
             // has not dismissed.
             hud.beginListening()
+            playEarcon(for: .attentive)
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -1630,6 +1691,7 @@ final class CompanionManager: ObservableObject {
             + "\n\n" + Self.planningRules
             + "\n\nwhat i know about this user (from earlier turns):\n"
             + (known.isEmpty ? "(nothing yet)" : known)
+            + "\n\nwho you are (the owner edits IDENTITY.md / SOUL.md): " + presenceIdentity.promptLine
         if WebBridge.shared.isConnected {
             prompt += "\n\n" + Self.webBridgeRules
         }
@@ -4113,6 +4175,7 @@ final class CompanionManager: ObservableObject {
     private func failTurn(_ message: String) {
         Log.writeCritical("turn: failed — \(message)")
         hud.fail(message)
+        playEarcon(for: .sad)
         guard let ask = lastAsk, ask.source != .routine else { return }
         hud.onRetry = { [weak self] in
             self?.ask(text: ask.text, source: ask.source)
@@ -4399,6 +4462,7 @@ final class CompanionManager: ObservableObject {
                 }
                 if streamer.hasAnything {
                     hud.finish(from: streamer)
+                    playEarcon(for: .happy)
                 } else {
                     // A 200 response that parses to nothing is a real outcome, and an empty
                     // card would look like the HUD broke rather than like the model stalled.

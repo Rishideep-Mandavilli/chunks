@@ -56,5 +56,6 @@ public func runAllChunksTests() -> Bool {
     PlanRecoveryTests.register()
     WebBridgeTests.register()
     DrawTests.register()
+    PresenceTests.register()
     return TestRunner.run()
 }

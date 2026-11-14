@@ -865,6 +865,21 @@ else
   printf '  \033[31mFAIL\033[0m  agent ink: the drawing tag, the render, or the inert-layer contract regressed\n'
   fail=$((fail + 1)); failures+=("agent ink drawing")
 fi
+# Presence (3.6): the face is a pure visual in the notch (no gestures/hover), moods derive from the
+# turn state, earcons/identity are bounded, and every mood renders offscreen. It must not add a crash
+# surface: no .onHover / onTapGesture in NotchFace, and the render probe must produce all moods.
+if grep -q 'enum NotchMood' Sources/ChunksKit/UI/Presence.swift \
+   && grep -q 'var mood: NotchMood' Sources/Chunks/HUD/NotchHUDModel.swift \
+   && grep -q 'presenceFaceEnabled' Sources/Chunks/Clicky/CompanionManager.swift \
+   && ! grep -qE '\.onHover\(|\.onTapGesture\(' Sources/Chunks/HUD/NotchFace.swift \
+   && "$DEV_BIN" --render-face "$RENDER_DIR/face.png" >/dev/null 2>&1 \
+   && [[ -f "$RENDER_DIR/face.png" && $(stat -f%z "$RENDER_DIR/face.png") -gt 10000 ]]; then
+  printf '  \033[32mPASS\033[0m  presence: moods derive from turn state, face is inert, all moods render\n'
+  pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  presence: the face adds a crash surface or a mood fails to render\n'
+  fail=$((fail + 1)); failures+=("presence face/moods")
+fi
 # The three brain promises the audit found broken (AUDIT.md B-01/B-02/B-03): the backup-key bound is
 # stamped per turn, an in-stream SSE error is kept and classified, and a failover after a mid-stream
 # drop resets the card instead of letting two models write one reply and one plan.

@@ -86,6 +86,32 @@ final class NotchHUDModel: ObservableObject {
 
     @Published private(set) var stage: Stage = .listening
 
+    /// Whether the notch face is shown (3.6). Set from the panel's presence toggle; the face is a
+    /// pure visual and never takes input, so it cannot add to the pointer-event crash class.
+    @Published var faceEnabled: Bool = true
+
+    /// The turn state the face reacts to, derived from the same phase/stage the card reports — never
+    /// from a timer or a guess, so the face cannot claim a mood the work is not in.
+    var presenceState: PresenceState {
+        switch phase {
+        case .idle, .status: return .idle
+        case .listening: return stage == .transcribing ? .transcribing : .listening
+        case .thinking:
+            switch stage {
+            case .listening: return .listening
+            case .transcribing: return .transcribing
+            case .acting: return .acting
+            case .waitingForYou: return .waiting
+            case .streaming: return .answering
+            default: return .thinking
+            }
+        case .result: return stage == .answered ? .answered : .answering
+        case .failed: return .failed
+        }
+    }
+
+    var mood: NotchMood { NotchMood.mood(for: presenceState) }
+
     /// The steps that have run this turn, oldest first.
     ///
     /// Stacked rather than overwritten because the failure the user reported was a plan that

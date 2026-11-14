@@ -85,6 +85,8 @@ struct NotchHUDView: View {
             // is the job the bars do better, because they answer it with the microphone's own level.
             if case .listening = model.phase {
                 WaveformBars(heights: model.waveform, color: statusColor)
+            } else if model.faceEnabled {
+                NotchFace(mood: model.mood, size: 18)
             } else {
                 Circle()
                     .fill(statusColor)
@@ -289,9 +291,13 @@ struct NotchHUDView: View {
     /// tabular figures so it does not shift the label as it counts.
     private var stageRow: some View {
         HStack(spacing: 8) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 7, height: 7)
+            if model.faceEnabled {
+                NotchFace(mood: model.mood, size: 18)
+            } else {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 7, height: 7)
+            }
             Text(headlineText)
                 .font(Font(AnswerPanelLayout.stageFont))
                 .foregroundColor(DS.Colors.textPrimary)

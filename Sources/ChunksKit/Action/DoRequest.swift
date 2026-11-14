@@ -188,6 +188,15 @@ public enum DoRequest: Equatable, Sendable {
     /// separately-approved `web_click`.
     case webType(query: String, text: String)
 
+    /// `[DO:nod_task:reorder the usual coffee and cancel the HBO trial]` — hand a long-running errand
+    /// to the owner's own Nod server over Tailscale and get a task ID back.
+    ///
+    /// The work happens on Nod, not on this Mac, so it changes no local screen and invalidates no
+    /// screenshot. It is an outside commitment another machine will carry out, so it is asked about
+    /// even with asking off, like a command line: "don't ask" was never an instruction to start work
+    /// elsewhere on a model's say-so.
+    case nodTask(instruction: String)
+
     /// Whether this request only *reads* the machine, and so must never be offered as a question.
     ///
     /// One property rather than a list at each call site, because getting it wrong is asymmetric: a
@@ -389,6 +398,12 @@ public enum DoRequest: Equatable, Sendable {
             let path = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
             guard !app.isEmpty, app.count <= 60, !path.isEmpty else { return nil }
             return .openFileWith(app: app, path: path)
+
+        case "nod_task", "nod", "dispatch_task":
+            let instruction = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !instruction.isEmpty, instruction.count <= 2000,
+                  !instruction.contains(where: { $0.isNewline }) else { return nil }
+            return .nodTask(instruction: instruction)
 
         default:
             return nil
@@ -756,7 +771,7 @@ public enum DoRequest: Equatable, Sendable {
              .webOpen, .webClick:
             return true
         case .setVolume, .addReminder, .cancelReminder, .addRoutine, .removeRoutine, .runCommand,
-             .listWindows, .webType:
+             .listWindows, .webType, .nodTask:
             return false
         }
     }
@@ -830,6 +845,8 @@ public enum ToolLayer {
             return "Click \"\(query)\" on the page?"
         case .webType(let query, let text):
             return "Type \(text.count) characters into \"\(query)\" on the page?"
+        case .nodTask(let instruction):
+            return "Send this task to Nod: \"\(instruction)\"?"
         }
     }
 
@@ -869,6 +886,7 @@ public enum ToolLayer {
         // keeps a Send button behind a card. Navigating (web_open) is routine, like open_url.
         if case .webClick = request { return true }
         if case .webType = request { return true }
+        if case .nodTask = request { return true }
         return false
     }
 
@@ -907,7 +925,7 @@ public enum ToolLayer {
         case .openApp, .setVolume, .openURL, .runShortcut, .email, .addRoutine, .removeRoutine,
              .addReminder, .cancelReminder, .reveal, .runCommand,
              .focusWindow, .minimizeWindow, .closeWindow, .quitApp, .openFileWith, .moveWindow,
-             .webOpen, .webClick, .webType:
+             .webOpen, .webClick, .webType, .nodTask:
             return .changesSystemState
         }
     }
@@ -1020,6 +1038,8 @@ public enum ToolLayer {
         case .webType(let query, _):
             return succeeded ? "Typed into \"\(query)\" on the page."
                              : "Nothing on the page accepted text into \"\(query)\"."
+        case .nodTask:
+            return succeeded ? "Sent the task to Nod." : "Nod did not take the task."
         }
     }
 }

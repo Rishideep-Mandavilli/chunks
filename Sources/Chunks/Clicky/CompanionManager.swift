@@ -1633,6 +1633,9 @@ final class CompanionManager: ObservableObject {
         if WebBridge.shared.isConnected {
             prompt += "\n\n" + Self.webBridgeRules
         }
+        if NodBridgeSettings.isConfigured {
+            prompt += "\n\n" + Self.nodBridgeRules
+        }
         if showingARegion {
             // The picture is a crop, so the grid is over the crop. Said out loud because the
             // alternative is a model that refuses to aim at all — or aims at the whole screen it
@@ -2036,6 +2039,19 @@ final class CompanionManager: ObservableObject {
     - for a task like "open youtube, search X, play the first video": web_open the site, web_type the \
     query into the search field, web_click the search button, then on the next look web_click the first \
     result. carry the not-yet-possible steps in <CONTINUE>.
+    """
+
+    static let nodBridgeRules = """
+    the Nod bridge is configured: for a long-running errand the owner wants done elsewhere — reorder \
+    something, cancel a subscription, compare flights, research and book — hand it to his Nod server.
+    - [DO:nod_task:reorder the usual coffee and cancel the HBO trial] sends one natural-language \
+    instruction to Nod over Tailscale and returns a task ID. Nod does the work in its own session with \
+    its own browser and apps; Chunks does not do it here.
+    - use it only when he asked for that errand and it is substantial work, not a quick lookup you can \
+    answer from the screen. one task per tag; put the whole goal in one instruction.
+    - it is always confirmed with a card, even when asking is off, because it starts work on another \
+    machine. say "i'll ask you to allow it". after Allow, report the task ID Nod returned; do not claim \
+    the errand is finished — Nod reports that itself.
     """
 
     /// Merge the model's proposed memory change and show what actually happened.
@@ -3420,6 +3436,35 @@ final class CompanionManager: ObservableObject {
                 }
             }
 
+        case .nodTask(let instruction):
+            // The work runs on the owner's Nod server, not here, so the report names the task ID he
+            // can follow rather than claiming a local effect. A bridge that is not configured is a
+            // refusal in words before any request leaves the Mac.
+            Task {
+                guard let configuration = NodBridgeSettings.configuration else {
+                    report("Nod is not set up. Add its Tailscale address and dispatch token first.", false)
+                    return
+                }
+                do {
+                    let receipt = try await NodTaskBridge.dispatch(
+                        configuration: configuration, instruction: instruction)
+                    Log.write("tool: nod_task dispatched — task \(receipt.taskId) (\(receipt.status))")
+                    report("Sent to Nod — task \(receipt.taskId).", true)
+                } catch let error as NodBridgeError {
+                    let reason: String
+                    switch error {
+                    case .notConfigured: reason = "the bridge is not configured"
+                    case .badResponse(let message): reason = message
+                    case .transport(let message): reason = message
+                    }
+                    Log.write("tool: nod_task refused — \(reason)")
+                    report("Nod did not take the task: \(reason)", false)
+                } catch {
+                    Log.write("tool: nod_task refused — \(error.localizedDescription)")
+                    report("Nod did not take the task: \(error.localizedDescription)", false)
+                }
+            }
+
         default:
             Task {
                 // Through `runForOutcome`, not `run`: for the verbs that bring something up, "it
@@ -3535,6 +3580,14 @@ final class CompanionManager: ObservableObject {
             if !WebBridge.shared.isConnected {
                 return "The Chrome bridge is not connected. Load the Chunks extension in Chrome, "
                     + "then ask again — or I can use the screen the way I always have."
+            }
+            return nil
+
+        case .nodTask:
+            // The Nod bridge only exists while the owner has named a server and stored its dispatch
+            // token. Refused before a card when it is not configured, the same rule the web verbs use.
+            if !NodBridgeSettings.isConfigured {
+                return "Nod is not set up. Add its Tailscale address and dispatch token first."
             }
             return nil
         }

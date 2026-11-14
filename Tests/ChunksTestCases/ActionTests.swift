@@ -1121,6 +1121,67 @@ public enum ActionTests {
                         "fail open: the user sees the thing the model tried to ask for")
         }
 
+        test("a [DO:nod_task:…] becomes one dispatch request, and its aliases mean the same") {
+            for body in ["nod_task:reorder the usual coffee", "nod:reorder the usual coffee",
+                         "dispatch_task:reorder the usual coffee"] {
+                expectEqual(DoRequest.parse(body),
+                            DoRequest.nodTask(instruction: "reorder the usual coffee"),
+                            "\(body) must parse to the same Nod dispatch")
+            }
+            let p = ResponseParser()
+            let ev = p.feed("[DO:nod_task:cancel the HBO trial]") + p.finish()
+            expectEqual(tools(ev).first, DoRequest.nodTask(instruction: "cancel the HBO trial"))
+            expectEqual(texts(ev), "", "the Nod tag leaked into visible text")
+        }
+
+        test("a Nod task with no instruction, a newline, or an over-long body is refused") {
+            expect(DoRequest.parse("nod_task:") == nil, "an empty instruction is not a task")
+            expect(DoRequest.parse("nod_task:line one\nline two") == nil,
+                   "a multiline instruction is not one readable card question")
+            expect(DoRequest.parse("nod_task:" + String(repeating: "x", count: 2001)) == nil,
+                   "an over-long instruction is refused rather than clipped")
+        }
+
+        test("a Nod dispatch is always asked, changes no local screen, and names the instruction") {
+            let request = DoRequest.nodTask(instruction: "reorder the usual coffee")
+            expect(ToolLayer.alwaysAsks(request),
+                   "starting work on another machine is asked even with asking off")
+            expectEqual(ToolLayer.effect(of: request), .changesSystemState)
+            expect(request.invalidatesTheScreen == false,
+                   "the work runs on Nod, so no local screenshot is invalidated")
+            expect(ToolLayer.question(for: request).contains("reorder the usual coffee"),
+                   "the card must name the task being sent")
+        }
+
+        test("the Nod dispatch request carries the bearer token and the instruction as JSON") {
+            let configuration = NodBridgeConfiguration(
+                baseURL: URL(string: "http://100.64.0.1:4310")!, token: "dispatch-token")
+            let request = NodTaskBridge.dispatchRequest(
+                configuration: configuration, instruction: "reorder coffee", title: "Coffee")
+            expectEqual(request.url?.absoluteString,
+                        "http://100.64.0.1:4310/api/v1/external/tasks/dispatch")
+            expectEqual(request.httpMethod, "POST")
+            expectEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer dispatch-token")
+            let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+            expectEqual(body?["instruction"] as? String, "reorder coffee")
+            expectEqual(body?["title"] as? String, "Coffee")
+        }
+
+        test("a Nod receipt and status parse, and a bad response keeps Nod's own reason") {
+            let receipt = try? NodTaskBridge.parseReceipt(
+                Data(#"{"taskId":"abc","status":"queued"}"#.utf8))
+            expectEqual(receipt, NodTaskReceipt(taskId: "abc", status: "queued"))
+            expect(expectThrows { try NodTaskBridge.parseReceipt(Data("{}".utf8)) },
+                   "a response with no task ID is not a receipt")
+            let status = try? NodTaskBridge.parseStatus(
+                Data(#"{"taskId":"abc","title":"Coffee","status":"done","result":"Ordered.","updatedAt":"2026-11-13T00:00:00Z"}"#.utf8))
+            expectEqual(status?.status, "done")
+            expectEqual(status?.result, "Ordered.")
+            expectEqual(NodTaskBridge.errorMessage(from: Data(#"{"error":"token refused"}"#.utf8), status: 401),
+                        "token refused")
+            expectEqual(NodTaskBridge.errorMessage(from: Data(), status: 503), "Nod answered 503.")
+        }
+
         test("an app name that is a path is refused before it can become a question") {
             // `[DO:open_app:X]` names an installed app. A slash or a leading dot means the
             // tag is aiming somewhere else, and that is exactly how a prompt injection inside

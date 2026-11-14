@@ -465,5 +465,30 @@ enum KeychainStore {
             throw ChunksError.keychain(status)
         }
     }
+
+    private static let nodBridgeAccount = "nod-bridge-token"
+    private static let cacheBridge = Cache()
+
+    /// The dispatch token for the owner's Nod server, or nil. Read off the main thread at dispatch
+    /// time, so it asks the Keychain directly rather than through the menu's cache.
+    static func nodBridgeToken() -> String? {
+        guard let token = try? read(account: nodBridgeAccount), !token.isEmpty else { return nil }
+        return token
+    }
+
+    @discardableResult
+    static func setNodBridgeToken(_ token: String) -> Bool {
+        set(key: token, account: nodBridgeAccount, cache: cacheBridge)
+    }
+
+    static func clearNodBridgeToken() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: nodBridgeAccount,
+        ]
+        SecItemDelete(query as CFDictionary)
+        cacheBridge.set(nil)
+    }
 }
 

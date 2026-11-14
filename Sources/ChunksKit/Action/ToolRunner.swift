@@ -270,6 +270,12 @@ public enum ToolRunner {
             // rather than a trap, so a routing mistake reads as a refusal instead of crashing.
             return false
 
+        case .nodTask:
+            // Dispatched to the owner's Nod server in `CompanionManager.runTool`, which holds the
+            // bridge address and the Keychain token. False rather than a trap, so a routing mistake
+            // reads as a refusal instead of crashing mid-turn.
+            return false
+
         // The window verbs. Resolution already happened in the shell — a window is found against the
         // live tree *before* the card asks, the same order a press uses — so what arrives here names
         // the window that will really be acted on, and this only performs the verb.
